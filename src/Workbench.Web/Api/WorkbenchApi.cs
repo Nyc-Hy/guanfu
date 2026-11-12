@@ -523,19 +523,28 @@ public static class WorkbenchApi
             return result.Ok ? Results.Ok(result) : Results.BadRequest(new { error = result.Error });
         });
 
-        // ---- 工作区搬迁（换机）----
-        api.MapPost("/workspace/export", async (
-            ExportWorkspaceRequest request, IWorkspaceArchiver archiver, CancellationToken ct) =>
+        // ---- 表级规则 ----
+        // 表级规则以前在库里却没人读它，语义等于不存在。补上入口，
+        // 免审批写的表现在真的管事了。
+        api.MapGet("/db-connections/{connectionId:guid}/rules", async (
+            Guid connectionId, IDbConnectionService connections, CancellationToken ct) =>
+            Results.Ok(await connections.ListRulesAsync(connectionId, ct)));
+
+        api.MapPost("/db-connections/{connectionId:guid}/rules", async (
+            Guid connectionId, CreateDbTableRuleRequest request, IDbConnectionService connections, CancellationToken ct) =>
         {
-            var result = await archiver.ExportAsync(request.TargetDirectory, ct);
-            return result.Ok ? Results.Ok(result) : Results.BadRequest(new { error = result.Message });
+            var created = await connections.AddRuleAsync(
+                connectionId, request.SchemaName, request.TableName,
+                request.AllowRead, request.WriteRequiresApproval, ct);
+
+            return Results.Created($"/api/db-connections/{connectionId}/rules/{created.Id}", created);
         });
 
-        api.MapPost("/workspace/import", async (
-            ImportWorkspaceRequest request, IWorkspaceArchiver archiver, CancellationToken ct) =>
+        api.MapDelete("/db-connections/{connectionId:guid}/rules/{ruleId:guid}", async (
+            Guid connectionId, Guid ruleId, IDbConnectionService connections, CancellationToken ct) =>
         {
-            var result = await archiver.ImportAsync(request.SourceDirectory, request.TargetHomeDirectory, ct);
-            return result.Ok ? Results.Ok(result) : Results.BadRequest(new { error = result.Message });
+            await connections.DeleteRuleAsync(connectionId, ruleId, ct);
+            return Results.NoContent();
         });
 
         // ---- 评审 ----
@@ -610,6 +619,13 @@ public sealed record PostEventRequest(string Message, string? Actor);
 public sealed record DecideApprovalRequest(bool Approve, string? DecidedBy, string? Reason);
 public sealed record CreateDbConnectionRequest(
     string Name, string Server, string Database, string? UserId, string? Password, bool IsDefault = true);
+
+/// <summary>表级规则。WriteRequiresApproval=false 表示这张表的写操作免审批。</summary>
+public sealed record CreateDbTableRuleRequest(
+    string TableName,
+    string SchemaName = "dbo",
+    bool AllowRead = true,
+    bool WriteRequiresApproval = true);
 
 public sealed record UpdateProjectConfigRequest(
     string? Name,
