@@ -142,10 +142,18 @@ def make_temp_repo(branch: str) -> str | None:
 def rest_json(rest: str, method: str, path: str, body: dict | None = None):
     """建项目 / 建里程碑这类「改变工作台结构」的动作只走 REST —— MCP 刻意不暴露它们。"""
     data = json.dumps(body).encode() if body is not None else None
+    headers = {"Content-Type": "application/json"}
+
+    # 敏感端点（改项目配置等）要人工凭证 —— 这里扮演的是「人工操作员」，
+    # 所以带上工作台启动时生成的 token。agent 那条路（MCP）本来就没有这个权限。
+    token = os.environ.get("WB_HUMAN_TOKEN", "")
+    if token:
+        headers["X-Workbench-Human-Token"] = token
+
     request = urllib.request.Request(
         rest.rstrip("/") + path,
         data=data,
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method=method,
     )
     with urllib.request.urlopen(request, timeout=30) as response:

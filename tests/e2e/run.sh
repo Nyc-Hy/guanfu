@@ -45,4 +45,9 @@ if ! curl -fsS -o /dev/null "http://127.0.0.1:$PORT/" 2>/dev/null; then
   exit 1
 fi
 
+# 人工凭证：敏感端点（改项目配置等）要它。e2e 扮演的是「人工操作员」，
+# 所以把工作台生成的 token 带上 —— agent 那条路（MCP）本来就没有这个权限。
+WB_HUMAN_TOKEN="$(cat "$HOME_DIR/.human-token" 2>/dev/null || true)"
+export WB_HUMAN_TOKEN
+
 python3 "$ROOT/tests/e2e/mcp_e2e.py" --url "http://127.0.0.1:$PORT"
