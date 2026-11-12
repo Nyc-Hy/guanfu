@@ -28,6 +28,19 @@ public sealed class WorkbenchClient(string baseUrl)
         return await response.Content.ReadFromJsonAsync<T>(Json, ct) ?? default!;
     }
 
+    public async Task<T> PutAsync<T>(string path, object body, CancellationToken ct = default)
+    {
+        using var response = await _http.PutAsJsonAsync(path, body, Json, ct);
+        await EnsureOkAsync(response, ct);
+        return await response.Content.ReadFromJsonAsync<T>(Json, ct) ?? default!;
+    }
+
+    public async Task DeleteAsync(string path, CancellationToken ct = default)
+    {
+        using var response = await _http.DeleteAsync(path, ct);
+        await EnsureOkAsync(response, ct);
+    }
+
     public async Task<string> PostRawAsync(string path, object body, CancellationToken ct = default)
     {
         using var response = await _http.PostAsJsonAsync(path, body, Json, ct);
