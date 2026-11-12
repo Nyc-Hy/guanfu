@@ -23,6 +23,7 @@ public interface IAppDbContext
     DbSet<ToolCallAudit> ToolCallAudits { get; }
     DbSet<DbConnectionConfig> DbConnections { get; }
     DbSet<DbTableRule> DbTableRules { get; }
+    DbSet<McpToolSetting> McpToolSettings { get; }
 
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
 }

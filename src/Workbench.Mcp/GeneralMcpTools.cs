@@ -126,6 +126,7 @@ public sealed class GeneralMcpTools(
     }
 
     [McpServerTool(Name = "git_commit")]
+    [McpRequiresApproval]
     [Description(
         "在项目仓库里提交改动（自动 git add -A 后 git commit）。属于写操作，必须人工审批通过后才真正执行。" +
         "首次调用会生成审批请求并等待人工决定；批准之后带 approvalId 再次调用即可直接执行。")]
@@ -200,6 +201,7 @@ public sealed class GeneralMcpTools(
     }
 
     [McpServerTool(Name = "git_push")]
+    [McpRequiresApproval]
     [Description(
         "把项目仓库推送到远端（git push）。属于写操作，必须人工审批通过后才真正执行。" +
         "首次调用会生成审批请求并等待人工决定；批准之后带 approvalId 再次调用即可直接执行。")]
@@ -276,6 +278,7 @@ public sealed class GeneralMcpTools(
     }
 
     [McpServerTool(Name = "shell_run")]
+    [McpRequiresApproval]
     [Description(
         "在项目仓库里执行一条命令。命令必须命中项目的白名单（项目设置里配置），且必须人工审批通过后才真正执行。" +
         "命令不走 shell 解析，参数按空格切分，不支持管道与重定向。")]

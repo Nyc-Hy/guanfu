@@ -1,0 +1,136 @@
+@page "/mcp-tools"
+@rendermode InteractiveServer
+@inject IMcpToolService Tools
+
+<PageTitle>MCP 工具 · 开发工作台</PageTitle>
+
+<div class="wb-page-head">
+    <div>
+        <h1>MCP 工具</h1>
+        <p class="wb-muted">
+            关掉的工具不会出现在 <code>tools/list</code> 里，agent 看不到也就不会去调；
+            就算客户端缓存了清单硬调，也会被服务端拒绝。
+        </p>
+    </div>
+    <div class="wb-form-row">
+        <span class="wb-chip">@EnabledCount / @Items.Count 开启</span>
+        <button class="wb-btn" disabled="@Saving" @onclick="ResetAsync">全部恢复默认</button>
+    </div>
+</div>
+
+@if (!string.IsNullOrWhiteSpace(Message))
+{
+    <p class="@(IsError ? "wb-error" : "wb-hint")">@Message</p>
+}
+
+@if (Items.Count == 0)
+{
+    <div class="wb-empty">没有发现任何 MCP 工具。</div>
+}
+else
+{
+    @foreach (var group in Groups)
+    {
+        <section class="wb-panel">
+            <div class="wb-card-head">
+                <h3>@group.Key</h3>
+                <span class="wb-muted">@group.Count() 个</span>
+            </div>
+
+            <table class="wb-table">
+                <thead>
+                <tr>
+                    <th style="width:64px">开关</th>
+                    <th>工具名</th>
+                    <th>说明</th>
+                    <th style="width:96px">策略</th>
+                </tr>
+                </thead>
+                <tbody>
+                @foreach (var tool in group)
+                {
+                    <tr>
+                        <td>
+                            <input type="checkbox" checked="@tool.Enabled" disabled="@Saving"
+                                   @onchange="e => SetEnabledAsync(tool.Name, (bool)(e.Value ?? false))" />
+                        </td>
+                        <td><code>@tool.Name</code></td>
+                        <td class="wb-muted">@tool.Description</td>
+                        <td>
+                            @if (tool.RequiresApproval)
+                            {
+                                <span class="wb-tag wb-tag-warn">需审批</span>
+                            }
+                            else
+                            {
+                                <span class="wb-tag wb-tag-ok">直通</span>
+                            }
+                        </td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </section>
+    }
+}
+
+@code {
+    private IReadOnlyList<McpToolInfo> Items { get; set; } = [];
+    private bool Saving { get; set; }
+    private string? Message { get; set; }
+    private bool IsError { get; set; }
+
+    private int EnabledCount => Items.Count(t => t.Enabled);
+
+    /// <summary>按目录里的分类顺序分组，组内保持目录顺序。</summary>
+    private IEnumerable<IGrouping<string, McpToolInfo>> Groups =>
+        Items.GroupBy(t => t.Category);
+
+    protected override async Task OnInitializedAsync() => await ReloadAsync();
+
+    private async Task ReloadAsync() => Items = await Tools.ListAsync();
+
+    private async Task SetEnabledAsync(string toolName, bool enabled)
+    {
+        Saving = true;
+        try
+        {
+            await Tools.SetEnabledAsync(toolName, enabled);
+            Message = enabled
+                ? $"已开启 {toolName}。"
+                : $"已关闭 {toolName}。agent 不会再看到它。";
+            IsError = false;
+        }
+        catch (Exception ex)
+        {
+            Message = ex.Message;
+            IsError = true;
+        }
+        finally
+        {
+            Saving = false;
+        }
+
+        await ReloadAsync();
+    }
+
+    private async Task ResetAsync()
+    {
+        Saving = true;
+        try
+        {
+            Items = await Tools.ResetAsync();
+            Message = "已恢复默认（全部工具开启）。";
+            IsError = false;
+        }
+        catch (Exception ex)
+        {
+            Message = ex.Message;
+            IsError = true;
+        }
+        finally
+        {
+            Saving = false;
+        }
+    }
+}

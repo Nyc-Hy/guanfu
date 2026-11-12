@@ -20,6 +20,7 @@ public sealed class WorkbenchDbContext(DbContextOptions<WorkbenchDbContext> opti
     public DbSet<ToolCallAudit> ToolCallAudits => Set<ToolCallAudit>();
     public DbSet<DbConnectionConfig> DbConnections => Set<DbConnectionConfig>();
     public DbSet<DbTableRule> DbTableRules => Set<DbTableRule>();
+    public DbSet<McpToolSetting> McpToolSettings => Set<McpToolSetting>();
 
     /// <summary>
     /// 全局约定：DateTimeOffset 一律以 UTC DateTime 落库。
@@ -234,6 +235,13 @@ public sealed class WorkbenchDbContext(DbContextOptions<WorkbenchDbContext> opti
                 .WithMany(p => p.DbConnections)
                 .HasForeignKey(x => x.ProjectId)
                 .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<McpToolSetting>(e =>
+        {
+            e.ToTable("mcp_tool_settings");
+            e.HasKey(x => x.ToolName);
+            e.Property(x => x.ToolName).HasMaxLength(200).IsRequired();
         });
 
         modelBuilder.Entity<DbTableRule>(e =>

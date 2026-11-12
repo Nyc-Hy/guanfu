@@ -328,6 +328,17 @@ public static class WorkbenchApi
             return result.Ok ? Results.Ok(result) : Results.BadRequest(new { error = result.Message });
         });
 
+        // ---- MCP 工具开关 ----
+        api.MapGet("/mcp/tools", async (IMcpToolService tools, CancellationToken ct) =>
+            Results.Ok(await tools.ListAsync(ct)));
+
+        api.MapPut("/mcp/tools/{toolName}", async (
+            string toolName, SetMcpToolRequest request, IMcpToolService tools, CancellationToken ct) =>
+            Results.Ok(await tools.SetEnabledAsync(toolName, request.Enabled, ct)));
+
+        api.MapPost("/mcp/tools/reset", async (IMcpToolService tools, CancellationToken ct) =>
+            Results.Ok(await tools.ResetAsync(ct)));
+
         return app;
     }
 }
@@ -369,3 +380,5 @@ public sealed record AssignMilestoneRequest(Guid? MilestoneId);
 public sealed record ExportWorkspaceRequest(string TargetDirectory);
 
 public sealed record ImportWorkspaceRequest(string SourceDirectory, string TargetHomeDirectory);
+
+public sealed record SetMcpToolRequest(bool Enabled);

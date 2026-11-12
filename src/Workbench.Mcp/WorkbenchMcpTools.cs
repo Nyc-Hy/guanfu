@@ -11,32 +11,6 @@ using Workbench.Application.Services;
 
 namespace Workbench.Mcp;
 
-public static class McpServiceCollectionExtensions
-{
-    public static IServiceCollection AddWorkbenchMcp(this IServiceCollection services)
-    {
-        services.AddMcpServer(options =>
-            {
-                options.ServerInfo = new Implementation
-                {
-                    Name = "workbench",
-                    Version = "0.1.0",
-                    Title = "开发工作台"
-                };
-
-                options.ServerInstructions =
-                    "开发工作台是状态中枢与审批门禁，不提供 AI 服务。" +
-                    "典型流程：workbench_claim_task 领任务 → workbench_get_context 取上下文 → " +
-                    "workbench_set_plan 回写计划 → 开发 → workbench_report_test_result 回写测试 → " +
-                    "workbench_update_status 推进状态。写数据库必须走 db_execute（需人工审批）。";
-            })
-            .WithToolsFromAssembly(typeof(WorkbenchMcpTools).Assembly, WorkbenchJson.Options)
-            .WithHttpTransport();
-
-        return services;
-    }
-}
-
 /// <summary>
 /// 工作台自身的 MCP 工具。给外部 agent（Claude Code / Codex 等）调用。
 /// </summary>

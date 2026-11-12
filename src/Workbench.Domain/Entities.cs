@@ -275,6 +275,17 @@ public class DbConnectionConfig
     public List<DbTableRule> Rules { get; set; } = [];
 }
 
+/// <summary>
+/// MCP 工具开关。关掉的工具不再出现在 tools/list，调用也会被拒。
+/// 只存「被显式改过的」——没记录的一律按开启处理，升级加新工具不用改数据。
+/// </summary>
+public class McpToolSetting
+{
+    public string ToolName { get; set; } = string.Empty;
+    public bool Enabled { get; set; } = true;
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
 /// <summary>表级白名单规则。写操作一律需要审批，此处只控制是否可免审批。</summary>
 public class DbTableRule
 {

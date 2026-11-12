@@ -84,6 +84,7 @@ public sealed class DatabaseMcpTools(
     }
 
     [McpServerTool(Name = "db_execute")]
+    [McpRequiresApproval]
     [Description(
         "执行写操作（INSERT / UPDATE / DELETE / DDL）。必须人工审批通过后才会真正执行。" +
         "首次调用会生成一条审批请求并等待人工决定（waitSeconds 内没批就返回 pending）。" +
