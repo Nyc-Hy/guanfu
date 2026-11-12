@@ -19,11 +19,22 @@ public static class WorkspaceArchiveFiles
     public const string KeyFileName = "secret.key";
     public const string ManifestFileName = "manifest.json";
 
+    /// <summary>外部 agent 的运行日志目录名。</summary>
+    public const string RunsFolderName = "runs";
+
     /// <summary>把导出目录恢复到目标 WORKBENCH_HOME。</summary>
     public static (int FileCount, long TotalBytes) Import(string sourceDirectory, string targetHomeDirectory)
     {
         var source = Path.GetFullPath(sourceDirectory);
         var target = Path.GetFullPath(targetHomeDirectory);
+
+        // 源和目标同一个目录（或目标在源里面）时，导入过程会把自己删掉：
+        // documents 目标目录先被 recursive 删除，而它正好就是源。
+        if (PathBoundary.IsSameOrInside(source, target))
+        {
+            throw new WorkbenchException(
+                $"目标目录不能是源目录本身或它的子目录: {target}（源: {source}）");
+        }
 
         var dbSource = Path.Combine(source, DatabaseFileName);
         if (!File.Exists(dbSource))
@@ -59,6 +70,22 @@ public static class WorkspaceArchiveFiles
         {
             CopyFile(keySource, Path.Combine(target, KeyFileName));
             fileCount++;
+        }
+
+        // 外部 agent 的运行日志：换机后也要能看到之前的运行记录
+        var runsSource = Path.Combine(source, RunsFolderName);
+        if (Directory.Exists(runsSource))
+        {
+            var runsTarget = Path.Combine(target, RunsFolderName);
+            if (Directory.Exists(runsTarget))
+            {
+                Directory.Delete(runsTarget, recursive: true);
+            }
+
+            CopyDirectory(runsSource, runsTarget);
+            var (count, bytes) = Measure(runsTarget);
+            fileCount += count;
+            totalBytes += bytes;
         }
 
         return (fileCount, totalBytes);

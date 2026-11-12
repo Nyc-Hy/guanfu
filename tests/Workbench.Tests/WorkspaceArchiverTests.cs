@@ -126,6 +126,92 @@ public class WorkspaceArchiverTests : IDisposable
             () => archiver.ImportAsync(Path.GetTempPath(), _imported));
     }
 
+    [Fact]
+    public async Task 导出到家目录本身被拒绝且不会删掉正在用的库()
+    {
+        await using var db = CreateDb(_home);
+        var archiver = new WorkspaceArchiver(db, Options.Create(new WorkbenchOptions { HomeDirectory = _home }));
+
+        // 带尾斜杠：GetFullPath 会保留它，裸 Equals 比会漏掉
+        await Assert.ThrowsAsync<WorkbenchException>(
+            () => archiver.ExportAsync(_home + Path.DirectorySeparatorChar));
+
+        // 正在用的库必须还在
+        Assert.True(File.Exists(Path.Combine(_home, "workbench.db")));
+    }
+
+    [Fact]
+    public async Task 导出到家目录里的子目录被拒绝()
+    {
+        await using var db = CreateDb(_home);
+        var archiver = new WorkspaceArchiver(db, Options.Create(new WorkbenchOptions { HomeDirectory = _home }));
+
+        await Assert.ThrowsAsync<WorkbenchException>(
+            () => archiver.ExportAsync(Path.Combine(_home, "backup")));
+    }
+
+    [Fact]
+    public async Task 导入到家目录本身被拒绝()
+    {
+        await using var db = CreateDb(_home);
+        var archiver = new WorkspaceArchiver(db, Options.Create(new WorkbenchOptions { HomeDirectory = _home }));
+        await archiver.ExportAsync(_export);
+
+        // 带尾斜杠：以前比不出来，然后 import 会把正在用的库覆盖掉
+        await Assert.ThrowsAsync<WorkbenchException>(
+            () => archiver.ImportAsync(_export, _home + Path.DirectorySeparatorChar));
+
+        Assert.True(File.Exists(Path.Combine(_home, "workbench.db")));
+    }
+
+    [Fact]
+    public async Task 导出目录里有无关文件时拒绝覆盖()
+    {
+        await using var db = CreateDb(_home);
+        var archiver = new WorkspaceArchiver(db, Options.Create(new WorkbenchOptions { HomeDirectory = _home }));
+
+        // 模拟"用户把导出目录指到了放着别的数据的地方"
+        Directory.CreateDirectory(_export);
+        await File.WriteAllTextAsync(Path.Combine(_export, "我自己的笔记.txt"), "别删我");
+
+        await Assert.ThrowsAsync<WorkbenchException>(
+            () => archiver.ExportAsync(_export));
+
+        Assert.True(File.Exists(Path.Combine(_export, "我自己的笔记.txt")));
+    }
+
+    [Fact]
+    public async Task 重复导出到同一个目录不会被自己拦下来()
+    {
+        await using var db = CreateDb(_home);
+        var archiver = new WorkspaceArchiver(db, Options.Create(new WorkbenchOptions { HomeDirectory = _home }));
+
+        await archiver.ExportAsync(_export);
+        var second = await archiver.ExportAsync(_export);
+
+        Assert.True(second.Ok);
+        Assert.True(File.Exists(Path.Combine(_export, "workbench.db")));
+    }
+
+    [Fact]
+    public async Task 导出带走运行日志且导入能恢复()
+    {
+        await using var db = CreateDb(_home);
+        var archiver = new WorkspaceArchiver(db, Options.Create(new WorkbenchOptions { HomeDirectory = _home }));
+
+        var runDir = Path.Combine(_home, "runs", "task-1");
+        Directory.CreateDirectory(runDir);
+        await File.WriteAllTextAsync(Path.Combine(runDir, "agent.log"), "第一行\n第二行\n");
+
+        await archiver.ExportAsync(_export);
+
+        Assert.True(File.Exists(Path.Combine(_export, "runs", "task-1", "agent.log")));
+
+        await archiver.ImportAsync(_export, _imported);
+
+        Assert.True(File.Exists(Path.Combine(_imported, "runs", "task-1", "agent.log")));
+    }
+
     private WorkbenchDbContext CreateDb(string home)
     {
         Directory.CreateDirectory(home);

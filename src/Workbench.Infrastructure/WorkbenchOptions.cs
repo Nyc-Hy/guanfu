@@ -16,6 +16,11 @@ public sealed class WorkbenchOptions
 
     public string KeyFilePath => Path.Combine(HomeDirectory, "secret.key");
 
+    /// <summary>
+    /// 外部 agent 的运行日志目录。换机时也要带走，否则新机器上看不到之前的运行记录。
+    /// </summary>
+    public string RunsDirectory => Path.Combine(HomeDirectory, "runs");
+
     public static string DefaultHomeDirectory()
     {
         var fromEnv = Environment.GetEnvironmentVariable(HomeEnvironmentVariable);

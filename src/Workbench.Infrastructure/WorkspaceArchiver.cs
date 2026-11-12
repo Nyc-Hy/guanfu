@@ -35,6 +35,7 @@ public sealed class WorkspaceArchiver(
         var target = Path.GetFullPath(targetDirectory);
         EnsureNotInsideHome(target, "导出");
         Directory.CreateDirectory(target);
+        EnsureTargetIsExportSlot(target);
 
         var dbTarget = Path.Combine(target, DatabaseFileName);
         if (File.Exists(dbTarget))
@@ -69,6 +70,22 @@ public sealed class WorkspaceArchiver(
             totalBytes += bytes;
         }
 
+        // 外部 agent 的运行日志：换机后还要能看到之前的运行记录
+        var runsSource = _options.RunsDirectory;
+        var runsTarget = Path.Combine(target, WorkspaceArchiveFiles.RunsFolderName);
+        if (Directory.Exists(runsSource))
+        {
+            if (Directory.Exists(runsTarget))
+            {
+                Directory.Delete(runsTarget, recursive: true);
+            }
+
+            WorkspaceArchiveFiles.CopyDirectory(runsSource, runsTarget);
+            var (count, bytes) = WorkspaceArchiveFiles.Measure(runsTarget);
+            fileCount += count;
+            totalBytes += bytes;
+        }
+
         // 加密密钥：数据库密码是 AES-GCM 加密的，密钥丢了换机后连不上老库
         var keySource = _options.KeyFilePath;
         if (File.Exists(keySource))
@@ -87,6 +104,7 @@ public sealed class WorkspaceArchiver(
             home = _options.HomeDirectory,
             database = DatabaseFileName,
             documents = DocumentsFolderName,
+            runs = Directory.Exists(runsSource) ? WorkspaceArchiveFiles.RunsFolderName : null,
             key = File.Exists(keySource) ? KeyFileName : null
         };
 
@@ -118,8 +136,10 @@ public sealed class WorkspaceArchiver(
 
         var target = Path.GetFullPath(targetHomeDirectory);
 
-        // 导入到正在跑的 WORKBENCH_HOME 会把正在用的库覆盖掉 —— 直接拒
-        if (string.Equals(target, Path.GetFullPath(_options.HomeDirectory), StringComparison.Ordinal))
+        // 导入到正在跑的 WORKBENCH_HOME 会把正在用的库覆盖掉 —— 直接拒。
+        // 比较要走归一化：带尾斜杠的 "~/.workbench/" 不等于 "~/.workbench"，
+        // 用裸 Equals 比会漏掉，然后 import 就把正在用的库覆盖了。
+        if (PathBoundary.IsSameOrInside(_options.HomeDirectory, target))
         {
             throw new WorkbenchException(
                 "不能导入到正在运行的 WORKBENCH_HOME。请先停掉服务，或指定一个新的目录。");
@@ -135,22 +155,69 @@ public sealed class WorkspaceArchiver(
     }
 
     /// <summary>
-    /// 导出目录不能落在 WORKBENCH_HOME 里（尤其不能是 home 或 home/documents）——
-    /// 否则会把源目录当目标删掉，或者把导出物拷进它自己。
+    /// 导出目标目录里只允许出现导出产物。
+    ///
+    /// 导出流程会先删掉目标目录下的 workbench.db / documents / runs 再重写 ——
+    /// 如果用户把导出目录指到了 /tmp 这种地方，"documents" 可能是别人的东西，
+    /// 直接删就是数据事故。所以这里先看一眼目录内容，不是本工具的产物就拒。
+    /// </summary>
+    private static void EnsureTargetIsExportSlot(string target)
+    {
+        var allowed = new[]
+        {
+            DatabaseFileName,
+            WorkspaceArchiveFiles.ManifestFileName,
+            DocumentsFolderName,
+            WorkspaceArchiveFiles.RunsFolderName,
+            WorkspaceArchiveFiles.KeyFileName
+        };
+
+        var unexpected = Directory.EnumerateFileSystemEntries(target)
+            .Select(Path.GetFileName)
+            .Where(name => !string.IsNullOrEmpty(name) && !allowed.Contains(name, StringComparer.Ordinal))
+            .Take(5)
+            .ToList();
+
+        if (unexpected.Count == 0)
+        {
+            return;
+        }
+
+        throw new WorkbenchException(
+            $"导出目录里已有非导出文件（{string.Join("、", unexpected)}），拒绝覆盖: {target}。" +
+            "请换一个空目录。");
+    }
+
+    /// <summary>
+    /// 导出目录不能落在 WORKBENCH_HOME 里 —— 否则会把源目录当目标删掉：
+    /// 目标是 home 时 workbench.db 会被删（正在用的库），home/documents 会被删（原件）。
+    ///
+    /// 比较必须归一化：GetFullPath 会保留尾斜杠，"/home/" != "/home"，
+    /// 而 StartsWith("/root/documents") 又会把 "/root/documents-backup" 误判成子目录。
+    /// 这里统一用 PathBoundary 的口径（字面 + 解软链两层）。
     /// </summary>
     private void EnsureNotInsideHome(string target, string action)
     {
-        var home = Path.GetFullPath(_options.HomeDirectory);
+        var home = PathBoundary.Normalize(Path.GetFullPath(_options.HomeDirectory));
 
-        if (string.Equals(target, home, StringComparison.Ordinal))
+        // home 就是文件系统根目录时，"在里面"没有意义（否则任何路径都在里面），
+        // 但"就是 home 本身"仍然要拦。
+        var homeIsRoot = string.Equals(home, Path.GetPathRoot(home), StringComparison.Ordinal);
+
+        if (string.Equals(target, home, StringComparison.Ordinal) && !homeIsRoot)
         {
             throw new WorkbenchException($"{action}目录不能就是 WORKBENCH_HOME 本身: {target}");
         }
 
-        var documents = Path.GetFullPath(_options.DocumentsDirectory);
-        if (target.StartsWith(documents, StringComparison.Ordinal))
+        if (homeIsRoot)
         {
-            throw new WorkbenchException($"{action}目录不能放在文档目录里面: {target}");
+            return;
+        }
+
+        if (PathBoundary.IsSameOrInside(home, target))
+        {
+            throw new WorkbenchException(
+                $"{action}目录不能放在 WORKBENCH_HOME 里面（会把正在用的数据当导出物删掉）: {target}");
         }
     }
 

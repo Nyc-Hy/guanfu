@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Options;
 using Workbench.Application.Contracts;
 using Workbench.Application.Services;
 using Workbench.Domain;
@@ -575,6 +576,36 @@ public static class WorkbenchApi
                 headerName = HumanTokenPolicy.HeaderName,
                 cookieName = HumanTokenPolicy.CookieName
             });
+        });
+
+        // ---- 工作区搬迁（换机）----
+        api.MapPost("/workspace/export", async (
+            ExportWorkspaceRequest request, IWorkspaceArchiver archiver, IOptions<WorkbenchOptions> options, CancellationToken ct) =>
+        {
+            // 入口侧先挡一道：导出目录等于 WORKBENCH_HOME 会把正在用的库删掉，
+            // 落在文档目录里会把文档拷进它自己（无限递归）。
+            var invalid = WorkspacePathGuard.ValidateExportTarget(request.TargetDirectory, options.Value);
+            if (invalid is not null)
+            {
+                return Results.BadRequest(new { error = invalid });
+            }
+
+            var result = await archiver.ExportAsync(request.TargetDirectory, ct);
+            return result.Ok ? Results.Ok(result) : Results.BadRequest(new { error = result.Message });
+        });
+
+        api.MapPost("/workspace/import", async (
+            ImportWorkspaceRequest request, IWorkspaceArchiver archiver, IOptions<WorkbenchOptions> options, CancellationToken ct) =>
+        {
+            // 导入到正在跑的 WORKBENCH_HOME = 把正在用的库覆盖掉
+            var invalid = WorkspacePathGuard.ValidateImportTarget(request.TargetHomeDirectory, options.Value);
+            if (invalid is not null)
+            {
+                return Results.BadRequest(new { error = invalid });
+            }
+
+            var result = await archiver.ImportAsync(request.SourceDirectory, request.TargetHomeDirectory, ct);
+            return result.Ok ? Results.Ok(result) : Results.BadRequest(new { error = result.Message });
         });
 
         // ---- 评审 ----
