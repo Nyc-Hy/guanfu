@@ -11,6 +11,9 @@ public sealed class WorkbenchInitializer(WorkbenchDbContext db, McpToolState too
     {
         await db.Database.EnsureCreatedAsync(cancellationToken);
 
+        // EnsureCreated 不会给已存在的表补列，老库得补一次 schema 补丁
+        await SchemaUpgrader.UpgradeAsync(db, cancellationToken);
+
         if (!await db.Workspaces.AnyAsync(cancellationToken))
         {
             db.Workspaces.Add(new Workbench.Domain.Workspace

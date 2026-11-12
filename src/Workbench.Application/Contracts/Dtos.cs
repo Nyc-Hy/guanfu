@@ -29,7 +29,9 @@ public sealed record TaskSummaryDto(
     DateTimeOffset? LastActivityAt,
     bool Stale,
     Guid? MilestoneId = null,
-    string? Key = null);
+    string? Key = null,
+    TaskType Type = TaskType.Requirement,
+    string? Branch = null);
 
 /// <summary>项目配置。跟概览分开：概览是给人看的汇总，配置是给人和 agent 改的字段集合。</summary>
 public sealed record ProjectConfigDto(
@@ -133,7 +135,11 @@ public sealed record TaskContextDto(
     IReadOnlyList<DocumentDto> Documents,
     IReadOnlyList<ArtifactDto> Artifacts,
     IReadOnlyList<StatusEventDto> RecentEvents,
-    IReadOnlyList<string> AllowedTransitions);
+    IReadOnlyList<string> AllowedTransitions,
+    /// <summary>仓库当前分支。跟任务绑定的分支不一致时，agent 不该贸然开跑。</summary>
+    string? CurrentBranch = null,
+    /// <summary>当前分支是否满足任务绑定的分支要求。</summary>
+    bool BranchReady = true);
 
 /// <summary>单个评审维度的结论。</summary>
 public sealed record ReviewItemDto(

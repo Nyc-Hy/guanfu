@@ -349,7 +349,9 @@ public sealed class ReviewService(IAppDbContext db, IClock clock, IGitInspector 
             task.LastActivityAt,
             false,
             task.MilestoneId,
-            task.Key);
+            task.Key,
+            task.Type,
+            task.Branch);
 
     private static PlanDto ToPlanDto(Plan p) =>
         new(p.Id, p.Version, p.Background, p.Understanding, p.Breakdown, p.AcceptanceCriteria, p.Risks, p.Author, p.CreatedAt);

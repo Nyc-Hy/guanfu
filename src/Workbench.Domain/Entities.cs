@@ -78,10 +78,20 @@ public class TaskItem
     public Milestone? Milestone { get; set; }
 
     /// <summary>
-    /// 项目内可读编号（如 REQ-001）。
+    /// 项目内可读编号（如 REQ-001 / BUG-001 / OPT-001）。
     /// agent 是听人话来的 ——「看下 req001」这种话要能落地，得有个稳定的短标识。
+    /// 前缀由 <see cref="Type"/> 决定，各类型独立计数。
     /// </summary>
     public string? Key { get; set; }
+
+    /// <summary>类型：需求 / 缺陷 / 优化。</summary>
+    public TaskType Type { get; set; } = TaskType.Requirement;
+
+    /// <summary>
+    /// 绑定的开发分支。为空表示不限制分支。
+    /// 绑了分支的任务只有在仓库当前分支与之一致时才会运行（见 <c>IBranchGuard</c>）。
+    /// </summary>
+    public string? Branch { get; set; }
 
     public string Title { get; set; } = string.Empty;
     public string? Description { get; set; }

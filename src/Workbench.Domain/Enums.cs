@@ -23,6 +23,22 @@ public enum TaskEventSource
     System = 3
 }
 
+/// <summary>
+/// 任务类型。工作台的结构是 项目 → 迭代版本 → 需求/缺陷/优化，
+/// 类型决定了编号前缀和任务卡上的徽章。
+/// </summary>
+public enum TaskType
+{
+    /// <summary>需求（REQ）。</summary>
+    Requirement = 0,
+
+    /// <summary>缺陷（BUG）。</summary>
+    Bug = 1,
+
+    /// <summary>优化（OPT）。</summary>
+    Optimization = 2
+}
+
 public enum ArtifactType
 {
     Plan = 0,

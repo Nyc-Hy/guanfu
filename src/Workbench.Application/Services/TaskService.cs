@@ -12,6 +12,8 @@ public interface ITaskService
         string? description = null,
         Guid? parentTaskId = null,
         Guid? milestoneId = null,
+        TaskType type = TaskType.Requirement,
+        string? branch = null,
         string? key = null,
         CancellationToken cancellationToken = default);
 
@@ -21,9 +23,16 @@ public interface ITaskService
         string? keyword = null,
         Guid? milestoneId = null,
         string? key = null,
+        TaskType? type = null,
         CancellationToken cancellationToken = default);
 
     Task<TaskSummaryDto?> GetAsync(Guid id, CancellationToken cancellationToken = default);
+
+    /// <summary>改任务类型（需求/缺陷/优化）。编号保持不变 —— 编号已经被引用了，不能说变就变。</summary>
+    Task<TaskSummaryDto> SetTypeAsync(Guid id, TaskType type, CancellationToken cancellationToken = default);
+
+    /// <summary>绑定 / 解绑开发分支。传 null 或空串表示解绑。</summary>
+    Task<TaskSummaryDto> BindBranchAsync(Guid id, string? branch, CancellationToken cancellationToken = default);
 
     Task<TaskSummaryDto> ChangeStatusAsync(
         Guid id,
@@ -85,7 +94,8 @@ public sealed class TaskService(
     IAppDbContext db,
     IClock clock,
     IGitInspector git,
-    IReviewGate? reviewGate = null) : ITaskService
+    IReviewGate? reviewGate = null,
+    IBranchGuard? branchGuard = null) : ITaskService
 {
     public const int StaleAfterHours = 72;
 
@@ -95,6 +105,8 @@ public sealed class TaskService(
         string? description = null,
         Guid? parentTaskId = null,
         Guid? milestoneId = null,
+        TaskType type = TaskType.Requirement,
+        string? branch = null,
         string? key = null,
         CancellationToken cancellationToken = default)
     {
@@ -126,7 +138,9 @@ public sealed class TaskService(
             ProjectId = projectId,
             ParentTaskId = parentTaskId,
             MilestoneId = milestoneId,
-            Key = await ResolveKeyAsync(projectId, key, cancellationToken),
+            Type = type,
+            Branch = string.IsNullOrWhiteSpace(branch) ? null : branch.Trim(),
+            Key = await ResolveKeyAsync(projectId, type, key, cancellationToken),
             Title = title.Trim(),
             Description = description,
             Status = TaskStatus.Draft,
@@ -156,6 +170,7 @@ public sealed class TaskService(
         string? keyword = null,
         Guid? milestoneId = null,
         string? key = null,
+        TaskType? type = null,
         CancellationToken cancellationToken = default)
     {
         var query = db.Tasks.AsNoTracking();
@@ -173,6 +188,11 @@ public sealed class TaskService(
         if (milestoneId is not null)
         {
             query = query.Where(t => t.MilestoneId == milestoneId.Value);
+        }
+
+        if (type is not null)
+        {
+            query = query.Where(t => t.Type == type.Value);
         }
 
         if (!string.IsNullOrWhiteSpace(keyword))
@@ -219,6 +239,76 @@ public sealed class TaskService(
         return ToSummary(task, project);
     }
 
+    public async Task<TaskSummaryDto> SetTypeAsync(
+        Guid id,
+        TaskType type,
+        CancellationToken cancellationToken = default)
+    {
+        var task = await db.Tasks.FirstOrDefaultAsync(t => t.Id == id, cancellationToken)
+                   ?? throw new NotFoundException("任务", id);
+
+        if (task.Type != type)
+        {
+            var before = task.Type;
+            task.Type = type;
+            task.UpdatedAt = clock.UtcNow;
+            task.LastActivityAt = clock.UtcNow;
+
+            db.StatusEvents.Add(new StatusEvent
+            {
+                TaskId = task.Id,
+                FromStatus = task.Status,
+                ToStatus = task.Status,
+                Source = TaskEventSource.Human,
+                Note = $"类型变更: {TaskTypes.Name(before)} → {TaskTypes.Name(type)}（编号 {task.Key} 不变）",
+                CreatedAt = clock.UtcNow
+            });
+
+            await db.SaveChangesAsync(cancellationToken);
+        }
+
+        var project = await db.Projects.FirstOrDefaultAsync(p => p.Id == task.ProjectId, cancellationToken);
+        return ToSummary(task, project);
+    }
+
+    public async Task<TaskSummaryDto> BindBranchAsync(
+        Guid id,
+        string? branch,
+        CancellationToken cancellationToken = default)
+    {
+        var task = await db.Tasks.FirstOrDefaultAsync(t => t.Id == id, cancellationToken)
+                   ?? throw new NotFoundException("任务", id);
+
+        var value = string.IsNullOrWhiteSpace(branch) ? null : branch.Trim();
+
+        if (!string.Equals(task.Branch, value, StringComparison.Ordinal))
+        {
+            var before = task.Branch;
+            task.Branch = value;
+            task.UpdatedAt = clock.UtcNow;
+            task.LastActivityAt = clock.UtcNow;
+
+            db.StatusEvents.Add(new StatusEvent
+            {
+                TaskId = task.Id,
+                FromStatus = task.Status,
+                ToStatus = task.Status,
+                Source = TaskEventSource.Human,
+                Note = before is null
+                    ? $"绑定分支: {value}"
+                    : value is null
+                        ? $"解绑分支: {before}"
+                        : $"绑定分支: {before} → {value}",
+                CreatedAt = clock.UtcNow
+            });
+
+            await db.SaveChangesAsync(cancellationToken);
+        }
+
+        var project = await db.Projects.FirstOrDefaultAsync(p => p.Id == task.ProjectId, cancellationToken);
+        return ToSummary(task, project);
+    }
+
     public async Task<TaskSummaryDto> ChangeStatusAsync(
         Guid id,
         TaskStatus to,
@@ -232,6 +322,12 @@ public sealed class TaskService(
 
         var from = task.Status;
         TaskStatusMachine.EnsureTransition(from, to);
+
+        // 分支守卫：绑了分支的任务，只有仓库当前就在那个分支上才允许开跑
+        if (to == TaskStatus.InDev && branchGuard is not null)
+        {
+            await EnsureBranchAsync(id, cancellationToken);
+        }
 
         // 结项门禁：开过评审的任务，当前轮必须全部维度通过。
         // 没开过评审的老流程不受影响（门禁只在有评审记录时生效）。
@@ -287,6 +383,12 @@ public sealed class TaskService(
 
         var task = await db.Tasks.FirstOrDefaultAsync(t => t.Id == id, cancellationToken)
                    ?? throw new NotFoundException("任务", id);
+
+        // 领取 = agent 准备开跑，绑定分支的任务必须在对的分支上才能领
+        if (branchGuard is not null)
+        {
+            await EnsureBranchAsync(id, cancellationToken);
+        }
 
         var now = clock.UtcNow;
         var leaseAlive = task.ClaimedByAgentId is not null &&
@@ -560,6 +662,11 @@ public sealed class TaskService(
             gitState?.Dirty ?? false,
             project?.RepoRemote);
 
+        // 分支就绪与否一并带出去：agent 拿到上下文就知道现在能不能开跑
+        var branchCheck = branchGuard is null
+            ? null
+            : await branchGuard.CheckAsync(id, cancellationToken);
+
         return new TaskContextDto(
             ToSummary(task, project),
             projectContext,
@@ -567,14 +674,34 @@ public sealed class TaskService(
             documents.Select(ToDocumentDto).ToList(),
             artifacts.Select(ToArtifactDto).ToList(),
             events.Select(ToEventDto).ToList(),
-            TaskStatusMachine.AllowedFrom(task.Status).Select(s => s.ToString()).ToList());
+            TaskStatusMachine.AllowedFrom(task.Status).Select(s => s.ToString()).ToList(),
+            gitState?.Branch,
+            branchCheck?.Ok ?? true);
+    }
+
+    /// <summary>
+    /// 分支守卫。绑定了分支的任务，只有仓库当前分支与之一致时才放行。
+    /// 错误信息要带上「当前在哪个分支」，agent 才能自己纠正。
+    /// </summary>
+    private async Task EnsureBranchAsync(Guid taskId, CancellationToken cancellationToken)
+    {
+        var check = await branchGuard!.CheckAsync(taskId, cancellationToken);
+
+        if (!check.Ok)
+        {
+            throw new BranchMismatchException(check);
+        }
     }
 
     /// <summary>
     /// 决定任务的编号。没给就按项目内序号自动分配（REQ-001、REQ-002…）；
     /// 给了就用给的，但项目内不能重号。
     /// </summary>
-    private async Task<string> ResolveKeyAsync(Guid projectId, string? requested, CancellationToken cancellationToken)
+    private async Task<string> ResolveKeyAsync(
+        Guid projectId,
+        TaskType type,
+        string? requested,
+        CancellationToken cancellationToken)
     {
         if (!string.IsNullOrWhiteSpace(requested))
         {
@@ -593,22 +720,35 @@ public sealed class TaskService(
             return key;
         }
 
-        var max = await db.Tasks
+        // 各类型独立计数：需求 REQ-001、缺陷 BUG-001、优化 OPT-001
+        var prefix = TaskTypes.Prefix(type);
+
+        var sameProjectKeys = await db.Tasks
             .Where(t => t.ProjectId == projectId && t.Key != null)
             .Select(t => t.Key)
             .ToListAsync(cancellationToken);
 
         var next = 1;
-        foreach (var existing in max)
+        foreach (var key in sameProjectKeys)
         {
-            if (existing is null)
+            if (key is null)
             {
                 continue;
             }
 
-            // 只认 REQ-123 这种能解析出数字的，避免手填的编号把自动序号算歪
-            var dash = existing.LastIndexOf('-');
-            if (dash <= 0 || !int.TryParse(existing[(dash + 1)..], out var number))
+            // 只认「同前缀 + 能解析出数字」的，避免手填的编号把自动序号算歪
+            var dash = key.LastIndexOf('-');
+            if (dash <= 0)
+            {
+                continue;
+            }
+
+            if (!key[..dash].Equals(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (!int.TryParse(key[(dash + 1)..], out var number))
             {
                 continue;
             }
@@ -616,7 +756,7 @@ public sealed class TaskService(
             next = Math.Max(next, number + 1);
         }
 
-        return $"REQ-{next:000}";
+        return $"{prefix}-{next:000}";
     }
 
     /// <summary>
@@ -655,7 +795,9 @@ public sealed class TaskService(
             task.LastActivityAt,
             (clock.UtcNow - lastActivity).TotalHours > StaleAfterHours,
             task.MilestoneId,
-            task.Key);
+            task.Key,
+            task.Type,
+            task.Branch);
     }
 
     internal static StatusEventDto ToEventDto(StatusEvent e) => new(
