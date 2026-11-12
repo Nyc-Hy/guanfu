@@ -408,6 +408,20 @@ public static class WorkbenchApi
         api.MapPost("/mcp/tools/reset", async (IMcpToolService tools, CancellationToken ct) =>
             Results.Ok(await tools.ResetAsync(ct)));
 
+        // ---- 工具调用审计 ----
+        // 审计表一直在写，但没有查询入口 —— 出了事没法复盘。补上。
+        api.MapGet("/audit", async (
+            IToolAuditService audit, string? toolName, Guid? taskId, Guid? projectId, int? limit, CancellationToken ct) =>
+        {
+            var take = limit ?? 100;
+            if (take is < 1 or > 1000)
+            {
+                return Results.BadRequest("limit 必须在 1~1000 之间。");
+            }
+
+            return Results.Ok(await audit.ListAsync(toolName, taskId, projectId, take, ct));
+        });
+
         return app;
     }
 }
