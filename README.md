@@ -23,6 +23,28 @@
 
 三条通道汇聚到同一批应用服务，保证状态机校验、事件流水、审计一次不落。
 
+**三个前端是平行的，不是叠加的**：
+
+```
+              ┌──────────────────────────────────────────┐
+              │  Workbench.Web（宿主进程）                │
+              │  应用服务 · 状态机 · 审批编排 · SQLite    │
+              └───────────────┬──────────────────────────┘
+                              │  REST /api  +  /mcp
+        ┌─────────────────────┼─────────────────────┐
+        │                     │                     │
+   Web UI (Blazor)      MCP 工具集              CLI (wb)
+   人：看板/审批/看文档   agent：结构化读写      人/脚本：批处理
+                                              ＋ wb mcp stdio 桥接
+```
+
+- **CLI 不是 MCP + Web UI 的组合**，是第三个平行入口。CLI 独有的是：审批的人工决定、
+  文档上传、里程碑增删、工具开关、启动 agent、工作区搬迁，以及 `wb mcp` 那个
+  **stdio 桥接**（只支持 stdio 的 MCP 客户端全靠它接进来）。
+- **改变工作台状态的动作不通过 MCP 暴露给 agent**：审批只能由人批（否则 agent 能自己
+  批自己的写请求，门禁形同虚设），上传文档、改里程碑结构、调工具开关同理。
+- CLI 与 MCP 都用**应用层的同一批 DTO**，不各自抄一份 —— 抄了就会漏字段。
+
 ### 2. 单一数据通路
 
 `Workbench.Web` 进程独占 SQLite（唯一写者）。MCP 与 CLI 都是 Web 的 HTTP 客户端，**不直连数据库**——
@@ -124,7 +146,7 @@ wb project config <项目ID> --repo /path --agent "claude -p \"{title}\"" --allo
 wb task launch <任务ID>                 # 拉起外部 agent
 
 wb workspace export /tmp/wb-backup       # 换机：整目录导出（库+文档+密钥）
-wb workspace import /tmp/wb-backup --home ~/.workbench
+wb workspace import /tmp/wb-backup --home ~/.workbench   # 本地搬文件，不必服务在跑
 
 wb tool list                             # MCP 工具清单（按分类分组）
 wb tool disable shell_run                # 关掉某个 MCP 工具
@@ -244,6 +266,10 @@ export WORKBENCH_HOME=~/.workbench
 
 导出的目录含 `workbench.db`、`documents/`、`secret.key` 与 `manifest.json`。
 密钥必须一起搬，否则老库的密码解不开。项目配置里的仓库绝对路径需要重新指向。
+
+- **导出**必须走服务：库要用 SQLite 的 `VACUUM INTO` 做一致性快照，边跑边复制会拿到撕裂的页
+- **导入**是纯文件搬运，CLI 本地执行即可：换机时服务还没起，先搬完再设 `WORKBENCH_HOME` 就行
+  （目标目录正被服务占用时会明确报错，让你先停服务）
 
 ---
 

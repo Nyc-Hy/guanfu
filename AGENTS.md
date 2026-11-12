@@ -36,6 +36,9 @@
    别改成 `ProcessStartInfo.Arguments` 或 `cmd /c`。
 7. **外部命令只在白名单里跑**：git 命令走 `IGitWriter`（同样不走 shell），
    agent 启动命令走 `IAgentLauncher`。工作台不提供 AI，只执行用户配置好的外部命令。
+8. **CLI 用应用层的 DTO，别自己抄一份**：CLI 引用 `Workbench.Application`，
+   直接用 `TaskSummaryDto` / `ApprovalDto` / `ProjectConfigDto`。抄第二份就会漏字段
+   （`MilestoneId` 漏过一次）。JSON 选项同理，统一用 `CliJson` / `WorkbenchClient` 的。
 
 ## 常用命令
 
