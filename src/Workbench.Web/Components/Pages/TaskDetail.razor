@@ -20,11 +20,18 @@ else
             <a class="wb-back" href="/projects/@Context.Project.Id">← @Context.Project.Name</a>
             <h1>@Context.Task.Title</h1>
             <p class="wb-muted">
+                <span class="wb-chip @TaskTypes.CssClass(Context.Task.Type)">@TaskTypes.Name(Context.Task.Type)</span>
                 @if (!string.IsNullOrWhiteSpace(Context.Task.Key))
                 {
-                    <span class="wb-chip">@Context.Task.Key</span>
                     <span> · </span>
+                    <span class="wb-chip">@Context.Task.Key</span>
                 }
+                @if (!string.IsNullOrWhiteSpace(Context.Task.Branch))
+                {
+                    <span> · </span>
+                    <span class="wb-chip @(Context.BranchReady ? "wb-chip-ok" : "wb-chip-warn")">⎇ @Context.Task.Branch</span>
+                }
+                <span> · </span>
                 @Context.Task.Status
                 @if (!string.IsNullOrWhiteSpace(Context.Task.ClaimedBy))
                 {
@@ -146,8 +153,32 @@ else
                                         <span class="wb-tag">未解析</span>
                                     }
                                 </td>
-                                <td><a href="/documents/@doc.Id">查看</a></td>
+                                <td>
+                                    <a href="/documents/@doc.Id">详情</a>
+                                    <button class="wb-btn wb-btn-link" @onclick="() => ToggleDocumentAsync(doc.Id)">
+                                        @(IsDocumentExpanded(doc.Id) ? "收起" : "就地查看")
+                                    </button>
+                                </td>
                             </tr>
+                            @if (IsDocumentExpanded(doc.Id))
+                            {
+                                <tr>
+                                    <td colspan="5">
+                                        <div class="wb-doc">
+                                            @if (DocumentOutline(doc.Id).Count > 0)
+                                            {
+                                                <div class="wb-doc-outline">
+                                                    @foreach (var item in DocumentOutline(doc.Id))
+                                                    {
+                                                        <div style="padding-left: @(item.Level * 14)px">@item.Title</div>
+                                                    }
+                                                </div>
+                                            }
+                                            <pre class="wb-pre">@DocumentText(doc.Id)</pre>
+                                        </div>
+                                    </td>
+                                </tr>
+                            }
                         }
                         </tbody>
                     </table>
@@ -259,9 +290,24 @@ else
                             </div>
                             @if (!string.IsNullOrWhiteSpace(artifact.Content))
                             {
-                                <p class="wb-pre">@artifact.Content</p>
+                                <button class="wb-btn wb-btn-link" @onclick="() => ToggleArtifact(artifact.Id)">
+                                    @(IsArtifactExpanded(artifact.Id) ? "收起内容" : "查看内容")
+                                </button>
                             }
                         </div>
+                        @if (IsArtifactExpanded(artifact.Id) && !string.IsNullOrWhiteSpace(artifact.Content))
+                        {
+                            <div class="wb-doc">
+                                @if (MarkdownRenderer.LooksLikeMarkdown(artifact.Content))
+                                {
+                                    @((MarkupString)MarkdownRenderer.ToHtml(artifact.Content))
+                                }
+                                else
+                                {
+                                    <pre class="wb-pre">@artifact.Content</pre>
+                                }
+                            </div>
+                        }
                     }
                 }
             </section>
@@ -269,10 +315,10 @@ else
 
         <aside class="wb-detail-side">
             <section class="wb-panel">
-                <h3>里程碑</h3>
+                <h3>迭代版本</h3>
                 <div class="wb-form-row">
                     <select class="wb-input" @bind="SelectedMilestoneId" @bind:after="AssignMilestoneAsync">
-                        <option value="">不在任何里程碑</option>
+                        <option value="">不在任何迭代版本</option>
                         @foreach (var m in MilestoneItems)
                         {
                             <option value="@m.Id">@m.Name（@m.DoneTasks/@m.TotalTasks）</option>
@@ -281,7 +327,43 @@ else
                 </div>
                 @if (MilestoneItems.Count == 0)
                 {
-                    <p class="wb-muted">项目还没有里程碑，去看板页添加。</p>
+                    <p class="wb-muted">项目还没有迭代版本，去看板页添加。</p>
+                }
+            </section>
+
+            <section class="wb-panel">
+                <h3>任务属性</h3>
+                <div class="wb-form-row">
+                    <label class="wb-label">类型</label>
+                    <select class="wb-input" @bind="SelectedType" @bind:after="ChangeTypeAsync">
+                        <option value="requirement">需求</option>
+                        <option value="bug">缺陷</option>
+                        <option value="optimization">优化</option>
+                    </select>
+                </div>
+                <p class="wb-muted">编号 @Context.Task.Key 由类型决定（需求 REQ- / 缺陷 BUG- / 优化 OPT-），改类型不改编号。</p>
+
+                <div class="wb-form-row">
+                    <label class="wb-label">绑定分支</label>
+                    <input class="wb-input" @bind="BranchInput" placeholder="如 feature/login" />
+                    <button class="wb-btn" @onclick="BindBranchAsync">绑定</button>
+                </div>
+                <p class="wb-muted">
+                    仓库当前分支：<code>@(Context.CurrentBranch ?? "未知")</code>
+                </p>
+                @if (!string.IsNullOrWhiteSpace(Context.Task.Branch) && !Context.BranchReady)
+                {
+                    <p class="wb-error">
+                        当前不在绑定分支「@Context.Task.Branch」上，这个任务不会运行。
+                    </p>
+                }
+                else if (!string.IsNullOrWhiteSpace(Context.Task.Branch))
+                {
+                    <p class="wb-muted">分支就绪，可以运行。</p>
+                }
+                else
+                {
+                    <p class="wb-muted">没绑分支，不受分支限制。</p>
                 }
             </section>
 
@@ -335,8 +417,16 @@ else
     private IReadOnlyList<ReviewRoundDto> ReviewHistory { get; set; } = [];
     private bool Busy { get; set; }
     private string SelectedMilestoneId { get; set; } = string.Empty;
+    private string SelectedType { get; set; } = "requirement";
+    private string BranchInput { get; set; } = string.Empty;
     private bool Launching { get; set; }
     private string? Error { get; set; }
+
+    // 页面上「就地查看」用：展开状态 + 解析结果缓存
+    private readonly HashSet<Guid> _expandedDocuments = new();
+    private readonly HashSet<Guid> _expandedArtifacts = new();
+    private readonly Dictionary<Guid, string> _documentText = new();
+    private readonly Dictionary<Guid, IReadOnlyList<ParsedOutlineDto>> _documentOutline = new();
 
     protected override async Task OnParametersSetAsync() => await ReloadAsync();
 
@@ -347,6 +437,13 @@ else
             Context = await Tasks.GetContextAsync(TaskId);
             MilestoneItems = await Milestones.ListAsync(Context.Task.ProjectId);
             SelectedMilestoneId = Context.Task.MilestoneId?.ToString() ?? string.Empty;
+            SelectedType = Context.Task.Type switch
+            {
+                TaskType.Bug => "bug",
+                TaskType.Optimization => "optimization",
+                _ => "requirement"
+            };
+            BranchInput = Context.Task.Branch ?? string.Empty;
             CurrentReview = await Reviews.GetCurrentAsync(TaskId);
             ReviewHistory = await Reviews.ListAsync(TaskId);
             Error = null;
@@ -364,6 +461,86 @@ else
         try
         {
             await Milestones.AssignTaskAsync(TaskId, milestoneId);
+            Error = null;
+        }
+        catch (Exception ex)
+        {
+            Error = ex.Message;
+        }
+
+        await ReloadAsync();
+    }
+
+    private bool IsDocumentExpanded(Guid id) => _expandedDocuments.Contains(id);
+
+    private bool IsArtifactExpanded(Guid id) => _expandedArtifacts.Contains(id);
+
+    private void ToggleArtifact(Guid id)
+    {
+        if (!_expandedArtifacts.Add(id))
+        {
+            _expandedArtifacts.Remove(id);
+        }
+    }
+
+    private string DocumentText(Guid id) =>
+        _documentText.TryGetValue(id, out var text) ? text : "（读取中…）";
+
+    private IReadOnlyList<ParsedOutlineDto> DocumentOutline(Guid id) =>
+        _documentOutline.TryGetValue(id, out var outline) ? outline : [];
+
+    /// <summary>就地展开文档：按需解析，解析结果缓存住，翻回去不用再解析一遍。</summary>
+    private async Task ToggleDocumentAsync(Guid id)
+    {
+        if (!_expandedDocuments.Add(id))
+        {
+            _expandedDocuments.Remove(id);
+            return;
+        }
+
+        if (!_documentText.ContainsKey(id))
+        {
+            try
+            {
+                _documentOutline[id] = await Documents.GetOutlineAsync(id);
+                _documentText[id] = await Documents.GetTextAsync(id);
+            }
+            catch (Exception ex)
+            {
+                _documentText[id] = "读取失败: " + ex.Message;
+            }
+        }
+
+        StateHasChanged();
+    }
+
+    private async Task ChangeTypeAsync()
+    {
+        if (!TaskTypes.TryParse(SelectedType, out var type))
+        {
+            Error = $"未知类型: {SelectedType}";
+            return;
+        }
+
+        try
+        {
+            await Tasks.SetTypeAsync(TaskId, type);
+            Error = null;
+        }
+        catch (Exception ex)
+        {
+            Error = ex.Message;
+        }
+
+        await ReloadAsync();
+    }
+
+    private async Task BindBranchAsync()
+    {
+        try
+        {
+            // 空串 = 解绑
+            await Tasks.BindBranchAsync(TaskId, string.IsNullOrWhiteSpace(BranchInput) ? null : BranchInput);
             Error = null;
         }
         catch (Exception ex)

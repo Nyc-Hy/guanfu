@@ -39,6 +39,16 @@ else
                 <input class="wb-input" placeholder="描述（可选）" @bind="NewDescription" @bind:event="oninput" />
                 <button class="wb-btn wb-btn-primary" disabled="@string.IsNullOrWhiteSpace(NewTitle)" @onclick="CreateTaskAsync">创建</button>
             </div>
+            <div class="wb-form-row">
+                <label class="wb-label">类型</label>
+                <select class="wb-input" @bind="NewType">
+                    <option value="requirement">需求</option>
+                    <option value="bug">缺陷</option>
+                    <option value="optimization">优化</option>
+                </select>
+                <label class="wb-label">绑定分支</label>
+                <input class="wb-input" placeholder="如 feature/login（可选）" @bind="NewBranch" @bind:event="oninput" />
+            </div>
             @if (!string.IsNullOrWhiteSpace(Error))
             {
                 <p class="wb-error">@Error</p>
@@ -48,7 +58,7 @@ else
 
     <section class="wb-panel">
         <div class="wb-card-head">
-            <h3>里程碑</h3>
+            <h3>迭代版本</h3>
             <span class="wb-muted">@MilestoneItems.Count 个</span>
         </div>
 
@@ -70,17 +80,17 @@ else
                 {
                     <span class="wb-chip">
                         @m.Name @Percent(m.Progress)
-                        <button class="wb-chip-x" title="删除里程碑" @onclick="() => DeleteMilestoneAsync(m.Id)">×</button>
+                        <button class="wb-chip-x" title="删除迭代版本" @onclick="() => DeleteMilestoneAsync(m.Id)">×</button>
                     </span>
                 }
             </div>
         }
 
         <div class="wb-form-row">
-            <input class="wb-input" placeholder="新里程碑名称" @bind="NewMilestoneName" @bind:event="oninput" />
+            <input class="wb-input" placeholder="新迭代版本名称" @bind="NewMilestoneName" @bind:event="oninput" />
             <button class="wb-btn" disabled="@string.IsNullOrWhiteSpace(NewMilestoneName)" @onclick="CreateMilestoneAsync">添加</button>
         </div>
-        <p class="wb-hint">删除里程碑只会把任务摘出来，不会删任务。</p>
+        <p class="wb-hint">删除迭代版本只会把任务摘出来，不会删任务。</p>
     </section>
 
     <div class="wb-board">
@@ -97,13 +107,19 @@ else
                 {
                     <a class="wb-task" href="/tasks/@task.Id">
                         <div class="wb-task-title">
+                            <span class="wb-chip @TaskTypes.CssClass(task.Type)">@TaskTypes.Name(task.Type)</span>
                             @if (!string.IsNullOrWhiteSpace(task.Key))
                             {
                                 <span class="wb-chip wb-chip-muted">@task.Key</span>
-                                <span> </span>
                             }
                             @task.Title
                         </div>
+                        @if (!string.IsNullOrWhiteSpace(task.Branch))
+                        {
+                            <div class="wb-task-meta">
+                                <span class="wb-chip wb-chip-muted">⎇ @task.Branch</span>
+                            </div>
+                        }
                         @if (MilestoneName(task.MilestoneId) is { } milestoneName)
                         {
                             <div class="wb-task-meta">
@@ -157,6 +173,8 @@ else
     private bool ShowCreate { get; set; }
     private string NewTitle { get; set; } = string.Empty;
     private string NewDescription { get; set; } = string.Empty;
+    private string NewType { get; set; } = "requirement";
+    private string NewBranch { get; set; } = string.Empty;
     private string NewMilestoneName { get; set; } = string.Empty;
     private string SelectedMilestoneFilter { get; set; } = string.Empty;
     private string? Error { get; set; }
@@ -182,9 +200,23 @@ else
     {
         try
         {
-            await Tasks.CreateAsync(ProjectId, NewTitle, string.IsNullOrWhiteSpace(NewDescription) ? null : NewDescription);
+            if (!TaskTypes.TryParse(NewType, out var type))
+            {
+                Error = $"未知类型: {NewType}";
+                return;
+            }
+
+            await Tasks.CreateAsync(
+                ProjectId,
+                NewTitle,
+                string.IsNullOrWhiteSpace(NewDescription) ? null : NewDescription,
+                milestoneId: null,
+                type: type,
+                branch: string.IsNullOrWhiteSpace(NewBranch) ? null : NewBranch);
+
             NewTitle = string.Empty;
             NewDescription = string.Empty;
+            NewBranch = string.Empty;
             ShowCreate = false;
             Error = null;
             await ReloadAsync();
