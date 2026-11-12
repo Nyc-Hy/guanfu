@@ -12,7 +12,7 @@ namespace Workbench.Tests;
 public class McpToolErrorTests
 {
     private static WorkbenchMcpTools Tasks(WorkbenchTestHost host) =>
-        new(host.Projects, host.Tasks, host.Approvals);
+        new(host.Projects, host.Tasks, host.Approvals, host.Audit, host.Dependencies, host.Exports);
 
     private static ReviewMcpTools Reviews(WorkbenchTestHost host) =>
         new(host.Reviews);

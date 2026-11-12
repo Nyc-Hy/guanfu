@@ -61,7 +61,10 @@ public static class WorkbenchApi
         });
 
         // ---- 任务 ----
-        api.MapGet("/tasks", async (ITaskService tasks, Guid? projectId, string? status, string? keyword, Guid? milestoneId, string? key, string? type, CancellationToken ct) =>
+        api.MapGet("/tasks", async (
+            ITaskService tasks, Guid? projectId, string? status, string? keyword, Guid? milestoneId,
+            string? key, string? type, string? branch, int? limit, int? offset, bool? includeArchived,
+            CancellationToken ct) =>
         {
             TaskStatus? parsed = null;
             if (!string.IsNullOrWhiteSpace(status))
@@ -85,7 +88,21 @@ public static class WorkbenchApi
                 parsedType = value;
             }
 
-            return Results.Ok(await tasks.ListAsync(projectId, parsed, keyword, milestoneId, key, parsedType, ct));
+            // limit/offset 给 agent 用：不带就全量返回，任务一多就把上下文撑爆了。
+            // 上限压在 500，防止有人拿它当导出接口用。
+            if (limit is < 1 or > 500)
+            {
+                return Results.BadRequest("limit 必须在 1~500 之间。");
+            }
+
+            if (offset is < 0)
+            {
+                return Results.BadRequest("offset 不能为负。");
+            }
+
+            return Results.Ok(await tasks.ListAsync(
+                projectId, parsed, keyword, milestoneId, key, parsedType, ct,
+                branch, limit, offset, includeArchived ?? false));
         });
 
         api.MapPost("/projects/{projectId:guid}/tasks", async (
@@ -140,6 +157,91 @@ public static class WorkbenchApi
         api.MapGet("/tasks/{taskId:guid}/context", async (
             Guid taskId, ITaskService tasks, int? eventLimit, CancellationToken ct) =>
             Results.Ok(await tasks.GetContextAsync(taskId, eventLimit ?? 20, ct)));
+
+        // 事件流水：账本不能只写不看。倒序（新的在前），limit 上限 500。
+        api.MapGet("/tasks/{taskId:guid}/events", async (
+            Guid taskId, ITaskService tasks, int? limit, CancellationToken ct) =>
+        {
+            var take = limit ?? 50;
+            if (take is < 1 or > 500)
+            {
+                return Results.BadRequest("limit 必须在 1~500 之间。");
+            }
+
+            var events = await tasks.ListEventsAsync(taskId, take, ct);
+            return Results.Ok(events);
+        });
+
+        // 归档 / 取消归档。归档不是删除：流水、产物、评审全都留着。
+        api.MapPost("/tasks/{taskId:guid}/archive", async (
+            Guid taskId, ArchiveTaskRequest request, ITaskService tasks, CancellationToken ct) =>
+            Results.Ok(await tasks.SetArchivedAsync(taskId, request.Archived, ct)));
+
+        // 分派：负责人 / 优先级 / 截止日 / 权重
+        api.MapPost("/tasks/{taskId:guid}/assign", async (
+            Guid taskId, AssignTaskRequest request, ITaskService tasks, CancellationToken ct) =>
+        {
+            TaskPriority? priority = null;
+            if (!string.IsNullOrWhiteSpace(request.Priority))
+            {
+                if (!Enum.TryParse<TaskPriority>(request.Priority, ignoreCase: true, out var parsed))
+                {
+                    return Results.BadRequest($"未知优先级: {request.Priority}");
+                }
+
+                priority = parsed;
+            }
+
+            return Results.Ok(await tasks.SetAssignmentAsync(
+                taskId, request.Assignee, priority, request.DueAt, request.Weight, ct));
+        });
+
+        // ---- 任务依赖 ----
+        api.MapGet("/tasks/{taskId:guid}/dependencies", async (
+            Guid taskId, ITaskDependencyService dependencies, CancellationToken ct) =>
+            Results.Ok(await dependencies.ListAsync(taskId, ct)));
+
+        api.MapPost("/tasks/{taskId:guid}/dependencies", async (
+            Guid taskId, AddDependencyRequest request, ITaskDependencyService dependencies, CancellationToken ct) =>
+        {
+            var type = DependencyType.BlockedBy;
+            if (!string.IsNullOrWhiteSpace(request.Type))
+            {
+                if (!Enum.TryParse<DependencyType>(request.Type, ignoreCase: true, out var parsed))
+                {
+                    return Results.BadRequest($"未知依赖方向: {request.Type}");
+                }
+
+                type = parsed;
+            }
+
+            var created = await dependencies.AddAsync(
+                taskId, request.DependsOnTaskId, type, request.Note, ct);
+
+            return Results.Created($"/api/tasks/{taskId}/dependencies", created);
+        });
+
+        api.MapDelete("/tasks/{taskId:guid}/dependencies/{dependsOnTaskId:guid}", async (
+            Guid taskId, Guid dependsOnTaskId, ITaskDependencyService dependencies, CancellationToken ct) =>
+        {
+            await dependencies.RemoveAsync(taskId, dependsOnTaskId, ct);
+            return Results.NoContent();
+        });
+
+        // ---- 导出 ----
+        api.MapGet("/tasks/{taskId:guid}/export/events", async (
+            Guid taskId, IExportService exports, string? format, CancellationToken ct) =>
+        {
+            var text = await exports.ExportTaskEventsAsync(taskId, format ?? "markdown", ct);
+            return Results.Content(text, "text/markdown; charset=utf-8");
+        });
+
+        api.MapGet("/tasks/{taskId:guid}/export/review", async (
+            Guid taskId, IExportService exports, int? round, string? format, CancellationToken ct) =>
+        {
+            var text = await exports.ExportReviewReportAsync(taskId, round, format ?? "markdown", ct);
+            return Results.Content(text, "text/markdown; charset=utf-8");
+        });
 
         api.MapPost("/tasks/{taskId:guid}/status", async (
             Guid taskId, ChangeStatusRequest request, ITaskService tasks, CancellationToken ct) =>
@@ -504,3 +606,19 @@ public sealed record StartReviewRequest(string? Reviewer);
 
 public sealed record SubmitReviewRequest(
     bool Passed, string? Findings, string? Evidence, string? Recommendation, string? Reviewer, int? Round);
+
+/// <summary>归档 / 取消归档。归档不是删除。</summary>
+public sealed record ArchiveTaskRequest(bool Archived = true);
+
+/// <summary>分派任务。传 null 的字段不动。</summary>
+public sealed record AssignTaskRequest(
+    string? Assignee = null,
+    string? Priority = null,
+    DateTimeOffset? DueAt = null,
+    double? Weight = null);
+
+/// <summary>加一条任务依赖。</summary>
+public sealed record AddDependencyRequest(
+    Guid DependsOnTaskId,
+    string? Type = null,
+    string? Note = null);

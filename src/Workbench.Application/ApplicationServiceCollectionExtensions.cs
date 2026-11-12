@@ -23,6 +23,8 @@ public static class ApplicationServiceCollectionExtensions
         services.AddScoped<IReviewGate, ReviewService>();
         services.AddScoped<IBranchGuard, BranchGuard>();
         services.AddScoped<IShellRunner, ShellRunner>();
+        services.AddScoped<ITaskDependencyService, TaskDependencyService>();
+        services.AddScoped<IExportService, ExportService>();
 
         // 通知：单例 HttpClient（HttpClient 复用是对的，每次 new 才会耗尽端口）
         // 超时压短，通知失败不能拖住审批请求。

@@ -18,7 +18,10 @@ namespace Workbench.Mcp;
 public sealed class WorkbenchMcpTools(
     IProjectService projects,
     ITaskService tasks,
-    IApprovalService approvals)
+    IApprovalService approvals,
+    IToolAuditService audit,
+    ITaskDependencyService dependencies,
+    IExportService exports)
 {
     [McpServerTool(Name = "workbench_list_projects")]
     [Description("列出工作台里所有项目，含进度、任务统计、停滞标记与 git 分支")]
@@ -62,8 +65,10 @@ public sealed class WorkbenchMcpTools(
 
     [McpServerTool(Name = "workbench_list_tasks")]
     [Description(
-        "按项目 / 状态 / 关键字 / 迭代版本 / 编号 / 类型列出任务。" +
-        "key 传了就是精确匹配编号，type 传了只出该类型（requirement / bug / optimization）")]
+        "按项目 / 状态 / 关键字 / 迭代版本 / 编号 / 类型 / 分支列出任务。" +
+        "key 传了就是精确匹配编号，type 传了只出该类型（requirement / bug / optimization），" +
+        "branch 传了只出绑定该分支的任务。limit/offset 用来分页 —— 任务多的时候一定要给 limit，" +
+        "否则返回体会把 agent 的上下文撑爆。")]
     public async Task<IReadOnlyList<TaskSummaryDto>> ListTasksAsync(
         Guid? projectId = null,
         string? status = null,
@@ -71,7 +76,11 @@ public sealed class WorkbenchMcpTools(
         Guid? milestoneId = null,
         string? key = null,
         string? type = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? branch = null,
+        int? limit = null,
+        int? offset = null,
+        bool includeArchived = false)
     {
         TaskStatus? parsed = null;
         if (!string.IsNullOrWhiteSpace(status))
@@ -96,8 +105,30 @@ public sealed class WorkbenchMcpTools(
             parsedType = value;
         }
 
-        return await tasks.ListAsync(projectId, parsed, keyword, milestoneId, key, parsedType, cancellationToken);
+        return await tasks.ListAsync(
+            projectId, parsed, keyword, milestoneId, key, parsedType, cancellationToken,
+            branch, limit, offset, includeArchived);
     }
+
+    [McpServerTool(Name = "workbench_list_events")]
+    [Description(
+        "列任务的事件流水（新到旧）。账本是工作台的三大能力之一 —— " +
+        "想看一个任务完整的时间线、或者回溯「当时用的是哪版计划」，用这个。")]
+    public async Task<IReadOnlyList<StatusEventDto>> ListEventsAsync(
+        Guid taskId,
+        int limit = 50,
+        CancellationToken cancellationToken = default)
+        => await tasks.ListEventsAsync(taskId, limit, cancellationToken);
+
+    [McpServerTool(Name = "workbench_archive_task")]
+    [Description(
+        "归档 / 取消归档一个任务。归档不是删除 —— 流水、产物、评审全都留着，" +
+        "只是默认不再出现在列表里。误建的任务需要个清理路径。")]
+    public async Task<TaskSummaryDto> ArchiveTaskAsync(
+        Guid taskId,
+        bool archived = true,
+        CancellationToken cancellationToken = default)
+        => await tasks.SetArchivedAsync(taskId, archived, cancellationToken);
 
     [McpServerTool(Name = "workbench_get_task")]
     [Description("获取单个任务的详情")]
@@ -288,6 +319,18 @@ public sealed class WorkbenchMcpTools(
         return await approvals.ListAsync(parsed, projectId, cancellationToken);
     }
 
+    [McpServerTool(Name = "workbench_list_audit")]
+    [Description(
+        "查工具调用审计（谁在什么时候调了哪个工具、结果如何）。" +
+        "审计表一直在写，但以前没有入口能查 —— 补上了。")]
+    public async Task<IReadOnlyList<ToolAuditDto>> ListAuditAsync(
+        string? toolName = null,
+        Guid? taskId = null,
+        Guid? projectId = null,
+        int limit = 100,
+        CancellationToken cancellationToken = default)
+        => await audit.ListAsync(toolName, taskId, projectId, limit, cancellationToken);
+
     [McpServerTool(Name = "workbench_get_approval")]
     [Description("获取单个审批请求的详情（含 SQL 原文）")]
     public async Task<ApprovalDto?> GetApprovalAsync(Guid approvalId, CancellationToken cancellationToken)
@@ -300,6 +343,111 @@ public sealed class WorkbenchMcpTools(
         int timeoutSeconds = 60,
         CancellationToken cancellationToken = default)
         => await approvals.AwaitAsync(approvalId, timeoutSeconds, cancellationToken);
+
+    [McpServerTool(Name = "workbench_assign_task")]
+    [Description(
+        "给任务分派负责人 / 优先级 / 截止日 / 权重。" +
+        "priority 取 low / normal / high / critical；weight 是进度权重（默认 1）。" +
+        "不传的字段保持原值。")]
+    public async Task<TaskSummaryDto> AssignTaskAsync(
+        Guid taskId,
+        string? assignee = null,
+        string? priority = null,
+        DateTimeOffset? dueAt = null,
+        double? weight = null,
+        CancellationToken cancellationToken = default)
+    {
+        TaskPriority? parsed = null;
+        if (!string.IsNullOrWhiteSpace(priority))
+        {
+            if (!Enum.TryParse<TaskPriority>(priority, ignoreCase: true, out var value))
+            {
+                throw new WorkbenchException(
+                    $"未知优先级: {priority}。合法值: {string.Join("、", Enum.GetNames<TaskPriority>())}");
+            }
+
+            parsed = value;
+        }
+
+        return await tasks.SetAssignmentAsync(taskId, assignee, parsed, dueAt, weight, cancellationToken);
+    }
+
+    [McpServerTool(Name = "workbench_list_dependencies")]
+    [Description(
+        "列出任务的前置依赖与它阻塞了谁。" +
+        "DependsOnDone 为 false 的前置任务没做完 —— 这时候不许领取任务、也不许推进到 InDev。")]
+    public async Task<IReadOnlyList<TaskDependencyDto>> ListDependenciesAsync(
+        Guid taskId,
+        CancellationToken cancellationToken = default)
+        => await dependencies.ListAsync(taskId, cancellationToken);
+
+    [McpServerTool(Name = "workbench_add_task_dependency")]
+    [Description(
+        "加一条任务依赖：dependsOnTaskId 必须先完成，本任务才能开工。" +
+        "type 传 blockedby（本任务依赖它，默认）或 blocks（本任务阻塞它）。" +
+        "会检查环，A 依赖 B、B 依赖 A 这类会被拒。")]
+    public async Task<TaskDependencyDto> AddDependencyAsync(
+        Guid taskId,
+        Guid dependsOnTaskId,
+        string? type = null,
+        string? note = null,
+        CancellationToken cancellationToken = default)
+    {
+        var parsed = DependencyType.BlockedBy;
+        if (!string.IsNullOrWhiteSpace(type))
+        {
+            if (!Enum.TryParse<DependencyType>(type, ignoreCase: true, out var value))
+            {
+                throw new WorkbenchException(
+                    $"未知依赖方向: {type}。合法值: {string.Join("、", Enum.GetNames<DependencyType>())}");
+            }
+
+            parsed = value;
+        }
+
+        return await dependencies.AddAsync(taskId, dependsOnTaskId, parsed, note, cancellationToken);
+    }
+
+    [McpServerTool(Name = "workbench_remove_task_dependency")]
+    [Description("移除一条任务依赖（两个方向都试）。")]
+    public async Task<bool> RemoveDependencyAsync(
+        Guid taskId,
+        Guid dependsOnTaskId,
+        CancellationToken cancellationToken = default)
+    {
+        await dependencies.RemoveAsync(taskId, dependsOnTaskId, cancellationToken);
+        return true;
+    }
+
+    [McpServerTool(Name = "workbench_export_events")]
+    [Description(
+        "导出任务的事件流水（账本）。format 传 markdown（默认）/ csv / json。" +
+        "format=json 时返回结构化对象，其余返回文本。")]
+    public async Task<object> ExportEventsAsync(
+        Guid taskId,
+        string format = "markdown",
+        CancellationToken cancellationToken = default)
+    {
+        var text = await exports.ExportTaskEventsAsync(taskId, format, cancellationToken);
+
+        return format.Equals("json", StringComparison.OrdinalIgnoreCase)
+            ? new { ok = true, format = "json", content = text }
+            : new { ok = true, format, content = text };
+    }
+
+    [McpServerTool(Name = "workbench_export_review")]
+    [Description(
+        "导出评审报告。round 不给就是最新一轮。format 传 markdown（默认）/ json。")]
+    public async Task<object> ExportReviewAsync(
+        Guid taskId,
+        int? round = null,
+        string format = "markdown",
+        CancellationToken cancellationToken = default)
+    {
+        var text = await exports.ExportReviewReportAsync(taskId, round, format, cancellationToken);
+
+        return new { ok = true, format, round, content = text };
+    }
 }
 
 /// <summary>
