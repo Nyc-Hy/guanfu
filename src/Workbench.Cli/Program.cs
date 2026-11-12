@@ -116,6 +116,14 @@ static void PrintUsage()
           wb project config <项目ID> [--repo 路径] [--agent 命令] [--allow 命令1,命令2]
                                  [--webhook 地址] [--format generic|dingtalk|feishu]
           wb task launch <任务ID>
+          wb task assign <任务ID> [--to 负责人] [--priority low|normal|high|critical]
+                                    [--due 截止日] [--weight 权重]
+          wb task deps <任务ID>                      列任务依赖
+          wb task depend <任务ID> <前置任务ID>        本任务依赖前置任务
+          wb task undepend <任务ID> <前置任务ID>      移除依赖
+          wb task events <任务ID> [--format markdown|csv|json]   导出事件流水
+          wb approval batch <审批ID> [<审批ID>...] [--reject] [--by 决策人]
+          wb review export <任务ID> [--round 轮次]     导出评审报告
 
         全局参数:
           --url <地址>        服务地址，默认 http://127.0.0.1:5177
@@ -302,10 +310,10 @@ static async Task<int> TaskCommandAsync(string url, List<string> cliArgs)
             var status = GetOption(cliArgs, "--status");
             var key = GetOption(cliArgs, "--key");
             var type = GetOption(cliArgs, "--type");
-            if (project is not null) query.Add($"projectId={project}");
-            if (status is not null) query.Add($"status={status}");
-            if (key is not null) query.Add($"key={key}");
-            if (type is not null) query.Add($"type={type}");
+            if (project is not null) query.Add(WorkbenchClient.Query("projectId", project));
+            if (status is not null) query.Add(WorkbenchClient.Query("status", status));
+            if (key is not null) query.Add(WorkbenchClient.Query("key", key));
+            if (type is not null) query.Add(WorkbenchClient.Query("type", type));
 
             var path = "/api/tasks" + (query.Count > 0 ? "?" + string.Join('&', query) : string.Empty);
             var tasks = await client.GetAsync<List<TaskSummaryDto>>(path);
@@ -391,7 +399,7 @@ static async Task<int> TaskCommandAsync(string url, List<string> cliArgs)
             }
 
             var agent = GetOption(cliArgs, "--agent") ?? "cli";
-            var lease = int.Parse(GetOption(cliArgs, "--lease") ?? "30");
+            var lease = ParseIntArg(GetOption(cliArgs, "--lease") ?? "30", "租约分钟数", 30);
             var task = await client.PostAsync<TaskSummaryDto>(
                 $"/api/tasks/{cliArgs[1]}/claim", new { agentId = agent, leaseMinutes = lease });
             Console.WriteLine($"已认领 {task.Id}，租约至 {task.LeaseExpiresAt}");
@@ -408,6 +416,107 @@ static async Task<int> TaskCommandAsync(string url, List<string> cliArgs)
 
             var result = await client.PostAsync<AgentLaunchResult>($"/api/tasks/{cliArgs[1]}/launch-agent", new { });
             Console.WriteLine($"已拉起外部 agent（PID {result.ProcessId}）：{result.Command}");
+            return 0;
+        }
+
+        case "assign":
+        {
+            if (cliArgs.Count < 2)
+            {
+                Console.Error.WriteLine(
+                    "用法: wb task assign <任务ID> [--to 负责人] [--priority low|normal|high|critical] [--due 截止日] [--weight 权重]");
+                return 1;
+            }
+
+            var assigned = await client.PostAsync<TaskSummaryDto>(
+                $"/api/tasks/{cliArgs[1]}/assign",
+                new
+                {
+                    assignee = GetOption(cliArgs, "--to"),
+                    priority = GetOption(cliArgs, "--priority"),
+                    dueAt = GetOption(cliArgs, "--due"),
+                    weight = GetOption(cliArgs, "--weight") is { } w ? ParseDoubleArg(w, "权重") : (double?)null
+                });
+
+            Console.WriteLine(
+                $"{assigned.Key} 分派：负责人 {assigned.Assignee ?? "-"} · 优先级 {assigned.Priority} · " +
+                $"截止 {assigned.DueAt?.ToString("u") ?? "-"} · 权重 {assigned.Weight}");
+            return 0;
+        }
+
+        case "deps":
+        {
+            if (cliArgs.Count < 2)
+            {
+                Console.Error.WriteLine("用法: wb task deps <任务ID>");
+                return 1;
+            }
+
+            var deps = await client.GetAsync<List<TaskDependencyDto>>($"/api/tasks/{cliArgs[1]}/dependencies");
+            if (deps.Count == 0)
+            {
+                Console.WriteLine("没有依赖。");
+                return 0;
+            }
+
+            Console.WriteLine($"{"方向",-6} {"前置",-14} {"标题",-30} 完成");
+            foreach (var d in deps)
+            {
+                Console.WriteLine(
+                    $"{d.Type,-6} {Truncate(d.DependsOnKey ?? "-", 14),-14} " +
+                    $"{Truncate(d.DependsOnTitle, 30),-30} {(d.DependsOnDone ? "是" : "否")}");
+            }
+
+            return 0;
+        }
+
+        case "depend":
+        {
+            if (cliArgs.Count < 3)
+            {
+                Console.Error.WriteLine("用法: wb task depend <任务ID> <前置任务ID> [--type blockedby|blocks]");
+                return 1;
+            }
+
+            var created = await client.PostAsync<TaskDependencyDto>(
+                $"/api/tasks/{cliArgs[1]}/dependencies",
+                new
+                {
+                    dependsOnTaskId = cliArgs[2],
+                    type = GetOption(cliArgs, "--type"),
+                    note = GetOption(cliArgs, "--note")
+                });
+
+            Console.WriteLine($"已加依赖：{created.TaskTitle} 依赖 {created.DependsOnTitle}");
+            return 0;
+        }
+
+        case "undepend":
+        {
+            if (cliArgs.Count < 3)
+            {
+                Console.Error.WriteLine("用法: wb task undepend <任务ID> <前置任务ID>");
+                return 1;
+            }
+
+            await client.DeleteAsync($"/api/tasks/{cliArgs[1]}/dependencies/{cliArgs[2]}");
+            Console.WriteLine("依赖已移除。");
+            return 0;
+        }
+
+        case "events":
+        {
+            if (cliArgs.Count < 2)
+            {
+                Console.Error.WriteLine("用法: wb task events <任务ID> [--limit 50] [--format markdown|csv|json]");
+                return 1;
+            }
+
+            var limit = ParseIntArg(GetOption(cliArgs, "--limit") ?? "50", "条数", 50);
+            var format = GetOption(cliArgs, "--format") ?? "markdown";
+
+            var text = await client.GetRawAsync($"/api/tasks/{cliArgs[1]}/export/events?format={format}");
+            Console.WriteLine(text);
             return 0;
         }
 
@@ -516,6 +625,44 @@ static async Task<int> ApprovalCommandAsync(string url, List<string> cliArgs)
             return 0;
         }
 
+        case "batch":
+        {
+            // 批量裁决：一条一条点太慢了，人工审核通常是「这批都同意」。
+            // 逐条回结果 —— 部分失败不能吞掉。
+            var ids = cliArgs
+                .Skip(1)
+                .Where(a => !a.StartsWith("--", StringComparison.Ordinal))
+                .Where(a => Guid.TryParse(a, out _))
+                .ToList();
+
+            if (ids.Count == 0)
+            {
+                Console.Error.WriteLine("用法: wb approval batch <审批ID> [<审批ID>...] [--reject] [--by 决策人]");
+                return 1;
+            }
+
+            var approve = !cliArgs.Contains("--reject");
+            var result = await client.PostAsync<BatchDecisionResponse>(
+                "/api/approvals/batch-decide",
+                new
+                {
+                    approvalIds = ids,
+                    approve,
+                    decidedBy = GetOption(cliArgs, "--by") ?? "cli",
+                    reason = GetOption(cliArgs, "--reason")
+                });
+
+            foreach (var item in result.Results)
+            {
+                Console.WriteLine(item.Ok
+                    ? $"已{(approve ? "批准" : "驳回")} {item.Id}"
+                    : $"失败 {item.Id}：{item.Error}");
+            }
+
+            Console.WriteLine($"共 {result.Total} 条，失败 {result.Failed} 条。");
+            return result.Failed > 0 ? 1 : 0;
+        }
+
         default:
             Console.Error.WriteLine($"未知子命令: wb approval {sub}");
             return 1;
@@ -589,7 +736,7 @@ static async Task<int> MilestoneCommandAsync(string url, List<string> cliArgs)
                 return 1;
             }
 
-            Guid? milestoneId = cliArgs[2] == "0" ? null : Guid.Parse(cliArgs[2]);
+            Guid? milestoneId = cliArgs[2] == "0" ? null : ParseGuidArg(cliArgs[2], "里程碑 ID");
             var task = await client.PostAsync<TaskSummaryDto>(
                 $"/api/tasks/{cliArgs[1]}/milestone", new { milestoneId });
             Console.WriteLine($"已更新任务 {task.Id} 的里程碑。");
@@ -782,6 +929,30 @@ static async Task<int> ReviewCommandAsync(string url, List<string> cliArgs)
             return 0;
         }
 
+        case "export":
+        {
+            if (cliArgs.Count < 2)
+            {
+                Console.Error.WriteLine("用法: wb review export <任务ID> [--round 轮次] [--format markdown|json]");
+                return 1;
+            }
+
+            var round = GetOption(cliArgs, "--round");
+            var format = GetOption(cliArgs, "--format") ?? "markdown";
+
+            var query = new List<string> { WorkbenchClient.Query("format", format) };
+            if (round is not null)
+            {
+                query.Add(WorkbenchClient.Query("round", round));
+            }
+
+            var text = await client.GetRawAsync(
+                $"/api/tasks/{cliArgs[1]}/export/review?{string.Join('&', query)}");
+
+            Console.WriteLine(text);
+            return 0;
+        }
+
         default:
             Console.Error.WriteLine($"未知子命令: wb review {sub}");
             return 1;
@@ -847,6 +1018,38 @@ static async Task<int> ToolCommandAsync(string url, List<string> cliArgs)
     }
 }
 
+/// <summary>解析 GUID，失败时给一句人话（原来直接抛 FormatException，退出码 3，错误信息是原始 .NET 异常）。</summary>
+static Guid ParseGuidArg(string value, string what)
+{
+    if (!Guid.TryParse(value, out var parsed))
+    {
+        throw new WorkbenchCliException($"{what} 不是合法的 GUID: {value}");
+    }
+
+    return parsed;
+}
+
+/// <summary>解析整数，失败时给一句人话。</summary>
+static int ParseIntArg(string value, string what, int fallback)
+{
+    if (!int.TryParse(value, out var parsed))
+    {
+        throw new WorkbenchCliException($"{what} 不是合法的整数: {value}");
+    }
+
+    return parsed;
+}
+
+static double ParseDoubleArg(string value, string what)
+{
+    if (!double.TryParse(value, out var parsed))
+    {
+        throw new WorkbenchCliException($"{what} 不是合法的数字: {value}");
+    }
+
+    return parsed;
+}
+
 static string? GetOption(List<string> cliArgs, string name)
 {
     var index = cliArgs.IndexOf(name);
@@ -863,3 +1066,8 @@ static string TaskTypeLabel(Workbench.Domain.TaskType type) => type switch
     Workbench.Domain.TaskType.Optimization => "优化",
     _ => "需求"
 };
+
+/// <summary>批量裁决的返回。</summary>
+public sealed record BatchDecisionResponse(int Total, int Failed, IReadOnlyList<BatchDecisionItem> Results);
+
+public sealed record BatchDecisionItem(Guid Id, bool Ok, string? Status, string? Error);

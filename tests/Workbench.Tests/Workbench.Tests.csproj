@@ -24,6 +24,8 @@
     <ProjectReference Include="..\..\src\Workbench.Infrastructure\Workbench.Infrastructure.csproj" />
     <ProjectReference Include="..\..\src\Workbench.Mcp\Workbench.Mcp.csproj" />
     <ProjectReference Include="..\..\src\Workbench.Web\Workbench.Web.csproj" />
+    <!-- MCP stdio 桥接的协议逻辑也要能测（JSON-RPC 流污染就是这么发现的） -->
+    <ProjectReference Include="..\..\src\Workbench.Cli\Workbench.Cli.csproj" />
   </ItemGroup>
 
   <ItemGroup>

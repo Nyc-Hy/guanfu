@@ -108,6 +108,8 @@ public static class McpServiceCollectionExtensions
 
                     if (!state.IsEnabled(name))
                     {
+                        // 形状要跟全局兜底一致（{ok:false,error}）——
+                        // 之前这里回的是纯文本，agent 只能靠猜来分辨两种错误
                         return new CallToolResult
                         {
                             IsError = true,
@@ -115,7 +117,14 @@ public static class McpServiceCollectionExtensions
                             [
                                 new TextContentBlock
                                 {
-                                    Text = $"工具 {name} 已在工作台的「MCP 工具」页面被关闭，请先在设置里打开。"
+                                    Text = JsonSerializer.Serialize(
+                                        new
+                                        {
+                                            ok = false,
+                                            error = $"工具 {name} 已在工作台的「MCP 工具」页面被关闭，请先在设置里打开。",
+                                            tool = name
+                                        },
+                                        WorkbenchJson.Options)
                                 }
                             ]
                         };
