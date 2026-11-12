@@ -23,6 +23,12 @@ public sealed class AgentLauncher(
     IOptions<WorkbenchOptions> options,
     IBranchGuard branchGuard) : IAgentLauncher
 {
+    /// <summary>
+    /// 外部 agent 最长跑多久。agent 跑歪了不会自己停 ——
+    /// 没有上限的话，一个卡住的进程能一直占着机器。
+    /// </summary>
+    private static readonly TimeSpan MaxRuntime = TimeSpan.FromHours(4);
+
     public async Task<AgentLaunchResult> LaunchAsync(Guid taskId, CancellationToken cancellationToken = default)
     {
         var task = await db.Tasks.FirstOrDefaultAsync(t => t.Id == taskId, cancellationToken)
@@ -55,20 +61,23 @@ public sealed class AgentLauncher(
                 $"工作目录不存在: {workingDirectory}");
         }
 
-        var command = IAgentLauncher.ExpandTemplate(project.AgentCommand, new Dictionary<string, string>
+        var values = new Dictionary<string, string>
         {
             ["taskId"] = task.Id.ToString(),
             ["title"] = task.Title,
             ["project"] = project.Name,
             ["repoPath"] = workingDirectory,
             ["description"] = task.Description ?? string.Empty
-        });
+        };
 
-        var tokens = IGitWriter.Tokenize(command);
+        // 先分词再替换 —— 标题里的空格不能变成额外的 argv 参数
+        var tokens = IAgentLauncher.ExpandArguments(project.AgentCommand, values);
         if (tokens.Count == 0)
         {
             return new AgentLaunchResult(false, null, string.Empty, workingDirectory, "启动命令为空。");
         }
+
+        var command = string.Join(' ', tokens);
 
         var startInfo = new ProcessStartInfo
         {
@@ -96,10 +105,11 @@ public sealed class AgentLauncher(
             return new AgentLaunchResult(false, null, command, workingDirectory, ex.Message);
         }
 
-        // 输出落到 WORKBENCH_HOME/runs/{taskId}/，任务详情页可以回看
+        // 输出落到 WORKBENCH_HOME/runs/{taskId}/，任务详情页可以回看。
+        // 文件名带毫秒 —— 同秒启动两次会写同一个文件，日志交错。
         var runDir = Path.Combine(options.Value.HomeDirectory, "runs", taskId.ToString("N"));
         Directory.CreateDirectory(runDir);
-        var logPath = Path.Combine(runDir, $"{clock.UtcNow:yyyyMMdd-HHmmss}.log");
+        var logPath = Path.Combine(runDir, $"{clock.UtcNow:yyyyMMdd-HHmmss-fff}.log");
 
         var stdoutTask = PumpAsync(process.StandardOutput, logPath, "stdout");
         var stderrTask = PumpAsync(process.StandardError, logPath, "stderr");
@@ -107,8 +117,9 @@ public sealed class AgentLauncher(
         db.StatusEvents.Add(new StatusEvent
         {
             TaskId = taskId,
-            FromStatus = task.Status,
-            ToStatus = task.Status,
+            // 这不是状态迁移 —— from/to 留空
+            FromStatus = null,
+            ToStatus = null,
             Source = TaskEventSource.Human,
             Actor = "launcher",
             Note = $"已拉起外部 agent（PID {process.Id}）：{command}",
@@ -119,7 +130,7 @@ public sealed class AgentLauncher(
         task.LastActivityAt = clock.UtcNow;
         await db.SaveChangesAsync(cancellationToken);
 
-        _ = WatchAsync(process.Id, taskId, logPath, stdoutTask, stderrTask, scopeFactory);
+        _ = WatchAsync(process, taskId, logPath, stdoutTask, stderrTask, scopeFactory);
 
         return new AgentLaunchResult(true, process.Id, command, workingDirectory, null);
     }
@@ -143,17 +154,37 @@ public sealed class AgentLauncher(
 
     /// <summary>进程结束后补一条事件。用独立 scope，因为发起请求的 scope 早就结束了。</summary>
     private static async Task WatchAsync(
-        int processId,
+        Process process,
         Guid taskId,
         string logPath,
         Task stdoutTask,
         Task stderrTask,
         IServiceScopeFactory scopeFactory)
     {
+        var processId = process.Id;
+
         try
         {
-            using var process = Process.GetProcessById(processId);
-            await process.WaitForExitAsync();
+            // 兜底：agent 永远不退出的话，不能一直占着机器。
+            using var timeout = new CancellationTokenSource(MaxRuntime);
+            try
+            {
+                await process.WaitForExitAsync(timeout.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                try
+                {
+                    if (!process.HasExited)
+                    {
+                        process.Kill(entireProcessTree: true);
+                    }
+                }
+                catch (Exception)
+                {
+                    // 进程可能已经退出
+                }
+            }
         }
         catch (Exception)
         {
@@ -168,6 +199,11 @@ public sealed class AgentLauncher(
         catch (Exception)
         {
             // 忽略
+        }
+        finally
+        {
+            // 进程句柄用完就放掉
+            process.Dispose();
         }
 
         try
@@ -186,8 +222,9 @@ public sealed class AgentLauncher(
             db.StatusEvents.Add(new StatusEvent
             {
                 TaskId = taskId,
-                FromStatus = task.Status,
-                ToStatus = task.Status,
+                // 这不是状态迁移 —— from/to 留空
+                FromStatus = null,
+                ToStatus = null,
                 Source = TaskEventSource.System,
                 Actor = "launcher",
                 Note = $"外部 agent 进程 {processId} 已退出。日志: {logPath}",
@@ -212,6 +249,12 @@ public sealed class AgentLauncher(
         }
     }
 
+    /// <summary>
+    /// 读日志尾部。
+    ///
+    /// 不能用 File.ReadAllText —— agent 跑久了日志能到 GB 级，
+    /// 整个读进内存就是内存炸弹。这里只 seek 到尾部读最后几 KB。
+    /// </summary>
     private static string ReadTail(string path, int maxChars = 8000)
     {
         try
@@ -221,8 +264,17 @@ public sealed class AgentLauncher(
                 return string.Empty;
             }
 
-            var text = File.ReadAllText(path);
-            return text.Length <= maxChars ? text : text[^maxChars..];
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+
+            if (stream.Length <= maxChars)
+            {
+                using var reader = new StreamReader(stream, Encoding.UTF8);
+                return reader.ReadToEnd();
+            }
+
+            stream.Seek(-maxChars, SeekOrigin.End);
+            using var tailReader = new StreamReader(stream, Encoding.UTF8);
+            return tailReader.ReadToEnd();
         }
         catch (Exception)
         {
