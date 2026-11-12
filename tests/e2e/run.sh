@@ -33,13 +33,13 @@ WORKBENCH_HOME="$HOME_DIR" "$DOTNET" run --project "$ROOT/src/Workbench.Web" \
 SERVER_PID=$!
 
 for _ in $(seq 1 40); do
-  if curl -fsS -o /dev/null "http://127.0.0.1:$PORT/"; then
+  if curl -fsS -o /dev/null "http://127.0.0.1:$PORT/" 2>/dev/null; then
     break
   fi
   sleep 0.5
 done
 
-if ! curl -fsS -o /dev/null "http://127.0.0.1:$PORT/"; then
+if ! curl -fsS -o /dev/null "http://127.0.0.1:$PORT/" 2>/dev/null; then
   echo "服务没起来，日志：" >&2
   tail -30 "$LOG" >&2
   exit 1

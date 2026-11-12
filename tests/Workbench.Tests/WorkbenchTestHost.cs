@@ -36,8 +36,10 @@ public sealed class WorkbenchTestHost : IDisposable
 
         Clock = new TestClock(DateTimeOffset.UtcNow);
 
-        Reviews = new ReviewService(_db, Clock, new NullGitInspector());
-        Tasks = new TaskService(_db, Clock, new NullGitInspector(), Reviews);
+        Git = new FakeGitInspector();
+        Reviews = new ReviewService(_db, Clock, Git);
+        BranchGuard = new BranchGuard(_db, Git);
+        Tasks = new TaskService(_db, Clock, Git, Reviews, BranchGuard);
     }
 
     public TestClock Clock { get; }
@@ -53,6 +55,12 @@ public sealed class WorkbenchTestHost : IDisposable
     public ApprovalService Approvals => new(_db, Clock);
 
     public ReviewService Reviews { get; }
+
+    /// <summary>分支守卫。测试里可以换成假的 git 状态。</summary>
+    public BranchGuard BranchGuard { get; }
+
+    /// <summary>可改的 git 状态（默认「测试环境无 git」）。</summary>
+    public FakeGitInspector Git { get; }
     public MilestoneService Milestones => new(_db, Clock);
     public MetricsService Metrics => new(_db, Clock);
     public FileSystemService Files => new(_db);
@@ -70,8 +78,14 @@ public sealed class WorkbenchTestHost : IDisposable
         public void Advance(TimeSpan delta) => UtcNow = UtcNow.Add(delta);
     }
 
-    private sealed class NullGitInspector : IGitInspector
+    /// <summary>可编程的 git 状态：分支、脏标记都能随便设。</summary>
+    public sealed class FakeGitInspector : IGitInspector
     {
-        public GitState Inspect(string repoPath) => new(null, null, false, 0, "测试环境无 git");
+        public string? Branch { get; set; }
+
+        public string? Error { get; set; }
+
+        public GitState Inspect(string repoPath) =>
+            new(Branch, "abc123", false, 0, Error);
     }
 }

@@ -18,7 +18,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -107,6 +111,32 @@ def expect(condition: bool, label: str):
 
 def section(title: str):
     print(f"\n{'=' * 60}\n{title}\n{'=' * 60}")
+
+
+def make_temp_repo(branch: str) -> str | None:
+    """建一个临时 git 仓库并切到指定分支。git 不可用就返回 None（跳过该场景）。"""
+    repo = tempfile.mkdtemp(prefix="wb-e2e-repo-")
+
+    def git(*args: str) -> None:
+        subprocess.run(
+            ["git", *args],
+            cwd=repo,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    try:
+        git("init")
+        git("checkout", "-b", branch)
+        with open(os.path.join(repo, "README.md"), "w", encoding="utf-8") as handle:
+            handle.write("# e2e\n")
+        git("add", ".")
+        git("-c", "user.email=e2e@example.com", "-c", "user.name=e2e", "commit", "-m", "init")
+        return repo
+    except Exception:
+        shutil.rmtree(repo, ignore_errors=True)
+        return None
 
 
 def rest_json(rest: str, method: str, path: str, body: dict | None = None):
@@ -281,6 +311,57 @@ def main() -> int:
     blocked2 = mcp.call("workbench_update_status", {"taskId": failed_id, "status": "Done", "actor": "e2e-agent"})
     expect(not blocked2.get("ok"), "有不通过维度不该能结项")
     expect("不通过" in (blocked2.get("error") or ""), "错误信息应指出有不通过的维度")
+
+    # ── C 类型与分支 ──────────────────────────────────────────────────
+    section("链路 C：类型编号与分支守卫")
+
+    print("\n-- 类型决定编号前缀，各类型独立计数 --")
+    keys = {}
+    for type_name, title in [("requirement", "需求"), ("bug", "缺陷"), ("optimization", "优化")]:
+        created = mcp.call(
+            "workbench_create_task",
+            {"projectId": project_id, "title": f"e2e {title}", "type": type_name},
+        )
+        keys[type_name] = created.get("key")
+        print(f"  {type_name}: {created.get('key')}")
+
+    expect(keys.get("requirement", "").startswith("REQ-"), "需求编号应是 REQ- 前缀")
+    expect(keys.get("bug", "").startswith("BUG-"), "缺陷编号应是 BUG- 前缀")
+    expect(keys.get("optimization", "").startswith("OPT-"), "优化编号应是 OPT- 前缀")
+
+    bugs = mcp.call("workbench_list_tasks", {"projectId": project_id, "type": "bug"})
+    expect(all(t.get("type") == "Bug" for t in (bugs or [])), "按类型过滤应只出缺陷")
+
+    print("\n-- 绑了分支，当前分支不对就不许领 --")
+    repo = make_temp_repo("main")
+    if repo is None:
+        print("  (跳过：环境里没有 git)")
+    else:
+        try:
+            rest_json(rest, "PUT", f"/api/projects/{project_id}/config", {"repoPath": repo})
+
+            bound = mcp.call(
+                "workbench_create_task",
+                {
+                    "projectId": project_id,
+                    "title": "e2e 绑分支",
+                    "type": "requirement",
+                    "branch": "feature/login",
+                },
+            )
+
+            claimed = mcp.call(
+                "workbench_claim_task", {"taskId": bound["id"], "agentId": "e2e-agent"}
+            )
+            print(f"  ok={claimed.get('ok')} error={claimed.get('error')}")
+            expect(not claimed.get("ok"), "当前分支不对时不该能领任务")
+            expect("feature/login" in (claimed.get("error") or ""), "错误信息应点名绑定的分支")
+            expect("main" in (claimed.get("error") or ""), "错误信息应说明当前在哪个分支")
+
+            context = mcp.call("workbench_get_context", {"taskId": bound["id"]})
+            expect(context.get("branchReady") is False, "上下文应标出分支未就绪")
+        finally:
+            shutil.rmtree(repo, ignore_errors=True)
 
     section("结果")
     if FAILURES:
