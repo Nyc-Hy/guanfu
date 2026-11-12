@@ -18,6 +18,7 @@
     <OpenXmlVersion>3.5.1</OpenXmlVersion>
     <PdfPigVersion>0.1.16</PdfPigVersion>
     <SqlClientVersion>5.2.2</SqlClientVersion>
+    <ScriptDomVersion>161.9135.0</ScriptDomVersion>
   </PropertyGroup>
 
 </Project>

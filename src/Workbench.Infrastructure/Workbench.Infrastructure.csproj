@@ -13,6 +13,9 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="$(EfCoreVersion)" />
     <PackageReference Include="Microsoft.Data.SqlClient" Version="$(SqlClientVersion)" />
+    <!-- T-SQL 解析器：把 SQL 解析成 AST，按语句类型判定读写，
+         而不是靠「首关键字 + 手搓分词器」猜。 -->
+    <PackageReference Include="Microsoft.SqlServer.TransactSql.ScriptDom" Version="$(ScriptDomVersion)" />
   </ItemGroup>
 
   <ItemGroup>

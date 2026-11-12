@@ -39,7 +39,10 @@ public sealed class DatabaseMcpTools(
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     [McpServerTool(Name = "db_query")]
-    [Description("只读查询项目配置的 SQL Server 数据库。默认放行（只记审计日志），返回列名与行数据。")]
+    [Description(
+        "只读查询项目配置的 SQL Server 数据库。默认放行（只记审计日志），返回列名与行数据。" +
+        "只放行能确认为只读的语句（SELECT / WITH…SELECT 等）；" +
+        "写操作或认不出来的语句会被拒，请改用 db_execute（会走人工审批）。")]
     public async Task<DbQueryToolResult> QueryAsync(
         Guid projectId,
         string sql,
@@ -53,6 +56,24 @@ public sealed class DatabaseMcpTools(
         {
             var config = await connections.GetAsync(projectId, null, cancellationToken)
                          ?? throw new WorkbenchException("该项目没有配置数据库连接。");
+
+            // 先判定语句性质：认不出来也要拦，而且要说清「请改用 db_execute」。
+            // 拦下来的记 denied，不记 error —— 这不是执行失败，是策略拦的。
+            var analysis = runner.Analyze(sql);
+            if (analysis.Kind != SqlStatementKind.Read)
+            {
+                var reason = SqlStatementClassifier.BuildRejection(analysis, sql);
+
+                await audit.RecordAsync(new ToolAuditEntry(
+                    "db_query", callerId, projectId, null, sql,
+                    RequiredApproval: false, ApprovalId: null,
+                    Outcome: "denied",
+                    ResultSummary: reason,
+                    RowsAffected: null,
+                    DurationMs: (long)(clock.UtcNow - started).TotalMilliseconds), cancellationToken);
+
+                return new DbQueryToolResult(false, [], [], false, maxRows, 0, reason);
+            }
 
             var result = await runner.QueryAsync(config, sql, Math.Clamp(maxRows, 1, 5000), cancellationToken);
             var duration = (long)(clock.UtcNow - started).TotalMilliseconds;
