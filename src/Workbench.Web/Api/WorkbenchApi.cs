@@ -319,15 +319,40 @@ public static class WorkbenchApi
         api.MapPost("/projects/{projectId:guid}/milestones", async (
             Guid projectId, CreateMilestoneRequest request, IMilestoneService milestones, CancellationToken ct) =>
         {
+            var kind = MilestoneKind.Release;
+            if (!string.IsNullOrWhiteSpace(request.Kind))
+            {
+                if (!Enum.TryParse<MilestoneKind>(request.Kind, ignoreCase: true, out var parsed))
+                {
+                    return Results.BadRequest($"未知里程碑种类: {request.Kind}");
+                }
+
+                kind = parsed;
+            }
+
             var created = await milestones.CreateAsync(
-                projectId, request.Name, request.Description, request.DueAt, ct);
+                projectId, request.Name, request.Description, request.DueAt, ct, request.ParentId, kind);
             return Results.Created($"/api/milestones/{created.Id}", created);
         });
 
         api.MapPut("/milestones/{milestoneId:guid}", async (
             Guid milestoneId, UpdateMilestoneRequest request, IMilestoneService milestones, CancellationToken ct) =>
-            Results.Ok(await milestones.UpdateAsync(
-                milestoneId, request.Name, request.Description, request.DueAt, request.Order, ct)));
+        {
+            MilestoneKind? kind = null;
+            if (!string.IsNullOrWhiteSpace(request.Kind))
+            {
+                if (!Enum.TryParse<MilestoneKind>(request.Kind, ignoreCase: true, out var parsed))
+                {
+                    return Results.BadRequest($"未知里程碑种类: {request.Kind}");
+                }
+
+                kind = parsed;
+            }
+
+            return Results.Ok(await milestones.UpdateAsync(
+                milestoneId, request.Name, request.Description, request.DueAt, request.Order, ct,
+                request.ParentId, kind));
+        });
 
         api.MapDelete("/milestones/{milestoneId:guid}", async (
             Guid milestoneId, IMilestoneService milestones, CancellationToken ct) =>
@@ -459,9 +484,13 @@ public sealed record UpdateProjectConfigRequest(
     string? NotificationWebhookUrl,
     string? NotificationFormat);
 
-public sealed record CreateMilestoneRequest(string Name, string? Description, DateTimeOffset? DueAt);
+public sealed record CreateMilestoneRequest(
+    string Name, string? Description, DateTimeOffset? DueAt,
+    Guid? ParentId = null, string? Kind = null);
 
-public sealed record UpdateMilestoneRequest(string? Name, string? Description, DateTimeOffset? DueAt, int? Order);
+public sealed record UpdateMilestoneRequest(
+    string? Name, string? Description, DateTimeOffset? DueAt, int? Order,
+    Guid? ParentId = null, string? Kind = null);
 
 public sealed record AssignMilestoneRequest(Guid? MilestoneId);
 

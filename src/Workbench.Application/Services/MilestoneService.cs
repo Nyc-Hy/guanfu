@@ -13,7 +13,13 @@ public sealed record MilestoneDto(
     int Order,
     int TotalTasks,
     int DoneTasks,
-    double Progress);
+    double Progress,
+    /// <summary>父里程碑。为空表示顶层（迭代版本）。</summary>
+    Guid? ParentId = null,
+    /// <summary>种类：迭代版本还是需求组。</summary>
+    MilestoneKind Kind = MilestoneKind.Release,
+    /// <summary>直接子里程碑的 id。</summary>
+    IReadOnlyList<Guid>? Children = null);
 
 public interface IMilestoneService
 {
@@ -24,7 +30,9 @@ public interface IMilestoneService
         string name,
         string? description = null,
         DateTimeOffset? dueAt = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        Guid? parentId = null,
+        MilestoneKind kind = MilestoneKind.Release);
 
     Task<MilestoneDto> UpdateAsync(
         Guid id,
@@ -32,7 +40,9 @@ public interface IMilestoneService
         string? description = null,
         DateTimeOffset? dueAt = null,
         int? order = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        Guid? parentId = null,
+        MilestoneKind? kind = null);
 
     Task DeleteAsync(Guid id, CancellationToken cancellationToken = default);
 
@@ -62,7 +72,19 @@ public sealed class MilestoneService(IAppDbContext db, IClock clock) : IMileston
             .Where(t => t.MilestoneId != null && ids.Contains(t.MilestoneId))
             .ToListAsync(cancellationToken);
 
-        return milestones.Select(m => Build(m, tasks)).ToList();
+        // 子里程碑的 id 一并带上 —— 前端要能自己把树搭出来
+        var childrenByParent = milestones
+            .Where(m => m.ParentId is not null)
+            .GroupBy(m => m.ParentId!.Value)
+            .ToDictionary(g => g.Key, g => (IReadOnlyList<Guid>)g.Select(c => c.Id).ToList());
+
+        return milestones
+            .Select(m =>
+            {
+                var dto = Build(m, tasks);
+                return dto with { Children = childrenByParent.GetValueOrDefault(m.Id, []) };
+            })
+            .ToList();
     }
 
     public async Task<MilestoneDto> CreateAsync(
@@ -70,7 +92,9 @@ public sealed class MilestoneService(IAppDbContext db, IClock clock) : IMileston
         string name,
         string? description = null,
         DateTimeOffset? dueAt = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Guid? parentId = null,
+        MilestoneKind kind = MilestoneKind.Release)
     {
         if (string.IsNullOrWhiteSpace(name))
         {
@@ -83,14 +107,30 @@ public sealed class MilestoneService(IAppDbContext db, IClock clock) : IMileston
             throw new NotFoundException("项目", projectId);
         }
 
+        // 父里程碑必须同项目 —— 否则「12月版本」和「1月版本」会串到一个项目里，
+        // 层级关系就成了假的。
+        if (parentId is not null)
+        {
+            var parent = await db.Milestones.AsNoTracking()
+                .FirstOrDefaultAsync(m => m.Id == parentId.Value, cancellationToken)
+                ?? throw new NotFoundException("父里程碑", parentId.Value);
+
+            if (parent.ProjectId != projectId)
+            {
+                throw new WorkbenchException("父里程碑与子里程碑不属于同一个项目。");
+            }
+        }
+
         var order = await db.Milestones
-            .Where(m => m.ProjectId == projectId)
+            .Where(m => m.ProjectId == projectId && m.ParentId == parentId)
             .Select(m => (int?)m.Order)
             .MaxAsync(cancellationToken) ?? 0;
 
         var milestone = new Milestone
         {
             ProjectId = projectId,
+            ParentId = parentId,
+            Kind = kind,
             Name = name.Trim(),
             Description = description,
             DueAt = dueAt,
@@ -110,7 +150,9 @@ public sealed class MilestoneService(IAppDbContext db, IClock clock) : IMileston
         string? description = null,
         DateTimeOffset? dueAt = null,
         int? order = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Guid? parentId = null,
+        MilestoneKind? kind = null)
     {
         var milestone = await db.Milestones.FirstOrDefaultAsync(m => m.Id == id, cancellationToken)
                         ?? throw new NotFoundException("里程碑", id);
@@ -135,10 +177,72 @@ public sealed class MilestoneService(IAppDbContext db, IClock clock) : IMileston
             milestone.Order = order.Value;
         }
 
+        if (kind is not null)
+        {
+            milestone.Kind = kind.Value;
+        }
+
+        if (parentId is not null)
+        {
+            if (parentId.Value == id)
+            {
+                throw new WorkbenchException("里程碑不能是自己的父级。");
+            }
+
+            var parent = await db.Milestones.AsNoTracking()
+                .FirstOrDefaultAsync(m => m.Id == parentId.Value, cancellationToken)
+                ?? throw new NotFoundException("父里程碑", parentId.Value);
+
+            if (parent.ProjectId != milestone.ProjectId)
+            {
+                throw new WorkbenchException("父里程碑与子里程碑不属于同一个项目。");
+            }
+
+            // 挂到自己的后代底下会形成环
+            if (await IsDescendantAsync(parentId.Value, id, cancellationToken))
+            {
+                throw new WorkbenchException("这样挂会形成环（父级在自己的后代下面），已拒绝。");
+            }
+
+            milestone.ParentId = parentId.Value;
+        }
+
         await db.SaveChangesAsync(cancellationToken);
 
         var tasks = await db.Tasks.AsNoTracking().Where(t => t.MilestoneId == id).ToListAsync(cancellationToken);
         return Build(milestone, tasks);
+    }
+
+    /// <summary>candidate 是不是 ancestor 的后代（把 candidate 挂到 ancestor 下面会不会成环）。</summary>
+    private async Task<bool> IsDescendantAsync(
+        Guid candidate,
+        Guid ancestor,
+        CancellationToken cancellationToken)
+    {
+        var current = candidate;
+        var visited = new HashSet<Guid>();
+
+        while (visited.Add(current))
+        {
+            var parentId = await db.Milestones.AsNoTracking()
+                .Where(m => m.Id == current)
+                .Select(m => m.ParentId)
+                .FirstOrDefaultAsync(cancellationToken);
+
+            if (parentId is null)
+            {
+                return false;
+            }
+
+            if (parentId.Value == ancestor)
+            {
+                return true;
+            }
+
+            current = parentId.Value;
+        }
+
+        return false;
     }
 
     public async Task DeleteAsync(Guid id, CancellationToken cancellationToken = default)
@@ -151,6 +255,14 @@ public sealed class MilestoneService(IAppDbContext db, IClock clock) : IMileston
         foreach (var task in tasks)
         {
             task.MilestoneId = null;
+        }
+
+        // 子里程碑也不跟着删 —— 孤儿节点比没了强。删掉父级，
+        // 下面的需求组就变成孤儿了（外键是 Restrict，本来也删不掉）。
+        var children = await db.Milestones.Where(m => m.ParentId == id).ToListAsync(cancellationToken);
+        foreach (var child in children)
+        {
+            child.ParentId = null;
         }
 
         db.Milestones.Remove(milestone);
@@ -206,6 +318,9 @@ public sealed class MilestoneService(IAppDbContext db, IClock clock) : IMileston
             milestone.Order,
             counted.Count,
             counted.Count(t => t.Status == TaskStatus.Done),
-            Math.Round(progress, 4));
+            Math.Round(progress, 4),
+            milestone.ParentId,
+            milestone.Kind,
+            []);
     }
 }
