@@ -106,6 +106,9 @@ dotnet run --project src/Workbench.Web
 
 ### 接入外部 agent
 
+服务起来后打开 **`/connect`** 页面，里面有两份可以直接复制粘贴的配置（地址按你实际访问的
+地址算好），外加当前暴露的工具数和典型流程。
+
 支持 Streamable HTTP 的 MCP 客户端直接连：
 
 ```json
@@ -124,6 +127,9 @@ dotnet run --project src/Workbench.Web
 ```bash
 wb mcp --url http://127.0.0.1:5177
 ```
+
+> `wb mcp` 桥接是 CLI 唯一不可替代的能力 —— 只支持 stdio 的 MCP 客户端全靠它接进来。
+> 改这个桥接时要格外小心（stdout 只能输出 JSON-RPC，任何多余输出都会污染协议流）。
 
 ### CLI
 

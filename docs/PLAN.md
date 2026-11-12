@@ -144,6 +144,7 @@ Draft → DocsReady → Planned → InDev → Testing → Review → Done
 | `/projects/{id}/settings` | 仓库路径、git 远端、agent 启动命令、命令白名单、审批通知 webhook |
 | `/metrics` | 各项目度量：状态分布、近 8 周流速、平均周期、测试通过率、平均覆盖率、待审数、阻塞与停滞 |
 | `/mcp-tools` | MCP 工具开关：按分类（工作台组 / 文档组 / 数据库组 / 通用组）逐个开关；关掉的工具从 `tools/list` 隐藏且调用被拒 |
+| `/connect` | 接入 agent：HTTP 与 stdio 两份可直接粘贴的配置（地址按实际访问地址算）、当前暴露工具数、典型流程 |
 | 看板页 | 里程碑筛选 + 里程碑增删 |
 | 任务详情页 | 里程碑归属、**「启动 agent」按钮**（拉起外部 CLI，输出落 `WORKBENCH_HOME/runs/{taskId}/`） |
 
