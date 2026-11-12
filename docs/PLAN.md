@@ -1,16 +1,18 @@
-# 开发工作台 — 实施计划（v0.4，P0~P4 全部落地）
+# 开发工作台 — 实施计划（v0.5，P0~P5 全部落地）
 
-> v0.1 征求意见 → v0.2 锁定六项决策 → v0.3 同步实现现状 → **v0.4 P3/P4 收尾**。
+> v0.1 征求意见 → v0.2 锁定六项决策 → v0.3 同步实现现状 → v0.4 P3/P4 收尾 →
+> **v0.5 评审工作流**（7 维度专家团 + 结项门禁 + 任务编号 + 版本归组）。
 > 计划文档随代码走，放在仓库 `docs/PLAN.md`。
 
 ---
 
 ## 0. 一句话定位
 
-**工作台 = 状态中枢 + 事件账本 + 审批门禁。**
+**工作台 = 状态中枢 + 事件账本 + 审批门禁 + 评审骨架。**
 工作台**不含任何 AI 能力**：不调模型、不跑 agent、不做"需求理解"。所有智能动作发生在外部 agent 进程里，它们通过 **MCP 工具**和 **CLI** 驱动工作台的状态流转。
 
 「文档解读」是**确定性解析**（结构化还原 + 修订还原），不是 AI 理解，不破坏这条边界。
+评审同理 —— 工作台给**骨架**（阶段、维度、清单、门禁、历史），判断由 agent（可开子 agent / 专家团）做，再逐维度回写结论。
 
 ---
 
@@ -36,10 +38,10 @@ Workbench.sln
 │  ├─ Workbench.Application     用例服务、DTO、事件、审批编排
 │  ├─ Workbench.Documents       文档解析引擎（MD/DOCX/PDF/diff → 统一模型）
 │  ├─ Workbench.Infrastructure  EF Core/SQLite、文档存储、Git 检视、SQL Server 执行器、密钥加密
-│  ├─ Workbench.Mcp             MCP 工具集（35 个工具）+ 注册
+│  ├─ Workbench.Mcp             MCP 工具集（41 个工具）+ 注册
 │  ├─ Workbench.Web             Blazor UI + REST API + /mcp 端点（宿主进程）
 │  └─ Workbench.Cli             wb 命令行 + stdio↔HTTP MCP 桥接
-└─ tests/Workbench.Tests        87 项测试
+└─ tests/Workbench.Tests        136 项测试
 ```
 
 **唯一数据通路**：Web 独占 SQLite（唯一写者）。MCP 与 CLI 都是 Web 的 HTTP 客户端，不直连数据库。
@@ -76,15 +78,63 @@ Draft → DocsReady → Planned → InDev → Testing → Review → Done
 - `Review → InDev` 是合法的打回回路
 - 每次迁移写一条 append-only 的 `status_events`（来源：人 / agent / CI）
 - 进度 = 状态权重均值；附加停滞检测、阻塞数、最近测试通过率
+- **评审门禁**（服务层的业务前置条件，叠加在状态机之上）：`Review → Done` 时，
+  若该任务**开过评审**，当前轮的 7 个维度必须全部通过；没开过评审的老流程照旧能结项。
+  拦下来时返回的还是结构化错误，明确点名「还差哪几个维度」「哪几个不通过」。
 
 ---
 
-## 4. MCP 工具（35 个，下划线命名）
+## 3.1 任务编号与版本归组
 
-**工作台组（19）**：`workbench_list_projects` / `get_project` / `get_project_config` / `create_task` /
-`list_tasks` / `get_task` / `claim_task` / **`get_context`**（一次取全上下文）/ `set_plan` /
-`update_status` / `add_artifact` / `report_test_result` / `post_event` / `list_approvals` /
-`get_approval` / `await_approval` / `list_milestones` / `assign_milestone` / `get_metrics`
+| 概念 | 落地 | 理由 |
+|---|---|---|
+| **任务编号（Key）** | 项目内自动分配 `REQ-001` / `REQ-002`…，可手工指定，项目内不重号 | 人说话是「看下 req001」，agent 得能落到具体任务上 |
+| **编号匹配** | 归一化（只留字母数字、转小写）后精确匹配 | 人嘴里的 `req001` 和库里的 `REQ-001` 差一个连字符，不该让人去猜写法 |
+| **版本** | 用**里程碑**承载（「12月版本」就是里程碑） | 里程碑已有筛选 / 进度 / 度量全套 UI；真要版本发布语义（版本号、发布状态、时间范围）再加 Release 实体 |
+
+`workbench_get_task_by_key` 查不到时不抛异常，而是返回 `ok=false` + **项目里现有的编号清单**，
+让 agent 能自己纠正，而不是卡在这。
+
+---
+
+## 3.2 评审工作流（7 维度专家团）
+
+```
+开发完成 → workbench_start_review（开一轮，7 个维度各建一条待办）
+         → workbench_get_review_pack（拿维度清单 + 任务上下文 + 变更文件）
+         → 逐维度评审（agent 可开子 agent 并行）→ workbench_submit_review（逐条回写）
+         → 7 个全过 → workbench_update_status(Done) 才放行
+```
+
+**七个维度**（定义在代码里 `Workbench.Domain.ReviewDimensions`，不存库）：
+
+| key | 维度 | 问的是什么 |
+|---|---|---|
+| `code_quality` | 代码是否合适 | 这份实现本身写得对不对、选型对不对？ |
+| `comments` | 注释是否合适 | 注释有没有说清「为什么」，而不是复述代码？ |
+| `security` | 是否有安全问题 | 这段改动有没有引入安全问题？ |
+| `scope_impact` | 是否影响非本次需求的功能 | 这次改动有没有误伤本次需求之外的东西？ |
+| `missing_requirement` | 是否有需求未实现 | 对照需求本身，有没有漏做的地方？ |
+| `over_implementation` | 是否有需求过度实现 | 有没有做了需求根本没要求的事？ |
+| `over_operation` | 是否有过度操作的代码 | 有没有画蛇添足、没必要的动作？ |
+
+每个维度带一份**检查清单**（agent 照着清单查，不是自由发挥）。多轮评审全部留 history。
+
+**边界**：
+- 评审**不自动创建** —— `workbench_start_review` 显式调用才开轮
+- 工作台**不判断** —— 判断由 agent（或它开的子 agent）做，工作台只负责「不评完不许结项」和「每轮结论都留痕」
+- 评审**不影响**没开过评审的任务 —— 向后兼容，既有流程照走
+
+---
+
+## 4. MCP 工具（41 个，下划线命名）
+
+**工作台组（25）**：`workbench_list_projects` / `get_project` / `get_project_config` / `create_task` /
+`list_tasks` / `get_task` / **`get_task_by_key`**（按编号找任务）/ `claim_task` /
+**`get_context`**（一次取全上下文）/ `set_plan` / `update_status` / `add_artifact` /
+`report_test_result` / `post_event` / `list_approvals` / `get_approval` / `await_approval` /
+`list_milestones` / `assign_milestone` / `get_metrics` /
+**`start_review`** / **`get_review_pack`** / **`submit_review`** / **`list_reviews`** / **`get_review`**
 
 **文档组（7）**：`doc_parse` / `doc_get_outline` / `doc_get_text` / `doc_get_revisions` /
 `doc_list_struck` / `doc_search` / `doc_list_formats`
@@ -97,6 +147,10 @@ Draft → DocsReady → Planned → InDev → Testing → Review → Done
 
 > 工具名用下划线而非点号：部分 MCP 客户端不接受点号。
 > 写类工具（`db_execute` / `git_*` / `shell_run`）统一是「先建审批 → 等待 → 批准后带 `approvalId` 续跑」。
+>
+> **工具不抛异常**：MCP SDK 会把异常吞成一句 `An error occurred invoking 'xxx'.`，
+> agent 看不到错在哪。所以两种做法：工具自己返回带 `error` 的结构化结果；
+> 以及最外层一个 `CallToolFilters` 兜底，把任何漏网的异常转成 `{"ok":false,"error":"..."}`。
 
 ---
 
@@ -136,8 +190,9 @@ Draft → DocsReady → Planned → InDev → Testing → Review → Done
 | **P2 审批审计** | ✅ 完成 | 审批模型、审批页、`db_query`/`db_execute`、审计表、过期、SSE 预留 |
 | **P3 Git + 通用工具** | ✅ 完成 | `git_commit`/`git_push`（走审批）、`fs_list`/`fs_read`（越界拒绝）、`db_schema`、`shell_run`（白名单+强制审批，不走 shell 解析） |
 | **P4 开源就绪** | ✅ 完成 | LICENSE / README / AGENTS.md / CI；`wb workspace export/import`（整目录搬迁，含库+文档+密钥）、「启动 agent」按钮、里程碑（实体+服务+看板筛选）、度量看板（流速/周期/通过率/阻塞/停滞） |
+| **P5 评审工作流** | ✅ 完成 | 评审实体（轮次 + 逐维度结论）、7 维度定义与检查清单、`ReviewService`、**结项门禁**、5 个评审 MCP 工具、任务编号 Key、按编号找任务、任务详情页评审面板、`wb review` 子命令 |
 
-### P3/P4 新增界面
+### P3/P4/P5 新增界面
 
 | 页面 | 作用 |
 |---|---|
@@ -145,18 +200,20 @@ Draft → DocsReady → Planned → InDev → Testing → Review → Done
 | `/metrics` | 各项目度量：状态分布、近 8 周流速、平均周期、测试通过率、平均覆盖率、待审数、阻塞与停滞 |
 | `/mcp-tools` | MCP 工具开关：按分类（工作台组 / 文档组 / 数据库组 / 通用组）逐个开关；关掉的工具从 `tools/list` 隐藏且调用被拒 |
 | `/connect` | 接入 agent：HTTP 与 stdio 两份可直接粘贴的配置（地址按实际访问地址算）、当前暴露工具数、典型流程 |
-| 看板页 | 里程碑筛选 + 里程碑增删 |
-| 任务详情页 | 里程碑归属、**「启动 agent」按钮**（拉起外部 CLI，输出落 `WORKBENCH_HOME/runs/{taskId}/`） |
+| 看板页 | 里程碑筛选 + 里程碑增删 + 任务编号显示 |
+| 任务详情页 | 里程碑归属、**「启动 agent」按钮**（拉起外部 CLI，输出落 `WORKBENCH_HOME/runs/{taskId}/`）、**评审面板**（7 维度表格 + 轮次判定 + 历史轮次 + 开始评审） |
 
 ---
 
 ## 8. 明确不做
 
 - 工作台内不调模型、不跑 agent、不生成需求理解与计划（那是 agent 回写的内容）
+- 工作台内**不替 agent 判断代码好不好** —— 评审工作台只给骨架、清单、门禁、历史
 - 不做 CI 编排（只接收回调）
 - 不做 Git 托管平台（只做本地仓库的托管与追踪）
 - V1 不做多用户权限
 - 文档解析只做结构与修订还原，不做语义理解
+- 版本发布语义（版本号 / 发布状态 / 时间范围）暂不做 —— 「12月版本」先用里程碑承载
 
 ---
 
@@ -182,3 +239,9 @@ Draft → DocsReady → Planned → InDev → Testing → Review → Done
 | CLI 自己抄了一份 JSON 选项 | 读的时候能读枚举、打印的时候写成 `0` | JSON 选项集中到 `CliJson` / `WorkbenchClient`，读写用同一份 |
 | 导入也走 REST | 换机时服务还没起，导不进去；目标还不能是正在跑的 home | 导入是纯文件搬运，CLI 本地执行；导出才需要服务（要一致性快照） |
 | MCP 的 `tools/list` 是会话级 | 没法按项目返回不同工具清单 | 开关做成**工作台级**；按项目管执行范围用项目配置里的命令白名单 |
+| 人嘴里的编号少个连字符 | 「req001」查不到库里的「REQ-001」，agent 以为任务不存在 | 编号归一化（只留字母数字、转小写）后精确匹配；查不到时把项目现有编号一并返回 |
+| 编号精确匹配放在 SQL 里 | 归一化是 C# 逻辑，EF 翻译不了直接抛异常 | 编号过滤挪到内存里做（项目内任务量很小） |
+| `git status --porcelain` 输出整段 `Trim()` | 第一行常以空格开头（`" M src/x.cs"`），前导空格被吃掉 → 第一条路径变成 `rc/x.cs` | 只 `TrimEnd()`；补了真实仓库的回归测试 |
+| 工具抛异常被 SDK 吞成英文 | agent 只看到 `An error occurred invoking 'workbench_create_task'.`，不知道是编号重了还是里程碑错了 | 最外层加 `CallToolFilters` 兜底，统一转成 `{"ok":false,"error":"..."}` |
+| JSON 默认转义非 ASCII | 中文全变 `\uXXXX`，日志和 agent 都要自己解码 | `WorkbenchJson` 统一用 `UnsafeRelaxedJsonEscaping` |
+| CLI 自己抄了一份 JSON 选项 | 读的时候能读枚举、打印的时候写成 `0` | JSON 选项收敛到应用层的 `WorkbenchJson`，CLI 直接用 |

@@ -4,11 +4,15 @@
 
 ## 这是什么
 
-开发工作台：**状态中枢 + 事件账本 + 审批门禁**。
+开发工作台：**状态中枢 + 事件账本 + 审批门禁 + 评审骨架**。
 
 **工作台不提供 AI 服务** —— 不调模型、不跑 agent、不生成需求理解与开发计划。
 所有智能动作发生在外部 agent 进程里，它们通过 MCP 工具与 CLI 驱动工作台的状态流转。
 改动时不要往工作台里塞模型调用。
+
+**评审同理**：工作台给的是**骨架** —— 阶段、7 个维度的定义与检查清单、结项门禁、多轮历史。
+判断由 agent（可以开子 agent / 专家团并行）做，再逐维度回写结论。
+别在工作台里写「这个代码好不好」这种判断逻辑。
 
 ## 技术栈与约束
 
@@ -38,7 +42,17 @@
    agent 启动命令走 `IAgentLauncher`。工作台不提供 AI，只执行用户配置好的外部命令。
 8. **CLI 用应用层的 DTO，别自己抄一份**：CLI 引用 `Workbench.Application`，
    直接用 `TaskSummaryDto` / `ApprovalDto` / `ProjectConfigDto`。抄第二份就会漏字段
-   （`MilestoneId` 漏过一次）。JSON 选项同理，统一用 `CliJson` / `WorkbenchClient` 的。
+   （`MilestoneId` 漏过一次）。JSON 选项同理，统一用应用层的 `WorkbenchJson`，
+   CLI 只加一层 `WriteIndented`（`CliJson.Pretty`）。
+9. **评审门禁是服务层的业务前置条件，叠加在状态机之上**：
+   `TaskService.ChangeStatusAsync` 在 `Review → Done` 时校验当前轮 7 个维度全过
+   （`IReviewGate`）。**没开过评审的老流程不受影响**，别把这个兼容性去掉。
+10. **编号匹配要归一化**：人嘴里的 `req001` 和库里的 `REQ-001` 是同一个编号。
+    归一化（只留字母数字、转小写）是 C# 逻辑，**不能放进 SQL 的 Where** ——
+    EF 翻译不了会直接抛异常，过滤放内存里做。
+11. **读 git 输出别整段 `Trim()`**：`git status --porcelain` 第一行常以空格开头
+    （`" M src/x.cs"`），`Trim()` 会把前导空格吃掉，第一条路径就变成 `rc/x.cs`。
+    只 `TrimEnd()`。
 
 ## 常用命令
 
@@ -67,8 +81,8 @@ CLI 命令**全部保留**（用户 2026-11-12 决定），不因为「大概率
 
 | 目录 | 职责 |
 |---|---|
-| `src/Workbench.Domain` | 实体、任务状态机、规则 |
-| `src/Workbench.Application` | 用例服务、DTO、事件、审批编排 |
+| `src/Workbench.Domain` | 实体、任务状态机、评审维度定义、规则 |
+| `src/Workbench.Application` | 用例服务、DTO、事件、审批编排、评审工作流 |
 | `src/Workbench.Documents` | 文档解析引擎（MD/DOCX/PDF/diff → 统一模型） |
 | `src/Workbench.Infrastructure` | EF Core/SQLite、文档存储、Git 读写、SQL Server 执行器、工作区搬迁 |
 | `src/Workbench.Mcp` | MCP 工具集 |

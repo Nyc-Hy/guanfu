@@ -63,8 +63,46 @@ Draft → DocsReady → Planned → InDev → Testing → Review → Done
 - 非法迁移直接拒绝，并返回**当前允许的迁移列表**（agent 拿得到反馈，不会瞎试）
 - `Review → InDev` 是合法的打回回路
 - 每次迁移写一条 append-only 的 `status_events`（谁 / 何时 / 从哪来 / 说明）
+- **评审门禁**：`Review → Done` 时，若该任务开过评审，当前轮 7 个维度必须全部通过。
+  没开过评审的老流程照旧能结项（向后兼容）。拦下来时点名「还差哪几个维度」。
 
-### 4. 文档解读工具
+### 3.1 任务编号与版本归组
+
+- 任务有**可读编号**：项目内自动分配 `REQ-001` / `REQ-002`…，可手工指定，项目内不重号。
+  人说「看下 req001」，agent 就靠它落到具体任务上。
+- 编号匹配**认得人嘴里的写法**：`req001` / `REQ-001` / `Req-001` 归一化后是同一个。
+  查不到时返回项目里现有的编号清单，agent 能自己纠正。
+- **版本用里程碑承载**：「12月版本」就是一个里程碑，看板上可筛、可看进度、可算完成率。
+
+### 4. 评审工作流（7 维度专家团）
+
+开发完成后，agent 调评审工具开一轮评审，**工作台给骨架，判断由 agent 做**：
+
+```
+workbench_start_review      开一轮，7 个维度各建一条待办
+workbench_get_review_pack   取评审包：维度清单 + 任务上下文 + 变更文件列表
+   ↓  agent（或它开的子 agent / 专家团）逐维度评审
+workbench_submit_review     逐维度回写结论（通过 / 不通过 + 发现 + 证据）
+   ↓  7 个维度全过
+workbench_update_status(Done)  才放行结项
+```
+
+七个维度（定义在代码里，不存库）：
+
+| 维度 | 问的是什么 |
+|---|---|
+| 代码是否合适 | 这份实现本身写得对不对、选型对不对？ |
+| 注释是否合适 | 注释有没有说清「为什么」，而不是复述代码？ |
+| 是否有安全问题 | 这段改动有没有引入安全问题？ |
+| 是否影响非本次需求的功能 | 这次改动有没有误伤本次需求之外的东西？ |
+| 是否有需求未实现 | 对照需求本身，有没有漏做的地方？ |
+| 是否有需求过度实现 | 有没有做了需求根本没要求的事？ |
+| 是否有过度操作的代码 | 有没有画蛇添足、没必要的动作？ |
+
+每个维度带一份**检查清单**，agent 照着清单查而不是自由发挥。多轮评审全部留 history。
+工作台**不判断代码好不好** —— 它只负责「不评完不许结项」和「每轮结论都留痕」。
+
+### 5. 文档解读工具
 
 完整解析 Markdown / DOCX / PDF / diff，**保留语义**而不是拍平成纯文本：
 
@@ -75,7 +113,7 @@ Draft → DocsReady → Planned → InDev → Testing → Review → Done
 
 删除线内容语义是「已废弃」，agent 读时不会当需求；修订清单给出「谁在何时改了什么」。
 
-### 5. 审批与审计
+### 6. 审批与审计
 
 - **读**：默认放心读，直接执行，只记审计日志
 - **写 / 改 / DDL / git 写 / shell**：必须人工审批通过后才真正执行
@@ -139,6 +177,7 @@ wb project list                       # 列出项目
 wb project add "AIChat" --desc "桌面端重构"
 wb task create <项目ID> "写登录接口"
 wb task claim <任务ID> --agent claude
+wb task show REQ-001 --project <项目ID>       # 按编号看任务
 wb status set <任务ID> Planned --note "计划已出"
 wb doc upload <任务ID> ./PRD.md --kind prd
 wb approval list
@@ -147,6 +186,10 @@ wb approval approve <审批ID>
 wb milestone list <项目ID>              # 里程碑
 wb milestone create <项目ID> "第一期"
 wb metrics [<项目ID>]                   # 度量：流速 / 周期 / 通过率 / 阻塞
+
+wb review start <任务ID>                        # 开一轮评审（7 个维度）
+wb review list <任务ID>                         # 看所有轮次与逐维度结论
+wb review submit <任务ID> security --fail --findings "有注入风险" --evidence "LoginService.cs:42"
 
 wb project config <项目ID> --repo /path --agent "claude -p \"{title}\"" --allow "dotnet test,npm run build"
 wb task launch <任务ID>                 # 拉起外部 agent
@@ -163,6 +206,31 @@ wb tool reset                            # 全部恢复默认
 
 ---
 
+## 典型流程：从一句话到结项
+
+人只说一句自然语言：
+
+> 「你看下工作台中的当前项目 12月版本的 req001，做一下开发」
+
+agent 连上 MCP 之后自己走完：
+
+| 步 | agent 调什么 | 拿到什么 |
+|---|---|---|
+| 1 | `workbench_get_task_by_key(projectId, "req001")` | 落到具体任务（编号匹配不认连字符写法） |
+| 2 | `workbench_claim_task` | 领到租约，多 agent 不抢同一个任务 |
+| 3 | `workbench_get_context` | 任务、文档、计划、产物、事件、允许的状态迁移、git 分支 —— 一次取全 |
+| 4 | `workbench_set_plan` | 回写需求理解与开发计划（工作台只存不生成） |
+| 5 | 干活 → `workbench_report_test_result` / `workbench_add_artifact` | 测试结果与产物入库 |
+| 6 | `workbench_update_status(Testing → Review)` | 进评审态 |
+| 7 | `workbench_start_review` | 开一轮，7 个维度各一条待办 |
+| 8 | `workbench_get_review_pack` | 每个维度的检查清单 + 任务上下文 + 变更文件列表 |
+| 9 | 逐维度评审（可开子 agent 并行）→ `workbench_submit_review` × 7 | 每条结论单独回写 |
+| 10 | `workbench_update_status(Done)` | **七个维度全过才放行**；否则返回「还差哪几个维度」 |
+
+第 9 步是 agent 的事：工作台只给骨架、清单、门禁、历史，不替它判断代码好不好。
+
+---
+
 ## MCP 工具
 
 **工作台组**
@@ -174,13 +242,18 @@ wb tool reset                            # 全部恢复默认
 | `workbench_create_task` | 建任务 |
 | `workbench_list_tasks` | 按项目 / 状态 / 关键字列任务 |
 | `workbench_get_task` | 任务详情 |
+| **`workbench_get_task_by_key`** | **按编号找任务**（`req001` / `REQ-001` 都认） |
 | `workbench_claim_task` | 领取任务（带租约，防止多 agent 抢同一任务） |
 | **`workbench_get_context`** | **一次取回干活所需的全部上下文**，避免反复零散调用 |
 | `workbench_set_plan` | 回写需求理解与开发计划（版本化） |
-| `workbench_update_status` | 推进状态（非法迁移会带出允许列表） |
+| `workbench_update_status` | 推进状态（非法迁移会带出允许列表；评审没过不许结项） |
 | `workbench_add_artifact` | 上传产物（代码变更、测试报告、commit …） |
 | `workbench_report_test_result` | 回写单元测试结果 |
 | `workbench_post_event` | 写一条事件流水 |
+| **`workbench_start_review`** | **开一轮评审**（7 个维度各建一条待办） |
+| **`workbench_get_review_pack`** | **取评审包**：维度清单 + 任务上下文 + 变更文件 |
+| **`workbench_submit_review`** | **逐维度回写结论**（通过 / 不通过 + 发现 + 证据） |
+| **`workbench_list_reviews`** / **`workbench_get_review`** | 评审历史 / 当前轮汇总 |
 | `workbench_list_approvals` / `workbench_get_approval` | 查审批 |
 | `workbench_await_approval` | 阻塞等待人工审批 |
 | `workbench_list_milestones` / `workbench_assign_milestone` | 里程碑归组 |
@@ -217,6 +290,9 @@ wb tool reset                            # 全部恢复默认
 | `shell_run` | **白名单 + 强制审批** | 命令拆成 exec 参数直接跑，**不经过 shell**，不支持管道与重定向 |
 
 > 写类工具统一是「先建审批 → 等待人工决定 → 批准后带 `approvalId` 再次调用即执行」。
+>
+> **工具不抛异常**：MCP SDK 会把异常吞成一句 `An error occurred invoking 'xxx'.`，
+> agent 就看不到错在哪。所有失败都返回带 `error` 的结构化结果（查不到编号还会把现有编号带回去）。
 
 ### 工具开关（`/mcp-tools`）
 
