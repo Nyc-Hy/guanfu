@@ -57,6 +57,53 @@ public sealed class DocumentService(
 {
     private static readonly JsonSerializerOptions JsonOptions = WorkbenchJson.Options;
 
+    /// <summary>
+    /// 允许上传的扩展名。
+    ///
+    /// 以前什么都能传 —— 上传是外部输入口，agent 传什么都照收，
+    /// 白名单一收紧，存一堆没人能解析的东西就进不来了。
+    ///
+    /// 覆盖两类：能解析的文档（md/docx/pdf/txt/diff/patch/json/html/csv）
+    /// 与需要留档但没法解析的二进制（图片、压缩包）。
+    /// </summary>
+    private static readonly HashSet<string> AllowedExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        // 文档
+        ".md", ".markdown", ".mdown", ".mkd",
+        ".docx",
+        ".pdf",
+        ".txt", ".log", ".text",
+        ".diff", ".patch",
+        ".json",
+        ".html", ".htm",
+        ".csv",
+        // 图片（截图类产物）
+        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp",
+        // 其它留档
+        ".zip"
+    };
+
+    /// <summary>扩展名是否在白名单里。没扩展名的文件一律拒 —— 判不出来的东西不该进来。</summary>
+    internal static bool IsExtensionAllowed(string fileName)
+    {
+        var extension = Path.GetExtension(fileName);
+        return !string.IsNullOrEmpty(extension) && AllowedExtensions.Contains(extension);
+    }
+
+    private static void EnsureExtensionAllowed(string fileName)
+    {
+        if (IsExtensionAllowed(fileName))
+        {
+            return;
+        }
+
+        var extension = Path.GetExtension(fileName);
+        var shown = string.IsNullOrEmpty(extension) ? "(无扩展名)" : extension;
+
+        throw new WorkbenchException(
+            $"不支持的文件类型: {shown}。允许的类型: {string.Join("、", AllowedExtensions.OrderBy(e => e))}");
+    }
+
     public async Task<DocumentDto> UploadAsync(
         Guid taskId,
         string fileName,
@@ -75,6 +122,8 @@ public sealed class DocumentService(
         {
             throw new WorkbenchException("文件名不能为空。");
         }
+
+        EnsureExtensionAllowed(safeName);
 
         var stored = await store.SaveAsync(taskId, safeName, content, cancellationToken);
         var format = DetectFormat(safeName);
@@ -124,11 +173,14 @@ public sealed class DocumentService(
         var document = await db.Documents.FirstOrDefaultAsync(d => d.Id == documentId, cancellationToken)
                        ?? throw new NotFoundException("文档", documentId);
 
+        var parser = registry.Resolve(document.FileName);
+
         if (!force)
         {
+            // 缓存按 (文档, 解析器版本) 命中：解析语义一改，版本号一涨，旧缓存自然失效
             var cached = await db.DocumentParses
                 .AsNoTracking()
-                .Where(p => p.DocumentId == documentId)
+                .Where(p => p.DocumentId == documentId && p.ParserVersion == parser.ParserVersion)
                 .OrderByDescending(p => p.ParsedAt)
                 .FirstOrDefaultAsync(cancellationToken);
 
@@ -142,7 +194,6 @@ public sealed class DocumentService(
             }
         }
 
-        var parser = registry.Resolve(document.FileName);
         var absolutePath = store.ResolveAbsolutePath(document.StoredPath);
 
         ParsedDocDto parsed;
@@ -168,13 +219,14 @@ public sealed class DocumentService(
         {
             DocumentId = documentId,
             Format = document.Format,
-            ParserVersion = 1,
+            ParserVersion = parser.ParserVersion,
             Json = JsonSerializer.Serialize(parsed, JsonOptions),
             ParsedAt = clock.UtcNow
         });
 
-        document.Parsed = error is null;
-        document.ParseError = error;
+        // 解析器自己兜住的失败（损坏的 docx / pdf）通过 parsed.Error 报上来
+        document.Parsed = error is null && parsed.Error is null;
+        document.ParseError = error ?? parsed.Error;
         await db.SaveChangesAsync(cancellationToken);
 
         return parsed;
