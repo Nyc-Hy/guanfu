@@ -153,6 +153,20 @@ workbench_update_status(Done)  才放行结项
 - 默认 30 分钟未处理自动过期，防僵尸审批堆积
 - 项目可配 webhook（钉钉 / 飞书 / 通用），有人请求审批时推一条消息——人不在电脑前时审批不会静静躺到过期
 
+**审批绑在具体操作上。** 一条批准不是「万能令牌」：它同时绑定工具名、参数指纹与项目。
+批了「提交 A」拿去提交「提交 B」、批了 `shell_run` 拿去调 `git_commit`，都会被拒。
+同一条审批也只能执行一次（`Approved → Executing → Executed`，条件更新原子消费）。
+
+**REST 敏感端点要人工凭证。** 裁决审批、改项目配置、存数据库密码、启动 agent、
+工作区搬迁 —— 这些没凭证直接 401。token 在启动横幅里打印，也存在
+`WORKBENCH_HOME/.human-token`（0600）。MCP 端点不带这个门槛：
+agent 走的就是它，它不能有裁决权。
+
+**`db_query` 是真的只读。** 三层防线：连接层只读（`ApplicationIntent=ReadOnly` +
+显式事务回滚）、**AST 分类**（用 ScriptDom 把 T-SQL 解析成树，按语句类型判读写）、
+写走审批。分类只有三档：确认只读才放行；确认是写就拦；**认不出来（EXEC、解析失败、
+`OPENROWSET`）也拦** —— 一律转人工审批，不猜。
+
 ---
 
 ## 快速开始
@@ -289,6 +303,13 @@ agent 连上 MCP 之后自己走完：
 | `workbench_list_milestones` / `workbench_assign_milestone` | 里程碑归组 |
 | `workbench_get_metrics` | 度量（流速 / 周期 / 通过率 / 阻塞） |
 | `workbench_get_project_config` | 项目配置（仓库路径 / 白名单 / agent 命令 / 通知地址） |
+| **`workbench_list_events`** | **任务的事件流水**（账本，独立端点，不只从上下文里捞） |
+| **`workbench_list_audit`** | **工具调用审计**（谁在什么时候调了哪个工具、结果如何） |
+| **`workbench_archive_task`** | **归档任务**（不是删除 —— 流水、产物、评审全留着） |
+| **`workbench_assign_task`** | **分派**：负责人 / 优先级 / 截止日 / 权重 |
+| **`workbench_list_dependencies`** | 任务的前置依赖与它阻塞了谁 |
+| **`workbench_add_task_dependency`** / **`workbench_remove_task_dependency`** | 增删任务依赖（成环会被拒） |
+| **`workbench_export_events`** / **`workbench_export_review`** | 导出事件流水 / 评审报告（Markdown / CSV / JSON） |
 
 **文档组**
 

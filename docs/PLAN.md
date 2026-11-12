@@ -1,9 +1,12 @@
-# 开发工作台 — 实施计划（v0.6，P0~P6 全部落地）
+# 开发工作台 — 实施计划（v0.7，P0~P7 全部落地）
 
 > v0.1 征求意见 → v0.2 锁定六项决策 → v0.3 同步实现现状 → v0.4 P3/P4 收尾 →
 > **v0.5 评审工作流**（7 维度专家团 + 结项门禁 + 任务编号 + 版本归组）→
 > **v0.6 结构与分支**（项目→迭代版本→需求/缺陷/优化、编号按类型分前缀、
-> 分支守卫、页面内联看文档、schema 补丁）。
+> 分支守卫、页面内联看文档、schema 补丁）→
+> **v0.7 加固与补缺**（全仓审计后的修复：审批绑定操作、`db_query` 只读化、
+> model-driven schema 升级、路径边界、人工凭证、任务依赖/分派/里程碑层级、
+> 导出、备份、批量审批、表级规则）。
 > 计划文档随代码走，放在仓库 `docs/PLAN.md`。
 
 ---
@@ -40,10 +43,10 @@ Workbench.sln
 │  ├─ Workbench.Application     用例服务、DTO、事件、审批编排
 │  ├─ Workbench.Documents       文档解析引擎（MD/DOCX/PDF/diff → 统一模型）
 │  ├─ Workbench.Infrastructure  EF Core/SQLite、文档存储、Git 检视、SQL Server 执行器、密钥加密
-│  ├─ Workbench.Mcp             MCP 工具集（41 个工具）+ 注册
-│  ├─ Workbench.Web             Blazor UI + REST API + /mcp 端点（宿主进程）
+│  ├─ Workbench.Mcp             MCP 工具集（50 个工具）+ 注册
+│  ├─ Workbench.Web             Blazor UI + REST API + /mcp 端点（宿主进程）、人工凭证、定时备份
 │  └─ Workbench.Cli             wb 命令行 + stdio↔HTTP MCP 桥接
-└─ tests/Workbench.Tests        162 项测试
+└─ tests/Workbench.Tests        389 项测试
 ```
 
 **唯一数据通路**：Web 独占 SQLite（唯一写者）。MCP 与 CLI 都是 Web 的 HTTP 客户端，不直连数据库。
@@ -91,11 +94,14 @@ Draft → DocsReady → Planned → InDev → Testing → Review → Done
 ```
 Project
 └── 迭代版本（Milestone，如「12月版本」）
-    └── 任务项（TaskItem）—— 类型：需求 / 缺陷 / 优化
-        ├── 编号：REQ-001 / BUG-001 / OPT-001（各类型独立计数）
-        ├── 绑定分支（可选）：绑了就只有当前分支对得上才运行
-        ├── 计划 / 产物 / 文档 / 测试结果 / 评审结论
-        └── 状态机：Draft → DocsReady → Planned → InDev → Testing → Review → Done
+    └── 需求组（Milestone 子节点，可选）—— 版本 → 需求组 → 需求 三层
+        └── 任务项（TaskItem）—— 类型：需求 / 缺陷 / 优化
+            ├── 编号：REQ-001 / BUG-001 / OPT-001（各类型独立计数）
+            ├── 绑定分支（可选）：绑了就只有当前分支对得上才运行
+            ├── 分派：负责人 / 优先级 / 截止日 / 权重
+            ├── 依赖：前置任务（前置没做完就不许领、不许进 InDev）
+            ├── 计划 / 产物 / 文档 / 测试结果 / 评审结论
+            └── 状态机：Draft → DocsReady → Planned → InDev → Testing → Review → Done
 ```
 
 **任务项就是开发任务**——针对单条工作项进行，不跨项。一个任务项绑一个分支。
@@ -136,11 +142,19 @@ agent 拿到上下文就知道现在能不能开跑。
 ### schema 补丁（不是 EF Migrations）
 
 这个项目用 `EnsureCreated` 建表，不走 EF Migrations。但 SQLite 的 `EnsureCreated`
-**不会给已存在的表补列** —— 不补的话升级后老数据库一查就报 `no such column: Type`。
+**不会给已存在的表补列、补表、补索引** —— 不补的话升级后老数据库一查就报
+`no such column` / `no such table`。
 
-所以加了一个幂等的补列步骤（`SchemaUpgrader`）：查 `PRAGMA table_info(tasks)`，
-缺哪个列补哪个（`ALTER TABLE ... ADD COLUMN`），补过就跳过。只处理「加可空 /
-有默认值的列」这类 SQLite 支持且不丢数据的改动。
+`SchemaUpgrader` 现在**完全从 EF 模型推导**：`db.Database.GenerateCreateScript()`
+生成建表脚本 → 解析出表 / 列 / 索引 → 与实际库比对，缺什么补什么（补表 / 补列 / 建索引，
+三步）。加了字段、表、索引**不用改升级器**，模型变了下次启动自动跟上。
+
+> 以前维护的是一份**手写补列清单**，只覆盖了 `tasks` 表的两列 ——
+> `projects` 的四个列、`tasks` 的 `Key`/`MilestoneId` 加上五张新表全都没补上，
+> 老库一升级就炸。手写清单必然会漏，改成模型驱动后这个坑就没了。
+
+另外 `schema_versions` 表记着当前库的**模型指纹**（建表脚本的哈希），
+不用再猜「这个库到底升级到哪了」。
 
 ---
 
@@ -174,19 +188,22 @@ agent 拿到上下文就知道现在能不能开跑。
 
 ---
 
-## 4. MCP 工具（41 个，下划线命名）
+## 4. MCP 工具（50 个，下划线命名）
 
-**工作台组（25）**：`workbench_list_projects` / `get_project` / `get_project_config` / `create_task` /
+**工作台组（34）**：`workbench_list_projects` / `get_project` / `get_project_config` / `create_task` /
 `list_tasks` / `get_task` / **`get_task_by_key`**（按编号找任务）/ `claim_task` /
 **`get_context`**（一次取全上下文）/ `set_plan` / `update_status` / `add_artifact` /
 `report_test_result` / `post_event` / `list_approvals` / `get_approval` / `await_approval` /
 `list_milestones` / `assign_milestone` / `get_metrics` /
-**`start_review`** / **`get_review_pack`** / **`submit_review`** / **`list_reviews`** / **`get_review`**
+**`start_review`** / **`get_review_pack`** / **`submit_review`** / **`list_reviews`** / **`get_review`** /
+**`list_events`**（事件流水）/ **`list_audit`**（工具调用审计）/ **`archive_task`**（归档，不是删除）/
+**`assign_task`**（负责人/优先级/截止日/权重）/ **`list_dependencies`** / **`add_task_dependency`** /
+**`remove_task_dependency`** / **`export_events`** / **`export_review`**
 
 **文档组（7）**：`doc_parse` / `doc_get_outline` / `doc_get_text` / `doc_get_revisions` /
 `doc_list_struck` / `doc_search` / `doc_list_formats`
 
-**数据库组（4）**：`db_query`（读，直通）/ `db_execute`（写，必须审批）/ `db_list_connections` /
+**数据库组（4）**：`db_query`（读，**连接层只读**）/ `db_execute`（写，必须审批）/ `db_list_connections` /
 `db_schema`（表结构，直通）
 
 **通用组（5）**：`fs_list` / `fs_read`（项目仓库内，越界拒绝）/ `git_commit` / `git_push`（**走审批**）/
@@ -225,6 +242,67 @@ agent 拿到上下文就知道现在能不能开跑。
 - 所有工具调用与审批决定写 append-only 审计表
 - 默认 30 分钟未处理自动过期，防僵尸审批
 
+### 审批必须绑在具体操作上
+
+四个写工具（`db_execute` / `git_commit` / `git_push` / `shell_run`）共用**一套**闸门
+（`IApprovalGate`）。闸门比对的不只是「批过没有」，还有：
+
+| 比对项 | 挡住什么 |
+|---|---|
+| `ToolName` | 批了 `shell_run` 拿去调 `git_commit` |
+| `PayloadHash`（参数 SHA-256 指纹） | 批了「提交 A」拿去提交「提交 B」 |
+| `ProjectId` | 批了 A 项目的拿去操作 B 项目 |
+| `Status = Approved` + `ExpiresAt > now` | 重放已用过的审批 |
+
+状态流转 `Approved → Executing → Executed`，靠**条件更新原子消费**
+（`UPDATE ... WHERE Id=@id AND Status='Approved' AND ToolName=@t AND PayloadHash=@h`），
+靠影响行数判定放行 —— 这是「一条审批只执行一次」的唯一可靠落点。
+
+### 人工凭证（REST 敏感端点）
+
+REST API 原本零认证，agent 能自己批自己的审批。现在敏感端点要人工凭证：
+
+| 端点 | 为什么敏感 |
+|---|---|
+| `POST /api/approvals/{id}/decide` | 裁决审批 —— 门禁的最后一道 |
+| `POST /api/approvals/batch-decide` | 批量裁决（单条那条没保护，绕一圈就漏了） |
+| `PUT /api/projects/{id}/config` | 改 `agentCommand` / 命令白名单 |
+| `POST /api/projects/{id}/db-connections` | 存数据库密码 |
+| `POST /api/tasks/{id}/launch-agent` | 执行外部命令 |
+| `POST /api/workspace/export` / `import` | 整目录搬家 |
+
+token 落在 `WORKBENCH_HOME/.human-token`（0600，重启不变），启动横幅打印。
+请求带 `X-Workbench-Human-Token` 头或 `wb_human_token` Cookie 均可，
+比对走 SHA-256 + `FixedTimeEquals`（先哈希再比，免得泄长度）。
+MCP 端点**不带**这个门槛 —— agent 走的就是它，它不能有裁决权。
+
+### `db_query` 是真的只读
+
+以前 `db_query` 把 SQL 原样丢进 `ExecuteReaderAsync` —— ADO.NET 下
+`DELETE` / `UPDATE` / `DROP TABLE` 照样真执行，审批门禁被完全绕过。
+
+现在是三层防线：
+
+1. **连接层**：`ApplicationIntent=ReadOnly` + 显式事务 + 统一回滚
+   （SQL Server 不支持 `IsolationLevel.ReadOnly`，用显式事务等价）
+2. **AST 分类**（`SqlStatementClassifier`）：用 **ScriptDom**（`TSql160Parser`）
+   把 T-SQL 解析成 AST，按语句类型分三档：
+
+   | 档位 | 含义 | 处理 |
+   |---|---|---|
+   | `Read` | 确认是只读 | 直接放行 |
+   | `Write` | 确认是写（DML / DDL / `SELECT INTO`） | 拦，指路走 `db_execute` |
+   | `Unknown` | **认不出来**（EXEC / SET / 解析失败 / OPENROWSET） | 拦，**一律转人工审批** |
+
+   为什么不用「剥注释取首关键字」：`WITH c AS (...) SELECT` 与
+   `WITH c AS (...) UPDATE` 首关键字都是 WITH，`SELECT ... INTO` 首关键字是 SELECT
+   但会建表 —— 只有看 AST 的根节点才分得开。上一版就是靠首关键字，漏过。
+   「认不出来」归到需要审批那一边，不归到放行那一边。
+3. **审批层**：写走 `db_execute`，照旧要人工批
+
+另外 `db_table_rules` 表以前在库里却没人读它（语义等于不存在），
+现在它真的管事：连接上配了「这张表免审批写」的表，写操作直接执行（仍然记审计）。
+
 ---
 
 ## 7. 分期现状
@@ -239,6 +317,7 @@ agent 拿到上下文就知道现在能不能开跑。
 | **P4 开源就绪** | ✅ 完成 | LICENSE / README / AGENTS.md / CI；`wb workspace export/import`（整目录搬迁，含库+文档+密钥）、「启动 agent」按钮、里程碑（实体+服务+看板筛选）、度量看板（流速/周期/通过率/阻塞/停滞） |
 | **P5 评审工作流** | ✅ 完成 | 评审实体（轮次 + 逐维度结论）、7 维度定义与检查清单、`ReviewService`、**结项门禁**、5 个评审 MCP 工具、任务编号 Key、按编号找任务、任务详情页评审面板、`wb review` 子命令 |
 | **P6 结构与分支** | ✅ 完成 | 任务类型（需求/缺陷/优化）、编号按类型分前缀独立计数、**绑定分支 + 分支守卫**（claim / 进 InDev / 启动 agent 三处）、类型与分支的 MCP/REST/CLI 面、页面内联查看生成的文档、schema 补丁（老库补列） |
+| **P7 加固与补缺** | ✅ 完成 | 全仓审计（94 个 `.cs` + 15 个 `.razor`）后的修复与补缺：审批绑定操作 + 原子消费、`db_query` 三层只读、model-driven schema 升级、路径边界（分隔符 + 软链）、人工凭证门禁、限流与健康检查、Markdown URL scheme 白名单、任务依赖 / 分派 / 里程碑层级、事件与评审导出、SQLite 定时备份、批量审批、表级规则、任务归档、Git 进程健壮性、前端异常兜底与防重复提交 |
 
 ### P3~P6 新增界面
 
@@ -297,3 +376,18 @@ agent 拿到上下文就知道现在能不能开跑。
 | 「不知道当前在哪个分支」当成「在对的分支上」 | 任务绑了分支但项目没配仓库路径，守卫放行 → agent 在错的分支上改代码 | 读不到当前分支时**拒绝**，错误信息说明原因 |
 | 类型改成需求却改了编号前缀 | 编号已经被 PR 和 agent 引用，改了就找不到 | `SetTypeAsync` 只改类型，编号保持不变 |
 | CLI 自己抄了一份 JSON 选项 | 读的时候能读枚举、打印的时候写成 `0` | JSON 选项收敛到应用层的 `WorkbenchJson`，CLI 直接用 |
+| 审批只看「批过没有」 | 批了 `shell_run` 拿去调 `git_commit`、批了「提交 A」拿去提交「提交 B」，全都能执行 | 闸门加 `ToolName` + `PayloadHash` + `ProjectId` 比对，条件更新原子消费 |
+| `db_query` 拿 SQL 直接 `ExecuteReader` | `DROP TABLE Orders` 真落库，审批门禁形同虚设 | 连接层只读 + 显式事务回滚 + AST 分类（三层） |
+| 只读判定靠「剥注释取首关键字」 | `WITH c AS (...) UPDATE` 与 `WITH ... SELECT` 首关键字都是 WITH，分不开；`SELECT INTO` 首关键字是 SELECT 但会建表 | 换成 ScriptDom 解析成 AST，按根语句类型判定；认不出来的一律转人工审批 |
+| schema 补丁靠手写清单 | 清单只覆盖 `tasks` 两列，老库升级后 `no such column` / `no such table` | 改成从 EF 模型推导，缺什么补什么；加字段不用改升级器 |
+| 路径边界用 `StartsWith` | `/tmp/wb-root-secrets` 被当成 `/tmp/wb-root` 的子目录放行 | `PathBoundary`：带分隔符比较 + 解析软链后再判 |
+| 导出目录等于 WORKBENCH_HOME | `Path.GetFullPath("/home/")` 不等于 `/home`，判断被绕开 → **删掉正在用的 workbench.db** | 归一化 + 带分隔符比较 + 解软链；导出目标目录里有非导出文件也拒 |
+| REST API 零认证 | agent 自己批自己的审批；`ASPNETCORE_URLS=0.0.0.0` 时升级为远程命令执行 | 敏感端点要人工凭证（token 0600 + 固定时间比对） |
+| Markdown 链接只防裸 HTML | `[x](javascript:alert(1))` 原样输出 → 点一下就执行脚本 | `LinkUrlPolicy` scheme 白名单，`javascript:`/`data:` 等降级成纯文本 |
+| shell 白名单是命令串前缀 | `git` 一勾就放行 `git push --force`、`npm` 放行 `npm publish` | 白名单按**词**比较，条目可写子命令（`git status`） |
+| `git status --porcelain` 中文路径 | 输出 `\346\226\207...`，按路径读文件必然找不到 | 调用加 `core.quotePath=false` + 自写 C 转义解码兜底 |
+| `GitInspector` 先同步读完再等退出 | 10 秒超时根本走不到，git 挂住就永久占住线程；父子互等死锁 | 并发读两个流 + `WaitForExitAsync(token)`，超时杀整棵进程树 |
+| 超时不杀 git 子进程 | 子进程继续持有 `.git/index.lock`，之后所有 git 命令报错 | 超时/取消都 `Kill(entireProcessTree: true)` |
+| Blazor await 期间不重绘，`disabled` 来不及生效 | 连点两次启动两个 agent 进程 | `SubmitLatch` 闩锁 —— Blazor 事件是**排队串行**处理的，标志复位挡不住已排队的点击 |
+| 布局加 `@rendermode` | 框架直接拒绝：`Body` 是 RenderFragment，跨渲染模式不可序列化 | 在 `App.razor` 给 `<Routes @rendermode="InteractiveServer" />` 标模式 |
+| MCP 桥接把非 JSON 写进 stdout | 服务端回 400/500 的 HTML 时污染 JSON-RPC 流，客户端解析失败 | 识别非 JSON → 转成 JSON-RPC error，error 的 `id` 沿用原请求 |
