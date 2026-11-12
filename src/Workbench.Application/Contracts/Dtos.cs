@@ -31,7 +31,18 @@ public sealed record TaskSummaryDto(
     Guid? MilestoneId = null,
     string? Key = null,
     TaskType Type = TaskType.Requirement,
-    string? Branch = null);
+    string? Branch = null,
+    bool IsArchived = false,
+    /// <summary>负责人（人名或 agent id）。</summary>
+    string? Assignee = null,
+    /// <summary>优先级。</summary>
+    TaskPriority Priority = TaskPriority.Normal,
+    /// <summary>截止日。</summary>
+    DateTimeOffset? DueAt = null,
+    /// <summary>在项目进度里的权重。</summary>
+    double Weight = 1d,
+    /// <summary>还没完成的前置任务数。大于 0 表示这任务现在动不了。</summary>
+    int PendingDependencies = 0);
 
 /// <summary>项目配置。跟概览分开：概览是给人看的汇总，配置是给人和 agent 改的字段集合。</summary>
 public sealed record ProjectConfigDto(
@@ -53,7 +64,11 @@ public sealed record StatusEventDto(
     string Source,
     string? Actor,
     string? Note,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    /// <summary>机器可读的事件类型（如 status.changed）。</summary>
+    string? EventType = null,
+    /// <summary>结构化载荷（JSON 字符串）。</summary>
+    string? Payload = null);
 
 public sealed record DocumentDto(
     Guid Id,

@@ -58,7 +58,13 @@ public enum ApprovalStatus
     Approved = 1,
     Rejected = 2,
     Expired = 3,
-    Executed = 4
+    Executed = 4,
+
+    /// <summary>
+    /// 已被占住、正在执行。令牌一旦进这个状态就不能再被别的请求拿去用了 ——
+    /// 这是「一条审批只能执行一次」的落点。
+    /// </summary>
+    Executing = 5
 }
 
 /// <summary>文档格式。解析器按此分派。</summary>
@@ -89,4 +95,33 @@ public enum ListKind
     Bullet = 0,
     Ordered = 1,
     Task = 2
+}
+
+/// <summary>任务优先级。排序与展示用，不参与状态机。</summary>
+public enum TaskPriority
+{
+    Low = 0,
+    Normal = 1,
+    High = 2,
+    Critical = 3
+}
+
+/// <summary>里程碑的种类。版本 → 需求组 → 需求，三层结构靠这个表达。</summary>
+public enum MilestoneKind
+{
+    /// <summary>需求组（子里程碑）。</summary>
+    Group = 0,
+
+    /// <summary>迭代版本（顶层里程碑）。</summary>
+    Release = 1
+}
+
+/// <summary>任务依赖的方向。</summary>
+public enum DependencyType
+{
+    /// <summary>本任务依赖另一个任务（被阻塞方 → 前置方）。</summary>
+    BlockedBy = 0,
+
+    /// <summary>本任务阻塞另一个任务（阻塞方 → 被阻塞方）。</summary>
+    Blocks = 1
 }

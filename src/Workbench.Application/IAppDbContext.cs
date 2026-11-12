@@ -26,6 +26,14 @@ public interface IAppDbContext
     DbSet<McpToolSetting> McpToolSettings { get; }
     DbSet<ReviewRound> ReviewRounds { get; }
     DbSet<ReviewItem> ReviewItems { get; }
+    DbSet<TaskDependency> TaskDependencies { get; }
+    DbSet<SchemaVersion> SchemaVersions { get; }
 
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 清空变更跟踪。批量操作失败要重试时用 ——
+    /// 不清掉的话，上一次失败留下的实体还在跟踪里，重试会一起提交。
+    /// </summary>
+    void ClearTracking();
 }

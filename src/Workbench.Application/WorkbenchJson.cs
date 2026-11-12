@@ -29,4 +29,10 @@ public static class WorkbenchJson
     }
 
     public static readonly JsonSerializerOptions Options = Create();
+
+    /// <summary>用工作台统一设置序列化。别处不要再 new JsonSerializerOptions。</summary>
+    public static string Serialize<T>(T value) => JsonSerializer.Serialize(value, Options);
+
+    /// <summary>用工作台统一设置反序列化。</summary>
+    public static T? Deserialize<T>(string json) => JsonSerializer.Deserialize<T>(json, Options);
 }

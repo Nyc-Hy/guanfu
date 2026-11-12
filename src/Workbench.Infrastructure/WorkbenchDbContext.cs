@@ -23,6 +23,11 @@ public sealed class WorkbenchDbContext(DbContextOptions<WorkbenchDbContext> opti
     public DbSet<McpToolSetting> McpToolSettings => Set<McpToolSetting>();
     public DbSet<ReviewRound> ReviewRounds => Set<ReviewRound>();
     public DbSet<ReviewItem> ReviewItems => Set<ReviewItem>();
+    public DbSet<TaskDependency> TaskDependencies => Set<TaskDependency>();
+    public DbSet<SchemaVersion> SchemaVersions => Set<SchemaVersion>();
+
+    /// <inheritdoc />
+    public void ClearTracking() => ChangeTracker.Clear();
 
     /// <summary>
     /// 全局约定：DateTimeOffset 一律以 UTC DateTime 落库。
@@ -74,13 +79,23 @@ public sealed class WorkbenchDbContext(DbContextOptions<WorkbenchDbContext> opti
             e.Property(x => x.Description).HasMaxLength(8000);
             e.Property(x => x.Status).HasConversion<string>().HasMaxLength(32);
             e.Property(x => x.ClaimedByAgentId).HasMaxLength(200);
+            e.Property(x => x.Assignee).HasMaxLength(200);
+            e.Property(x => x.Priority).HasConversion<string>().HasMaxLength(32);
 
             e.Property(x => x.Key).HasMaxLength(50);
+            e.Property(x => x.IsArchived).HasDefaultValue(false);
 
             e.HasIndex(t => t.ProjectId);
             e.HasIndex(t => t.Status);
             e.HasIndex(t => t.ParentTaskId);
-            e.HasIndex(t => new { t.ProjectId, t.Key });
+            e.HasIndex(t => t.MilestoneId);
+            e.HasIndex(t => t.Branch);
+            e.HasIndex(t => t.Assignee);
+
+            // 编号在项目内唯一。这条索引是编号并发分配的兜底 ——
+            // 内存里的 check-then-act 挡不住两个并发请求算出同一个号。
+            // Key 可空，SQLite 的唯一索引不约束多个 NULL，老数据不受影响。
+            e.HasIndex(t => new { t.ProjectId, t.Key }).IsUnique();
         });
 
         modelBuilder.Entity<StatusEvent>(e =>
@@ -90,6 +105,8 @@ public sealed class WorkbenchDbContext(DbContextOptions<WorkbenchDbContext> opti
             e.Property(x => x.Source).HasConversion<string>().HasMaxLength(32);
             e.Property(x => x.Actor).HasMaxLength(200);
             e.Property(x => x.Note).HasMaxLength(4000);
+            e.Property(x => x.EventType).HasMaxLength(100);
+            e.Property(x => x.Payload).HasMaxLength(16000);
 
             e.HasOne(x => x.Task)
                 .WithMany(t => t.StatusEvents)
@@ -173,13 +190,55 @@ public sealed class WorkbenchDbContext(DbContextOptions<WorkbenchDbContext> opti
             e.HasKey(x => x.Id);
             e.Property(x => x.Name).HasMaxLength(200).IsRequired();
             e.Property(x => x.Description).HasMaxLength(2000);
+            e.Property(x => x.Kind).HasConversion<string>().HasMaxLength(32);
 
             e.HasOne(x => x.Project)
                 .WithMany(p => p.Milestones)
                 .HasForeignKey(x => x.ProjectId)
                 .OnDelete(DeleteBehavior.Cascade);
 
+            // 父里程碑。用 Restrict 而不是 Cascade：删掉一个版本不该把
+            // 底下的需求组连带删掉 —— 那些组里还有任务。
+            e.HasOne(x => x.Parent)
+                .WithMany(m => m.Children)
+                .HasForeignKey(x => x.ParentId)
+                .OnDelete(DeleteBehavior.Restrict);
+
             e.HasIndex(x => new { x.ProjectId, x.Order });
+            e.HasIndex(x => x.ParentId);
+        });
+
+        modelBuilder.Entity<TaskDependency>(e =>
+        {
+            e.ToTable("task_dependencies");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Type).HasConversion<string>().HasMaxLength(32);
+            e.Property(x => x.Note).HasMaxLength(1000);
+
+            e.HasOne(x => x.Task)
+                .WithMany(t => t.Dependencies)
+                .HasForeignKey(x => x.TaskId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            // 前置任务被删了，依赖关系必须跟着消失 —— 留着就是指向空气的依赖
+            e.HasOne(x => x.DependsOn)
+                .WithMany()
+                .HasForeignKey(x => x.DependsOnTaskId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            // 同一对任务只能有一条依赖
+            e.HasIndex(x => new { x.TaskId, x.DependsOnTaskId }).IsUnique();
+            e.HasIndex(x => x.DependsOnTaskId);
+        });
+
+        modelBuilder.Entity<SchemaVersion>(e =>
+        {
+            e.ToTable("schema_versions");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Fingerprint).HasMaxLength(64).IsRequired();
+            e.Property(x => x.Note).HasMaxLength(4000);
+
+            e.HasIndex(x => x.Fingerprint);
         });
 
         modelBuilder.Entity<TestRun>(e =>
@@ -204,6 +263,7 @@ public sealed class WorkbenchDbContext(DbContextOptions<WorkbenchDbContext> opti
             e.Property(x => x.ToolName).HasMaxLength(200).IsRequired();
             e.Property(x => x.Kind).HasMaxLength(100).IsRequired();
             e.Property(x => x.Payload).HasMaxLength(16000);
+            e.Property(x => x.PayloadHash).HasMaxLength(64);
             e.Property(x => x.Summary).HasMaxLength(1000);
             e.Property(x => x.Status).HasConversion<string>().HasMaxLength(32);
             e.Property(x => x.RequestedBy).HasMaxLength(200);
@@ -224,6 +284,11 @@ public sealed class WorkbenchDbContext(DbContextOptions<WorkbenchDbContext> opti
             e.Property(x => x.Arguments).HasMaxLength(16000);
             e.Property(x => x.Outcome).HasMaxLength(50);
             e.Property(x => x.ResultSummary).HasMaxLength(4000);
+
+            // 审计表原来一个索引都没有 —— 查一次调用记录就是全表扫
+            e.HasIndex(x => x.CreatedAt);
+            e.HasIndex(x => x.ToolName);
+            e.HasIndex(x => x.TaskId);
         });
 
         modelBuilder.Entity<DbConnectionConfig>(e =>
@@ -255,7 +320,9 @@ public sealed class WorkbenchDbContext(DbContextOptions<WorkbenchDbContext> opti
                 .HasForeignKey(x => x.TaskId)
                 .OnDelete(DeleteBehavior.Cascade);
 
-            e.HasIndex(x => new { x.TaskId, x.Round });
+            // 同一任务的轮次号不能重复 —— 并发开轮时两个请求会算出同一个号，
+            // 门禁取轮顺序就会不稳，可能判错轮
+            e.HasIndex(x => new { x.TaskId, x.Round }).IsUnique();
         });
 
         modelBuilder.Entity<ReviewItem>(e =>
@@ -276,6 +343,7 @@ public sealed class WorkbenchDbContext(DbContextOptions<WorkbenchDbContext> opti
                 .OnDelete(DeleteBehavior.Cascade);
 
             e.HasIndex(x => new { x.ReviewRoundId, x.Order });
+            e.HasIndex(x => x.TaskId);
         });
 
         modelBuilder.Entity<McpToolSetting>(e =>

@@ -46,12 +46,22 @@ public class Project
     public List<DbConnectionConfig> DbConnections { get; set; } = [];
 }
 
-/// <summary>里程碑：项目内的一批任务归组。</summary>
+/// <summary>里程碑：项目内的一批任务归组。可嵌套，形成「版本 → 需求组 → 需求」三层结构。</summary>
 public class Milestone
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid ProjectId { get; set; }
     public Project? Project { get; set; }
+
+    /// <summary>
+    /// 父里程碑。为空表示顶层（通常是「迭代版本」）。
+    /// 结构是 项目 → 迭代版本 → 需求组 → 需求，不加这一层就表达不出来。
+    /// </summary>
+    public Guid? ParentId { get; set; }
+    public Milestone? Parent { get; set; }
+
+    /// <summary>种类：迭代版本（顶层）还是需求组（子层）。</summary>
+    public MilestoneKind Kind { get; set; } = MilestoneKind.Release;
 
     public string Name { get; set; } = string.Empty;
     public string? Description { get; set; }
@@ -61,6 +71,7 @@ public class Milestone
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 
     public List<TaskItem> Tasks { get; set; } = [];
+    public List<Milestone> Children { get; set; } = [];
 }
 
 /// <summary>需求任务。</summary>
@@ -88,6 +99,13 @@ public class TaskItem
     public TaskType Type { get; set; } = TaskType.Requirement;
 
     /// <summary>
+    /// 是否已归档。归档不是删除 —— 流水、产物、评审都还在，
+    /// 只是默认不再出现在列表里。误建的任务需要个清理路径，
+    /// 否则只能一直挂在看板上。
+    /// </summary>
+    public bool IsArchived { get; set; }
+
+    /// <summary>
     /// 绑定的开发分支。为空表示不限制分支。
     /// 绑了分支的任务只有在仓库当前分支与之一致时才会运行（见 <c>IBranchGuard</c>）。
     /// </summary>
@@ -95,6 +113,15 @@ public class TaskItem
 
     public string Title { get; set; } = string.Empty;
     public string? Description { get; set; }
+
+    /// <summary>负责人（人名或 agent id）。为空表示还没分派。</summary>
+    public string? Assignee { get; set; }
+
+    /// <summary>优先级。不参与状态机，只影响排序与展示。</summary>
+    public TaskPriority Priority { get; set; } = TaskPriority.Normal;
+
+    /// <summary>截止日。为空表示没有承诺时间。</summary>
+    public DateTimeOffset? DueAt { get; set; }
 
     public TaskStatus Status { get; set; } = TaskStatus.Draft;
 
@@ -117,6 +144,31 @@ public class TaskItem
     public List<Plan> Plans { get; set; } = [];
     public List<TestRun> TestRuns { get; set; } = [];
     public List<ReviewRound> ReviewRounds { get; set; } = [];
+    public List<TaskDependency> Dependencies { get; set; } = [];
+}
+
+/// <summary>
+/// 任务依赖。表达「A 做完 B 才能开始」。
+///
+/// 方向统一按 <see cref="DependencyType.BlockedBy"/> 存：TaskId 是被阻塞的，
+/// DependsOnTaskId 是前置的。Blocks 类型的记录在写入时就翻成同一条 BlockedBy，
+/// 省得查询时两边都要判一遍。
+/// </summary>
+public class TaskDependency
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+
+    /// <summary>被阻塞的任务。</summary>
+    public Guid TaskId { get; set; }
+    public TaskItem? Task { get; set; }
+
+    /// <summary>前置任务（必须先完成的那个）。</summary>
+    public Guid DependsOnTaskId { get; set; }
+    public TaskItem? DependsOn { get; set; }
+
+    public DependencyType Type { get; set; } = DependencyType.BlockedBy;
+    public string? Note { get; set; }
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
 
 /// <summary>状态流水。append-only，谁在什么时候把状态改成了什么。</summary>
@@ -131,6 +183,19 @@ public class StatusEvent
     public TaskEventSource Source { get; set; } = TaskEventSource.System;
     public string? Actor { get; set; }
     public string? Note { get; set; }
+
+    /// <summary>
+    /// 机器可读的事件类型（如 status.changed / plan.saved / artifact.added）。
+    /// <see cref="Note"/> 是给人看的自由文本，机器要判定得靠这个固定标识。
+    /// </summary>
+    public string? EventType { get; set; }
+
+    /// <summary>
+    /// 结构化载荷（JSON）。事件账本要能被机器消费、能回放，
+    /// 光有自由文本不够 —— 关键字段得能按字段取。
+    /// </summary>
+    public string? Payload { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
 
@@ -236,6 +301,13 @@ public class Approval
 
     /// <summary>请求参数 JSON（含 SQL 原文）。</summary>
     public string Payload { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 请求参数的指纹（SHA-256）。审批必须绑在**具体操作**上 ——
+    /// 只记「批过一条 shell_run」的话，这条批准换个命令、换个工具还能再用一次，
+    /// 等于审批形同虚设。续跑时要比对指纹，不一致就拒。
+    /// </summary>
+    public string? PayloadHash { get; set; }
     /// <summary>给审批人看的一句话摘要。</summary>
     public string Summary { get; set; } = string.Empty;
 
@@ -377,4 +449,27 @@ public class DbTableRule
 
     /// <summary>true = 写也需要人工审批（默认）。false = 免审批写。</summary>
     public bool WriteRequiresApproval { get; set; } = true;
+}
+
+/// <summary>
+/// 数据库结构版本。每次升级写一行。
+///
+/// 这个项目用 <c>EnsureCreated</c> 建表，不走 EF Migrations，所以没有
+/// <c>__EFMigrationsHistory</c> 那种版本表。没有版本表就没法回答
+/// 「这个库现在是哪个版本的 schema」—— 排查老库问题时全靠猜。
+/// </summary>
+public class SchemaVersion
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+
+    /// <summary>
+    /// 模型指纹（EF 建表脚本的哈希前 16 位）。
+    /// 模型不变指纹就不变，所以它精确对应「当前库的结构」。
+    /// </summary>
+    public string Fingerprint { get; set; } = string.Empty;
+
+    public DateTimeOffset AppliedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>这次升级做了什么（建了哪些表、补了哪些列）。</summary>
+    public string? Note { get; set; }
 }
