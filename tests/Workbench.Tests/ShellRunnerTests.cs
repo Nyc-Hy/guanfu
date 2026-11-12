@@ -68,4 +68,42 @@ public class ShellRunnerTests
         Assert.Empty(ShellRunner.ParseAllowed(null));
         Assert.Equal(new[] { "dotnet test" }, ShellRunner.ParseAllowed("[\"dotnet test\"]"));
     }
+
+    [Fact]
+    public void 白名单可以按子命令收窄()
+    {
+        // 用户只勾了 npm run，npm publish 就不该被放行
+        Assert.True(_runner.IsAllowed(new[] { "npm run" }, "npm run build"));
+        Assert.False(_runner.IsAllowed(new[] { "npm run" }, "npm publish"));
+    }
+
+    [Fact]
+    public void 白名单只写可执行名时语义不变()
+    {
+        // 显式勾了整个 git —— 全部子命令都放行，这是用户自己选的
+        Assert.True(_runner.IsAllowed(new[] { "git" }, "git status"));
+        Assert.True(_runner.IsAllowed(new[] { "git" }, "git push --force"));
+    }
+
+    [Fact]
+    public void 子命令前缀不会误伤更长的命令名()
+    {
+        // "git commit" 不该放行 "git commit-tree"
+        Assert.False(_runner.IsAllowed(new[] { "git commit" }, "git commit-tree -m x"));
+        Assert.True(_runner.IsAllowed(new[] { "git commit" }, "git commit -m x"));
+    }
+
+    [Fact]
+    public void 白名单条目里带参数时按词前缀匹配()
+    {
+        Assert.True(_runner.IsAllowed(new[] { "git log --oneline" }, "git log --oneline -5"));
+        Assert.False(_runner.IsAllowed(new[] { "git log --oneline" }, "git log --graph"));
+    }
+
+    [Fact]
+    public void 带引号的命令能正确按词匹配()
+    {
+        Assert.True(_runner.IsAllowed(new[] { "agent" }, "agent -p \"帮我做登录接口\""));
+        Assert.False(_runner.IsAllowed(new[] { "agent -p" }, "agent --prompt \"帮我做登录接口\""));
+    }
 }
