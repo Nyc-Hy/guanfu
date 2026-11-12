@@ -35,6 +35,9 @@ public sealed class WorkbenchTestHost : IDisposable
         _provider = services.BuildServiceProvider();
 
         Clock = new TestClock(DateTimeOffset.UtcNow);
+
+        Reviews = new ReviewService(_db, Clock, new NullGitInspector());
+        Tasks = new TaskService(_db, Clock, new NullGitInspector(), Reviews);
     }
 
     public TestClock Clock { get; }
@@ -43,8 +46,13 @@ public sealed class WorkbenchTestHost : IDisposable
     public McpToolState ToolState => new(ScopeFactory);
 
     public ProjectService Projects => new(_db, Clock);
-    public TaskService Tasks => new(_db, Clock, new NullGitInspector());
+
+    /// <summary>任务服务带评审门禁 —— 评审不过不许结项这条规则要真的生效。</summary>
+    public TaskService Tasks { get; }
+
     public ApprovalService Approvals => new(_db, Clock);
+
+    public ReviewService Reviews { get; }
     public MilestoneService Milestones => new(_db, Clock);
     public MetricsService Metrics => new(_db, Clock);
     public FileSystemService Files => new(_db);
