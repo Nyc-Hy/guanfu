@@ -33,6 +33,9 @@ public sealed class WorkbenchTestHost : IDisposable
     public ProjectService Projects => new(_db, Clock);
     public TaskService Tasks => new(_db, Clock, new NullGitInspector());
     public ApprovalService Approvals => new(_db, Clock);
+    public MilestoneService Milestones => new(_db, Clock);
+    public MetricsService Metrics => new(_db, Clock);
+    public FileSystemService Files => new(_db);
 
     public void Dispose()
     {
