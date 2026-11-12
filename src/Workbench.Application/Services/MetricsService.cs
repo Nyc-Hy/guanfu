@@ -42,21 +42,26 @@ public sealed class MetricsService(IAppDbContext db, IClock clock) : IMetricsSer
                       ?? throw new NotFoundException("项目", projectId);
 
         var tasks = await db.Tasks.AsNoTracking().Where(t => t.ProjectId == projectId).ToListAsync(cancellationToken);
-        var taskIds = tasks.Select(t => t.Id).ToList();
 
+        // 用子查询而不是 IN 列表 —— 任务多了 IN 列表会撞 SQLite 的参数上限
         var doneEvents = await db.StatusEvents
             .AsNoTracking()
-            .Where(e => taskIds.Contains(e.TaskId) && e.ToStatus == TaskStatus.Done)
+            .Where(e => e.ToStatus == TaskStatus.Done &&
+                        db.Tasks.Any(t => t.Id == e.TaskId && t.ProjectId == projectId))
             .ToListAsync(cancellationToken);
 
         var testRuns = await db.TestRuns
             .AsNoTracking()
-            .Where(r => taskIds.Contains(r.TaskId))
+            .Where(r => db.Tasks.Any(t => t.Id == r.TaskId && t.ProjectId == projectId))
             .ToListAsync(cancellationToken);
 
+        // 过期的待审不算「待审」—— 不然这个数只会单调上涨
+        var now = clock.UtcNow;
         var openApprovals = await db.Approvals
             .AsNoTracking()
-            .CountAsync(a => a.ProjectId == projectId && a.Status == ApprovalStatus.Pending, cancellationToken);
+            .CountAsync(a => a.ProjectId == projectId &&
+                             a.Status == ApprovalStatus.Pending &&
+                             a.ExpiresAt > now, cancellationToken);
 
         return Build(project, tasks, doneEvents, testRuns, openApprovals);
     }
@@ -64,11 +69,73 @@ public sealed class MetricsService(IAppDbContext db, IClock clock) : IMetricsSer
     public async Task<IReadOnlyList<ProjectMetricsDto>> GetAllAsync(CancellationToken cancellationToken = default)
     {
         var projects = await db.Projects.AsNoTracking().OrderBy(p => p.CreatedAt).ToListAsync(cancellationToken);
+        if (projects.Count == 0)
+        {
+            return [];
+        }
+
+        // 一次把数据全捞出来再按项目分组 —— 逐个项目跑一遍是 1+5P 次查询
+        var projectIds = projects.Select(p => p.Id).ToList();
+
+        var allTasks = await db.Tasks.AsNoTracking()
+            .Where(t => projectIds.Contains(t.ProjectId))
+            .ToListAsync(cancellationToken);
+
+        var allDoneEvents = await db.StatusEvents
+            .AsNoTracking()
+            .Where(e => e.ToStatus == TaskStatus.Done &&
+                        db.Tasks.Any(t => t.Id == e.TaskId && projectIds.Contains(t.ProjectId)))
+            .ToListAsync(cancellationToken);
+
+        var allTestRuns = await db.TestRuns
+            .AsNoTracking()
+            .Where(r => db.Tasks.Any(t => t.Id == r.TaskId && projectIds.Contains(t.ProjectId)))
+            .ToListAsync(cancellationToken);
+
+        var now = clock.UtcNow;
+        var allApprovals = await db.Approvals
+            .AsNoTracking()
+            .Where(a => a.ProjectId != null && projectIds.Contains(a.ProjectId.Value) &&
+                        a.Status == ApprovalStatus.Pending && a.ExpiresAt > now)
+            .ToListAsync(cancellationToken);
+
+        var tasksByProject = allTasks
+            .GroupBy(t => t.ProjectId)
+            .ToDictionary(g => g.Key, g => (IReadOnlyList<TaskItem>)g.ToList());
+
+        // 任务 → 项目的映射先建好。别在 GroupBy 的键选择器里写子查询 ——
+        // 那会退化成每个元素查一次库。
+        var projectOfTask = allTasks.ToDictionary(t => t.Id, t => t.ProjectId);
+
+        var eventsByProject = allDoneEvents
+            .Where(e => projectOfTask.ContainsKey(e.TaskId))
+            .GroupBy(e => projectOfTask[e.TaskId])
+            .ToDictionary(g => g.Key, g => (IReadOnlyList<StatusEvent>)g.ToList());
+
+        var runsByProject = allTestRuns
+            .Where(r => projectOfTask.ContainsKey(r.TaskId))
+            .GroupBy(r => projectOfTask[r.TaskId])
+            .ToDictionary(g => g.Key, g => (IReadOnlyList<TestRun>)g.ToList());
+
+        var approvalsByProject = allApprovals
+            .GroupBy(a => a.ProjectId!.Value)
+            .ToDictionary(g => g.Key, g => g.Count());
+
         var result = new List<ProjectMetricsDto>(projects.Count);
 
         foreach (var project in projects)
         {
-            result.Add(await GetProjectMetricsAsync(project.Id, cancellationToken));
+            tasksByProject.TryGetValue(project.Id, out var projectTasks);
+            eventsByProject.TryGetValue(project.Id, out var projectEvents);
+            runsByProject.TryGetValue(project.Id, out var projectRuns);
+            approvalsByProject.TryGetValue(project.Id, out var projectApprovals);
+
+            result.Add(Build(
+                project,
+                projectTasks ?? [],
+                projectEvents ?? [],
+                projectRuns ?? [],
+                projectApprovals));
         }
 
         return result;
@@ -114,11 +181,18 @@ public sealed class MetricsService(IAppDbContext db, IClock clock) : IMetricsSer
         }
 
         // ---- 周期：从建任务到完成 ----
+        // 状态机允许 Done → Blocked → … → Done，同一个任务会有多条 Done 事件。
+        // 只取每个任务的**最后一次** Done，不然平均周期被重复计权，数字偏小。
+        var taskById = tasks.ToDictionary(t => t.Id);
+        var lastDoneByTask = doneEvents
+            .GroupBy(e => e.TaskId)
+            .Select(g => g.OrderByDescending(e => e.CreatedAt).First())
+            .ToList();
+
         var cycles = new List<double>();
-        foreach (var evt in doneEvents)
+        foreach (var evt in lastDoneByTask)
         {
-            var task = tasks.FirstOrDefault(t => t.Id == evt.TaskId);
-            if (task is null)
+            if (!taskById.TryGetValue(evt.TaskId, out var task))
             {
                 continue;
             }
@@ -130,18 +204,18 @@ public sealed class MetricsService(IAppDbContext db, IClock clock) : IMetricsSer
             }
         }
 
-        // ---- 测试通过率与覆盖率：取最近一次 ----
-        var latestRun = testRuns
-            .OrderByDescending(r => r.ReportedAt)
-            .FirstOrDefault();
+        // ---- 测试通过率与覆盖率 ----
+        // 通过率是**项目聚合**：sum(passed)/sum(total)。
+        // 以前取的是最近一次 run —— 九个任务全红、最后一个任务通过，看板就显示 100%。
+        var totalTests = testRuns.Sum(r => r.Total);
+        var passedTests = testRuns.Sum(r => r.Passed);
 
-        var passRate = latestRun is not null && latestRun.Total > 0
-            ? (double)latestRun.Passed / latestRun.Total
+        var passRate = totalTests > 0
+            ? (double)passedTests / totalTests
             : (double?)null;
 
-        var avgCoverage = testRuns.Count > 0
-            ? testRuns.Where(r => r.Coverage is not null).Select(r => r.Coverage!.Value).DefaultIfEmpty(0).Average()
-            : (double?)null;
+        var coveredRuns = testRuns.Where(r => r.Coverage is not null).Select(r => r.Coverage!.Value).ToList();
+        var avgCoverage = coveredRuns.Count > 0 ? coveredRuns.Average() : (double?)null;
 
         var statusCounts = Enum.GetValues<TaskStatus>()
             .Select(status => new StatusCountDto(status.ToString(), counted.Count(t => t.Status == status)))
