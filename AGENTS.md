@@ -61,7 +61,14 @@ dotnet build Workbench.sln
 dotnet test Workbench.sln
 dotnet run --project src/Workbench.Web          # 起服务（UI + REST + /mcp）
 dotnet run --project src/Workbench.Cli -- --help # CLI
+
+./tests/e2e/run.sh                              # 端到端验证（自起临时服务，跑完即收）
 ```
+
+端到端脚本 `tests/e2e/mcp_e2e.py` 走 MCP 全链路：按编号找任务 → claim → 取上下文 →
+回写计划 → 推进到 Review → 开评审轮 → 取评审包 → 逐维度回写 → 结项，
+以及两条拦截链路（只评 6 个维度、有一个维度不通过）。
+改完 MCP 工具或状态机后跑一遍，比只看单测靠谱。
 
 数据目录由 `WORKBENCH_HOME` 决定（默认 `~/.workbench`），里面是 SQLite、文档原件、密钥文件与
 外部 agent 的运行日志（`runs/`）。换机用 `wb workspace export` / `wb workspace import`。

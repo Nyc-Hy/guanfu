@@ -360,7 +360,13 @@ export WORKBENCH_HOME=~/.workbench
 ```bash
 dotnet build Workbench.sln
 dotnet test Workbench.sln
+./tests/e2e/run.sh          # 端到端：自起临时服务，跑完 MCP 全链路即收摊
 ```
+
+端到端脚本 `tests/e2e/mcp_e2e.py` 模拟 agent 走完「按编号找任务 → claim → 取上下文 →
+回写计划 → 推进到 Review → 开评审轮 → 取评审包 → 逐维度回写 → 结项」，
+外加两条拦截链路（只评 6 个维度就结项、有一个维度不通过就结项，**两种都必须被拒**）。
+改完 MCP 工具或状态机后跑一遍。
 
 ## License
 
