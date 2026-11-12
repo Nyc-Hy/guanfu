@@ -96,7 +96,14 @@ else
                 @foreach (var task in column)
                 {
                     <a class="wb-task" href="/tasks/@task.Id">
-                        <div class="wb-task-title">@task.Title</div>
+                        <div class="wb-task-title">
+                            @if (!string.IsNullOrWhiteSpace(task.Key))
+                            {
+                                <span class="wb-chip wb-chip-muted">@task.Key</span>
+                                <span> </span>
+                            }
+                            @task.Title
+                        </div>
                         @if (MilestoneName(task.MilestoneId) is { } milestoneName)
                         {
                             <div class="wb-task-meta">

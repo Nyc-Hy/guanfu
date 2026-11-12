@@ -61,7 +61,7 @@ public static class WorkbenchApi
         });
 
         // ---- 任务 ----
-        api.MapGet("/tasks", async (ITaskService tasks, Guid? projectId, string? status, string? keyword, Guid? milestoneId, CancellationToken ct) =>
+        api.MapGet("/tasks", async (ITaskService tasks, Guid? projectId, string? status, string? keyword, Guid? milestoneId, string? key, CancellationToken ct) =>
         {
             TaskStatus? parsed = null;
             if (!string.IsNullOrWhiteSpace(status))
@@ -74,13 +74,14 @@ public static class WorkbenchApi
                 parsed = value;
             }
 
-            return Results.Ok(await tasks.ListAsync(projectId, parsed, keyword, milestoneId, ct));
+            return Results.Ok(await tasks.ListAsync(projectId, parsed, keyword, milestoneId, key, ct));
         });
 
         api.MapPost("/projects/{projectId:guid}/tasks", async (
             Guid projectId, CreateTaskRequest request, ITaskService tasks, CancellationToken ct) =>
         {
-            var task = await tasks.CreateAsync(projectId, request.Title, request.Description, request.ParentTaskId, ct);
+            var task = await tasks.CreateAsync(
+                projectId, request.Title, request.Description, request.ParentTaskId, request.MilestoneId, request.Key, ct);
             return Results.Created($"/api/tasks/{task.Id}", task);
         });
 
@@ -328,6 +329,28 @@ public static class WorkbenchApi
             return result.Ok ? Results.Ok(result) : Results.BadRequest(new { error = result.Message });
         });
 
+        // ---- 评审 ----
+        api.MapPost("/tasks/{taskId:guid}/review", async (
+            Guid taskId, StartReviewRequest request, IReviewService reviews, CancellationToken ct) =>
+            Results.Ok(await reviews.StartAsync(taskId, request.Reviewer, ct)));
+
+        api.MapGet("/tasks/{taskId:guid}/review", async (
+            Guid taskId, IReviewService reviews, CancellationToken ct) =>
+        {
+            var current = await reviews.GetCurrentAsync(taskId, ct);
+            return current is null ? Results.NotFound() : Results.Ok(current);
+        });
+
+        api.MapGet("/tasks/{taskId:guid}/reviews", async (
+            Guid taskId, IReviewService reviews, CancellationToken ct) =>
+            Results.Ok(await reviews.ListAsync(taskId, ct)));
+
+        api.MapPost("/tasks/{taskId:guid}/review/{dimension}", async (
+            Guid taskId, string dimension, SubmitReviewRequest request, IReviewService reviews, CancellationToken ct) =>
+            Results.Ok(await reviews.SubmitAsync(
+                taskId, dimension, request.Passed, request.Findings, request.Evidence,
+                request.Recommendation, request.Reviewer, request.Round, ct)));
+
         // ---- MCP 工具开关 ----
         api.MapGet("/mcp/tools", async (IMcpToolService tools, CancellationToken ct) =>
             Results.Ok(await tools.ListAsync(ct)));
@@ -344,7 +367,8 @@ public static class WorkbenchApi
 }
 
 public sealed record CreateProjectRequest(string Name, string? Description);
-public sealed record CreateTaskRequest(string Title, string? Description, Guid? ParentTaskId);
+public sealed record CreateTaskRequest(
+    string Title, string? Description, Guid? ParentTaskId, Guid? MilestoneId = null, string? Key = null);
 public sealed record ChangeStatusRequest(string Status, string? Note, string? Actor, string? Source);
 public sealed record ClaimTaskRequest(string AgentId, int? LeaseMinutes);
 public sealed record SetPlanRequest(
@@ -382,3 +406,8 @@ public sealed record ExportWorkspaceRequest(string TargetDirectory);
 public sealed record ImportWorkspaceRequest(string SourceDirectory, string TargetHomeDirectory);
 
 public sealed record SetMcpToolRequest(bool Enabled);
+
+public sealed record StartReviewRequest(string? Reviewer);
+
+public sealed record SubmitReviewRequest(
+    bool Passed, string? Findings, string? Evidence, string? Recommendation, string? Reviewer, int? Round);

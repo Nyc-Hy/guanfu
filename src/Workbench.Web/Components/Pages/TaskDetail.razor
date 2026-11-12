@@ -4,6 +4,7 @@
 @inject IDocumentService Documents
 @inject IMilestoneService Milestones
 @inject IAgentLauncher Launcher
+@inject IReviewService Reviews
 @inject NavigationManager Nav
 
 <PageTitle>任务 · 开发工作台</PageTitle>
@@ -19,6 +20,11 @@ else
             <a class="wb-back" href="/projects/@Context.Project.Id">← @Context.Project.Name</a>
             <h1>@Context.Task.Title</h1>
             <p class="wb-muted">
+                @if (!string.IsNullOrWhiteSpace(Context.Task.Key))
+                {
+                    <span class="wb-chip">@Context.Task.Key</span>
+                    <span> · </span>
+                }
                 @Context.Task.Status
                 @if (!string.IsNullOrWhiteSpace(Context.Task.ClaimedBy))
                 {
@@ -149,6 +155,90 @@ else
             </section>
 
             <section class="wb-panel">
+                <div class="wb-card-head">
+                    <h3>评审</h3>
+                    @if (CurrentReview is not null)
+                    {
+                        <span class="wb-chip">第 @CurrentReview.Round 轮</span>
+                        <span class="wb-tag @(CurrentReview.Verdict == "Passed" ? "wb-tag-ok" : CurrentReview.Verdict == "Failed" ? "wb-tag-danger" : "")">
+                            @(CurrentReview.Verdict == "Passed" ? "通过" : CurrentReview.Verdict == "Failed" ? "不通过" : "评审中")
+                        </span>
+                    }
+                    <button class="wb-btn" disabled="@Busy" @onclick="StartReviewAsync">开始一轮评审</button>
+                </div>
+
+                @if (CurrentReview is null)
+                {
+                    <p class="wb-muted">
+                        还没开过评审。开一轮后，agent 拿到评审包，逐维度评审再回写结论；
+                        七个维度全部通过才能结项。
+                    </p>
+                }
+                else
+                {
+                    <table class="wb-table">
+                        <thead>
+                        <tr>
+                            <th>维度</th>
+                            <th style="width:96px">结论</th>
+                            <th>发现</th>
+                            <th>评审人</th>
+                        </tr>
+                        </thead>
+                        <tbody>
+                        @foreach (var item in CurrentReview.Items)
+                        {
+                            <tr>
+                                <td>@item.DimensionName</td>
+                                <td>
+                                    @switch (item.Status)
+                                    {
+                                        case "Passed":
+                                            <span class="wb-tag wb-tag-ok">通过</span>
+                                            break;
+                                        case "Failed":
+                                            <span class="wb-tag wb-tag-danger">不通过</span>
+                                            break;
+                                        case "Skipped":
+                                            <span class="wb-tag">跳过</span>
+                                            break;
+                                        default:
+                                            <span class="wb-tag wb-tag-warn">待评审</span>
+                                            break;
+                                    }
+                                </td>
+                                <td class="wb-muted">
+                                    @if (!string.IsNullOrWhiteSpace(item.Findings))
+                                    {
+                                        <span>@item.Findings</span>
+                                    }
+                                    @if (!string.IsNullOrWhiteSpace(item.Evidence))
+                                    {
+                                        <div class="wb-timeline-note">@item.Evidence</div>
+                                    }
+                                </td>
+                                <td class="wb-muted">@item.Reviewer</td>
+                            </tr>
+                        }
+                        </tbody>
+                    </table>
+
+                    @if (ReviewHistory.Count > 1)
+                    {
+                        <h4>历史轮次</h4>
+                        <div class="wb-form-row">
+                            @foreach (var round in ReviewHistory.Skip(1).Reverse())
+                            {
+                                <span class="wb-chip">
+                                    第 @round.Round 轮 · @(round.Verdict == "Passed" ? "通过" : round.Verdict == "Failed" ? "不通过" : "评审中")
+                                </span>
+                            }
+                        </div>
+                    }
+                }
+            </section>
+
+            <section class="wb-panel">
                 <h3>产物</h3>
                 @if (Context.Artifacts.Count == 0)
                 {
@@ -241,6 +331,9 @@ else
 
     private TaskContextDto? Context { get; set; }
     private IReadOnlyList<MilestoneDto> MilestoneItems { get; set; } = [];
+    private ReviewRoundDto? CurrentReview { get; set; }
+    private IReadOnlyList<ReviewRoundDto> ReviewHistory { get; set; } = [];
+    private bool Busy { get; set; }
     private string SelectedMilestoneId { get; set; } = string.Empty;
     private bool Launching { get; set; }
     private string? Error { get; set; }
@@ -254,6 +347,8 @@ else
             Context = await Tasks.GetContextAsync(TaskId);
             MilestoneItems = await Milestones.ListAsync(Context.Task.ProjectId);
             SelectedMilestoneId = Context.Task.MilestoneId?.ToString() ?? string.Empty;
+            CurrentReview = await Reviews.GetCurrentAsync(TaskId);
+            ReviewHistory = await Reviews.ListAsync(TaskId);
             Error = null;
         }
         catch (Exception ex)
@@ -274,6 +369,26 @@ else
         catch (Exception ex)
         {
             Error = ex.Message;
+        }
+
+        await ReloadAsync();
+    }
+
+    private async Task StartReviewAsync()
+    {
+        Busy = true;
+        try
+        {
+            await Reviews.StartAsync(TaskId, "human");
+            Error = null;
+        }
+        catch (Exception ex)
+        {
+            Error = ex.Message;
+        }
+        finally
+        {
+            Busy = false;
         }
 
         await ReloadAsync();
