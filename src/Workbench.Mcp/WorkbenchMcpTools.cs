@@ -31,22 +31,27 @@ public sealed class WorkbenchMcpTools(
         => await projects.GetAsync(projectId, cancellationToken);
 
     [McpServerTool(Name = "workbench_create_task")]
-    [Description("在项目下创建一个需求任务，初始状态为 Draft")]
+    [Description(
+        "在项目下创建一个需求任务，初始状态为 Draft。key 是项目内可读编号（如 REQ-001），" +
+        "不给就自动分配下一个。milestoneId 可以把任务挂到某个版本/里程碑（如「12月版本」）下")]
     public async Task<TaskSummaryDto> CreateTaskAsync(
         Guid projectId,
         string title,
         string? description = null,
         Guid? parentTaskId = null,
+        Guid? milestoneId = null,
+        string? key = null,
         CancellationToken cancellationToken = default)
-        => await tasks.CreateAsync(projectId, title, description, parentTaskId, cancellationToken);
+        => await tasks.CreateAsync(projectId, title, description, parentTaskId, milestoneId, key, cancellationToken);
 
     [McpServerTool(Name = "workbench_list_tasks")]
-    [Description("按项目 / 状态 / 关键字 / 里程碑列出任务")]
+    [Description("按项目 / 状态 / 关键字 / 里程碑 / 编号列出任务。key 传了就是精确匹配编号")]
     public async Task<IReadOnlyList<TaskSummaryDto>> ListTasksAsync(
         Guid? projectId = null,
         string? status = null,
         string? keyword = null,
         Guid? milestoneId = null,
+        string? key = null,
         CancellationToken cancellationToken = default)
     {
         TaskStatus? parsed = null;
@@ -60,13 +65,41 @@ public sealed class WorkbenchMcpTools(
             parsed = value;
         }
 
-        return await tasks.ListAsync(projectId, parsed, keyword, milestoneId, cancellationToken);
+        return await tasks.ListAsync(projectId, parsed, keyword, milestoneId, key, cancellationToken);
     }
 
     [McpServerTool(Name = "workbench_get_task")]
     [Description("获取单个任务的详情")]
     public async Task<TaskSummaryDto?> GetTaskAsync(Guid taskId, CancellationToken cancellationToken)
         => await tasks.GetAsync(taskId, cancellationToken);
+
+    [McpServerTool(Name = "workbench_get_task_by_key")]
+    [Description(
+        "按编号找任务（如 REQ-001，或人嘴里说的 req001 —— 连字符可有可无）。" +
+        "人说话是「看下 req001」，agent 得能落到具体任务上。找不到时 ok=false 且 error 说明。")]
+    public async Task<TaskLookupResult> GetTaskByKeyAsync(
+        Guid projectId,
+        string key,
+        CancellationToken cancellationToken = default)
+    {
+        var found = await tasks.ListAsync(projectId, null, null, null, key, cancellationToken);
+
+        if (found.Count == 0)
+        {
+            // 把项目里现有的编号列出来，agent 能自己改对，而不是卡在这
+            var available = await tasks.ListAsync(projectId, null, null, null, null, cancellationToken);
+            var keys = available
+                .Select(t => t.Key)
+                .Where(k => !string.IsNullOrWhiteSpace(k))
+                .Select(k => k!)
+                .ToList();
+
+            return TaskLookupResult.Fail(
+                $"项目里没有编号为 {key} 的任务。", keys);
+        }
+
+        return new TaskLookupResult(true, null, found);
+    }
 
     [McpServerTool(Name = "workbench_claim_task")]
     [Description("领取一个待认领任务，带租约；已被他人持有且租约未过期时返回 ok=false 而不是报错")]
@@ -116,7 +149,8 @@ public sealed class WorkbenchMcpTools(
     [Description(
         "推进任务状态。非法迁移不会被执行，会返回 ok=false 与当前允许的迁移列表，" +
         "请据此重试。合法流转: Draft→DocsReady→Planned→InDev→Testing→Review→Done，" +
-        "任意态可进 Blocked，Review 可打回 InDev。")]
+        "任意态可进 Blocked，Review 可打回 InDev。" +
+        "注意: Review→Done 还有一道评审门禁 —— 开过评审的任务必须当前轮七个维度全部通过才能结项。")]
     public async Task<StatusChangeResult> UpdateStatusAsync(
         Guid taskId,
         string status,
@@ -259,3 +293,17 @@ public sealed record ClaimResult(
     TaskSummaryDto? Task,
     string? Error = null,
     string? HeldBy = null);
+
+/// <summary>
+/// 按编号查任务的结果。找不到时不抛异常 —— MCP 会把异常吞成一句泛化信息，
+/// agent 看不到「项目里到底有哪些编号」。所以把现有编号一并带回去，让它能自己纠正。
+/// </summary>
+public sealed record TaskLookupResult(
+    bool Ok,
+    string? Error = null,
+    IReadOnlyList<TaskSummaryDto>? Tasks = null,
+    IReadOnlyList<string>? AvailableKeys = null)
+{
+    public static TaskLookupResult Fail(string error, IReadOnlyList<string>? available = null) =>
+        new(false, error, null, available);
+}

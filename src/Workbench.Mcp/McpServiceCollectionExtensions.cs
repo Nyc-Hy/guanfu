@@ -58,6 +58,43 @@ public static class McpServiceCollectionExtensions
                     return result;
                 });
 
+                // 最外层兜底。MCP SDK 会把工具抛出的异常吞成一句
+                // "An error occurred invoking 'xxx'."，agent 看不到到底错在哪，
+                // 只能瞎猜。这里统一把异常转成结构化错误（ok=false + error）。
+                // 必须注册在最前面 —— 过滤器是洋葱模型，先注册的在最外层。
+                options.Filters.Request.CallToolFilters.Add(next => async (context, cancellationToken) =>
+                {
+                    try
+                    {
+                        return await next(context, cancellationToken);
+                    }
+                    catch (Exception ex)
+                    {
+                        var message = ex is WorkbenchException or InvalidOperationException or ArgumentException
+                            ? ex.Message
+                            : $"{ex.GetType().Name}: {ex.Message}";
+
+                        var payload = new
+                        {
+                            ok = false,
+                            error = message,
+                            tool = context.Params.Name
+                        };
+
+                        return new CallToolResult
+                        {
+                            IsError = true,
+                            Content =
+                            [
+                                new TextContentBlock
+                                {
+                                    Text = JsonSerializer.Serialize(payload, WorkbenchJson.Options)
+                                }
+                            ]
+                        };
+                    }
+                });
+
                 // 双保险：就算客户端缓存了工具清单直接调，也会被拦
                 options.Filters.Request.CallToolFilters.Add(next => async (context, cancellationToken) =>
                 {
