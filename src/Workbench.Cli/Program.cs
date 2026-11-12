@@ -89,8 +89,9 @@ static void PrintUsage()
           wb project list                       列出项目
           wb project add <名称> [--desc 描述]
           wb project show <项目ID>
-          wb task list [--project <项目ID>] [--status <状态>] [--key 编号]
-          wb task create <项目ID> <标题> [--desc 描述]
+          wb task list [--project <项目ID>] [--status <状态>] [--key 编号] [--type 类型]
+          wb task create <项目ID> <标题> [--desc 描述] [--type requirement|bug|optimization]
+                                       [--branch 分支]
           wb task show <任务ID或编号> [--project <项目ID>]
           wb task claim <任务ID> --agent <名称> [--lease 30]
           wb status set <任务ID> <状态> [--note 说明]
@@ -300,9 +301,11 @@ static async Task<int> TaskCommandAsync(string url, List<string> cliArgs)
             var project = GetOption(cliArgs, "--project");
             var status = GetOption(cliArgs, "--status");
             var key = GetOption(cliArgs, "--key");
+            var type = GetOption(cliArgs, "--type");
             if (project is not null) query.Add($"projectId={project}");
             if (status is not null) query.Add($"status={status}");
             if (key is not null) query.Add($"key={key}");
+            if (type is not null) query.Add($"type={type}");
 
             var path = "/api/tasks" + (query.Count > 0 ? "?" + string.Join('&', query) : string.Empty);
             var tasks = await client.GetAsync<List<TaskSummaryDto>>(path);
@@ -312,10 +315,12 @@ static async Task<int> TaskCommandAsync(string url, List<string> cliArgs)
                 return 0;
             }
 
-            Console.WriteLine($"{"编号",-10} {"ID",-38} {"状态",-12} {"项目",-16} 标题");
+            Console.WriteLine($"{"编号",-12} {"类型",-6} {"ID",-38} {"状态",-12} {"分支",-18} 标题");
             foreach (var t in tasks)
             {
-                Console.WriteLine($"{Truncate(t.Key ?? "-", 10),-10} {t.Id,-38} {t.Status,-12} {Truncate(t.ProjectName, 16),-16} {t.Title}");
+                Console.WriteLine(
+                    $"{Truncate(t.Key ?? "-", 12),-12} {TaskTypeLabel(t.Type),-6} {t.Id,-38} {t.Status,-12} " +
+                    $"{Truncate(t.Branch ?? "-", 18),-18} {t.Title}");
             }
 
             return 0;
@@ -331,8 +336,15 @@ static async Task<int> TaskCommandAsync(string url, List<string> cliArgs)
 
             var created = await client.PostAsync<TaskSummaryDto>(
                 $"/api/projects/{cliArgs[1]}/tasks",
-                new { title = cliArgs[2], description = GetOption(cliArgs, "--desc") });
-            Console.WriteLine($"已创建任务 {created.Id} · {created.Title}");
+                new
+                {
+                    title = cliArgs[2],
+                    description = GetOption(cliArgs, "--desc"),
+                    type = GetOption(cliArgs, "--type"),
+                    branch = GetOption(cliArgs, "--branch")
+                });
+            Console.WriteLine($"已创建任务 {created.Id} · {created.Key} · {created.Title}"
+                + (string.IsNullOrWhiteSpace(created.Branch) ? "" : $" · 分支 {created.Branch}"));
             return 0;
         }
 
@@ -843,3 +855,11 @@ static string? GetOption(List<string> cliArgs, string name)
 
 static string Truncate(string value, int length) =>
     value.Length <= length ? value : value[..(length - 1)] + "…";
+
+/// <summary>类型的中文简称，列表里一眼能看出是需求/缺陷/优化。</summary>
+static string TaskTypeLabel(Workbench.Domain.TaskType type) => type switch
+{
+    Workbench.Domain.TaskType.Bug => "缺陷",
+    Workbench.Domain.TaskType.Optimization => "优化",
+    _ => "需求"
+};
