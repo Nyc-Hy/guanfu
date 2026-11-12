@@ -37,7 +37,7 @@ else
             <div class="wb-form-row">
                 <input class="wb-input" placeholder="任务标题" @bind="NewTitle" @bind:event="oninput" />
                 <input class="wb-input" placeholder="描述（可选）" @bind="NewDescription" @bind:event="oninput" />
-                <button class="wb-btn wb-btn-primary" disabled="@string.IsNullOrWhiteSpace(NewTitle)" @onclick="CreateTaskAsync">创建</button>
+                <button class="wb-btn wb-btn-primary" disabled="@(string.IsNullOrWhiteSpace(NewTitle) || Busy)" @onclick="CreateTaskAsync">创建</button>
             </div>
             <div class="wb-form-row">
                 <label class="wb-label">类型</label>
@@ -49,12 +49,11 @@ else
                 <label class="wb-label">绑定分支</label>
                 <input class="wb-input" placeholder="如 feature/login（可选）" @bind="NewBranch" @bind:event="oninput" />
             </div>
-            @if (!string.IsNullOrWhiteSpace(Error))
-            {
-                <p class="wb-error">@Error</p>
-            }
+            <ErrorNotice Error="Error" />
         </div>
     }
+
+    <ErrorNotice Error="LoadError" />
 
     <section class="wb-panel">
         <div class="wb-card-head">
@@ -80,7 +79,7 @@ else
                 {
                     <span class="wb-chip">
                         @m.Name @Percent(m.Progress)
-                        <button class="wb-chip-x" title="删除迭代版本" @onclick="() => DeleteMilestoneAsync(m.Id)">×</button>
+                        <button class="wb-chip-x" title="删除迭代版本" disabled="@Busy" @onclick="() => DeleteMilestoneAsync(m.Id)">×</button>
                     </span>
                 }
             </div>
@@ -88,7 +87,7 @@ else
 
         <div class="wb-form-row">
             <input class="wb-input" placeholder="新迭代版本名称" @bind="NewMilestoneName" @bind:event="oninput" />
-            <button class="wb-btn" disabled="@string.IsNullOrWhiteSpace(NewMilestoneName)" @onclick="CreateMilestoneAsync">添加</button>
+            <button class="wb-btn" disabled="@(string.IsNullOrWhiteSpace(NewMilestoneName) || Busy)" @onclick="CreateMilestoneAsync">添加</button>
         </div>
         <p class="wb-hint">删除迭代版本只会把任务摘出来，不会删任务。</p>
     </section>
@@ -97,13 +96,19 @@ else
         @foreach (var status in Columns)
         {
             var column = Items.Where(t => t.Status == status).ToList();
+
+            // 一次渲染几百上千个任务就是几万行 DOM，浏览器直接卡死。
+            // 每列先只渲染前 N 条，剩下的点「显示更多」再放出来。
+            var limit = ColumnLimit(status);
+            var visible = column.Count <= limit ? column : column.Take(limit).ToList();
+
             <section class="wb-column">
                 <header class="wb-column-head">
                     <span>@StatusLabel(status)</span>
                     <span class="wb-count">@column.Count</span>
                 </header>
 
-                @foreach (var task in column)
+                @foreach (var task in visible)
                 {
                     <a class="wb-task" href="/tasks/@task.Id">
                         <div class="wb-task-title">
@@ -143,9 +148,15 @@ else
                     </a>
                 }
 
-                @if (column.Count == 0)
+                @if (visible.Count == 0)
                 {
                     <div class="wb-column-empty">—</div>
+                }
+                else if (visible.Count < column.Count)
+                {
+                    <button class="wb-btn wb-btn-link" @onclick="() => ShowMore(status)">
+                        显示更多（还有 @(column.Count - visible.Count) 个）
+                    </button>
                 }
             </section>
         }
@@ -177,18 +188,40 @@ else
     private string NewBranch { get; set; } = string.Empty;
     private string NewMilestoneName { get; set; } = string.Empty;
     private string SelectedMilestoneFilter { get; set; } = string.Empty;
-    private string? Error { get; set; }
+    private PageError? Error { get; set; }
+    private PageError? LoadError { get; set; }
+    private bool Busy { get; set; }
+
+    // 每列先渲染多少条
+    private const int ColumnPageSize = 50;
+    private readonly Dictionary<TaskStatus, int> _columnLimits = new();
 
     protected override async Task OnParametersSetAsync() => await ReloadAsync();
 
     private async Task ReloadAsync()
     {
-        Project = await Projects.GetAsync(ProjectId);
-        MilestoneItems = await Milestones.ListAsync(ProjectId);
+        try
+        {
+            Project = await Projects.GetAsync(ProjectId);
+            MilestoneItems = await Milestones.ListAsync(ProjectId);
 
-        Guid? milestoneId = Guid.TryParse(SelectedMilestoneFilter, out var parsed) ? parsed : null;
-        Items = await Tasks.ListAsync(ProjectId, null, null, milestoneId);
+            Guid? milestoneId = Guid.TryParse(SelectedMilestoneFilter, out var parsed) ? parsed : null;
+            Items = await Tasks.ListAsync(ProjectId, null, null, milestoneId);
+            LoadError = null;
+        }
+        catch (Exception ex)
+        {
+            // 别让异常从初始化方法冒出去 —— 冒出去就是整页白屏
+            LoadError = PageError.From(ex, "加载看板");
+        }
     }
+
+    /// <summary>这一列现在放出来几条。</summary>
+    private int ColumnLimit(TaskStatus status) =>
+        _columnLimits.TryGetValue(status, out var limit) ? limit : ColumnPageSize;
+
+    private void ShowMore(TaskStatus status) =>
+        _columnLimits[status] = ColumnLimit(status) + ColumnPageSize;
 
     private void ToggleCreate()
     {
@@ -198,11 +231,22 @@ else
 
     private async Task CreateTaskAsync()
     {
+        // 连点两次：第二个事件到达时第一个可能还没跑完
+        if (Busy)
+        {
+            return;
+        }
+
+        Busy = true;
+
+        // 立刻把按钮置灰：Blazor 在 await 期间不重绘
+        StateHasChanged();
+
         try
         {
             if (!TaskTypes.TryParse(NewType, out var type))
             {
-                Error = $"未知类型: {NewType}";
+                Error = PageError.Simple($"未知类型: {NewType}");
                 return;
             }
 
@@ -223,12 +267,24 @@ else
         }
         catch (Exception ex)
         {
-            Error = ex.Message;
+            Error = PageError.From(ex, "新建任务");
+        }
+        finally
+        {
+            Busy = false;
         }
     }
 
     private async Task CreateMilestoneAsync()
     {
+        if (Busy)
+        {
+            return;
+        }
+
+        Busy = true;
+        StateHasChanged();
+
         try
         {
             await Milestones.CreateAsync(ProjectId, NewMilestoneName);
@@ -238,12 +294,24 @@ else
         }
         catch (Exception ex)
         {
-            Error = ex.Message;
+            Error = PageError.From(ex, "新建迭代版本");
+        }
+        finally
+        {
+            Busy = false;
         }
     }
 
     private async Task DeleteMilestoneAsync(Guid milestoneId)
     {
+        if (Busy)
+        {
+            return;
+        }
+
+        Busy = true;
+        StateHasChanged();
+
         try
         {
             await Milestones.DeleteAsync(milestoneId);
@@ -258,7 +326,11 @@ else
         }
         catch (Exception ex)
         {
-            Error = ex.Message;
+            Error = PageError.From(ex, "删除迭代版本");
+        }
+        finally
+        {
+            Busy = false;
         }
     }
 

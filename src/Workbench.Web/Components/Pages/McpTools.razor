@@ -23,6 +23,8 @@
     <p class="@(IsError ? "wb-error" : "wb-hint")">@Message</p>
 }
 
+<ErrorNotice Error="LoadError" />
+
 @if (Items.Count == 0)
 {
     <div class="wb-empty">没有发现任何 MCP 工具。</div>
@@ -79,6 +81,7 @@ else
     private bool Saving { get; set; }
     private string? Message { get; set; }
     private bool IsError { get; set; }
+    private PageError? LoadError { get; set; }
 
     private int EnabledCount => Items.Count(t => t.Enabled);
 
@@ -88,11 +91,33 @@ else
 
     protected override async Task OnInitializedAsync() => await ReloadAsync();
 
-    private async Task ReloadAsync() => Items = await Tools.ListAsync();
+    private async Task ReloadAsync()
+    {
+        try
+        {
+            Items = await Tools.ListAsync();
+            LoadError = null;
+        }
+        catch (Exception ex)
+        {
+            // 别让异常从初始化方法冒出去 —— 冒出去就是整页白屏
+            LoadError = PageError.From(ex, "加载工具清单");
+        }
+    }
 
     private async Task SetEnabledAsync(string toolName, bool enabled)
     {
+        // 连点两次：第二个事件到达时第一个可能还没跑完
+        if (Saving)
+        {
+            return;
+        }
+
         Saving = true;
+
+        // 立刻把控件置灰：Blazor 在 await 期间不重绘
+        StateHasChanged();
+
         try
         {
             await Tools.SetEnabledAsync(toolName, enabled);
@@ -116,7 +141,14 @@ else
 
     private async Task ResetAsync()
     {
+        if (Saving)
+        {
+            return;
+        }
+
         Saving = true;
+        StateHasChanged();
+
         try
         {
             Items = await Tools.ResetAsync();

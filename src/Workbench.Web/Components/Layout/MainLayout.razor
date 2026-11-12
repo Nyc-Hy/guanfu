@@ -1,4 +1,5 @@
 ﻿@inherits LayoutComponentBase
+@implements IAsyncDisposable
 @inject IApprovalService Approvals
 
 <div class="wb-shell">
@@ -17,6 +18,7 @@
     </header>
 
     <main class="wb-main">
+        <ErrorNotice Error="LoadError" />
         @Body
     </main>
 </div>
@@ -28,16 +30,79 @@
 </div>
 
 @code {
+    // 待审徽章自己会刷：审批多半是 agent 发起的，只在 OnInitializedAsync 读一次
+    // 的话，徽章永远停在上一次打开页面时的数字。
+    private static readonly TimeSpan BadgeRefreshInterval = TimeSpan.FromSeconds(30);
+
     private int PendingCount { get; set; }
+    private PageError? LoadError { get; set; }
+    private CancellationTokenSource? _timerCts;
 
     protected override async Task OnInitializedAsync()
     {
         await RefreshAsync();
     }
 
+    protected override Task OnAfterRenderAsync(bool firstRender)
+    {
+        // 只在交互阶段起定时器：预渲染出来的实例用完就扔，
+        // 在那儿起定时器等于漏一个永远在跑的后台任务。
+        if (firstRender)
+        {
+            _timerCts = new CancellationTokenSource();
+            _ = RunBadgeTimerAsync(_timerCts.Token);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private async Task RunBadgeTimerAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(BadgeRefreshInterval);
+
+            while (await timer.WaitForNextTickAsync(cancellationToken))
+            {
+                await InvokeAsync(async () =>
+                {
+                    await RefreshAsync();
+                    StateHasChanged();
+                });
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // 组件被销毁，正常收尾
+        }
+        catch (ObjectDisposedException)
+        {
+            // 电路已经断了
+        }
+    }
+
     private async Task RefreshAsync()
     {
-        var pending = await Approvals.ListAsync(ApprovalStatus.Pending);
-        PendingCount = pending.Count;
+        try
+        {
+            var pending = await Approvals.ListAsync(ApprovalStatus.Pending);
+            PendingCount = pending.Count;
+            LoadError = null;
+        }
+        catch (Exception ex)
+        {
+            // 布局包住每一个页面：这里抛出去就是整页白屏
+            LoadError = PageError.From(ex, "加载待审数量");
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_timerCts is not null)
+        {
+            await _timerCts.CancelAsync();
+            _timerCts.Dispose();
+            _timerCts = null;
+        }
     }
 }

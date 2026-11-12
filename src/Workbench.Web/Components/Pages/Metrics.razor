@@ -11,6 +11,8 @@
     </div>
 </div>
 
+<ErrorNotice Error="LoadError" />
+
 @if (Items.Count == 0)
 {
     <div class="wb-empty">还没有项目数据。</div>
@@ -95,10 +97,23 @@ else
 
 @code {
     private IReadOnlyList<ProjectMetricsDto> Items { get; set; } = [];
+    private PageError? LoadError { get; set; }
 
     protected override async Task OnInitializedAsync() => await ReloadAsync();
 
-    private async Task ReloadAsync() => Items = await MetricsService.GetAllAsync();
+    private async Task ReloadAsync()
+    {
+        try
+        {
+            Items = await MetricsService.GetAllAsync();
+            LoadError = null;
+        }
+        catch (Exception ex)
+        {
+            // 别让异常从初始化方法冒出去 —— 冒出去就是整页白屏
+            LoadError = PageError.From(ex, "加载度量数据");
+        }
+    }
 
     private static string Percent(double ratio) => $"{ratio * 100:0.#}%";
 

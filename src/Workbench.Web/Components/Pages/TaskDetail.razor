@@ -47,8 +47,8 @@ else
                 }
             </p>
         </div>
-        <button class="wb-btn wb-btn-primary" disabled="@Launching" @onclick="LaunchAgentAsync">
-            @(Launching ? "启动中…" : "启动 agent")
+        <button class="wb-btn wb-btn-primary" disabled="@(Launching || Launched)" @onclick="LaunchAgentAsync">
+            @(Launching ? "启动中…" : Launched ? "已启动" : "启动 agent")
         </button>
     </div>
 
@@ -59,17 +59,14 @@ else
                 <div class="wb-form-row">
                     @foreach (var next in Context.AllowedTransitions)
                     {
-                        <button class="wb-btn" @onclick="() => ChangeStatusAsync(next)">→ @next</button>
+                        <button class="wb-btn" disabled="@Busy" @onclick="() => ChangeStatusAsync(next)">→ @next</button>
                     }
                     @if (Context.AllowedTransitions.Count == 0)
                     {
                         <span class="wb-muted">当前状态没有可用的后续迁移。</span>
                     }
                 </div>
-                @if (!string.IsNullOrWhiteSpace(Error))
-                {
-                    <p class="wb-error">@Error</p>
-                }
+                <ErrorNotice Error="Error" />
             </section>
 
             <section class="wb-panel">
@@ -112,7 +109,7 @@ else
             <section class="wb-panel">
                 <h3>文档</h3>
                 <div class="wb-form-row">
-                    <InputFile OnChange="UploadAsync" />
+                    <InputFile OnChange="UploadAsync" disabled="@Uploading" />
                     <span class="wb-muted">PRD / 测试用例 / 接口文档等</span>
                 </div>
 
@@ -346,7 +343,7 @@ else
                 <div class="wb-form-row">
                     <label class="wb-label">绑定分支</label>
                     <input class="wb-input" @bind="BranchInput" placeholder="如 feature/login" />
-                    <button class="wb-btn" @onclick="BindBranchAsync">绑定</button>
+                    <button class="wb-btn" disabled="@Busy" @onclick="BindBranchAsync">绑定</button>
                 </div>
                 <p class="wb-muted">
                     仓库当前分支：<code>@(Context.CurrentBranch ?? "未知")</code>
@@ -420,7 +417,13 @@ else
     private string SelectedType { get; set; } = "requirement";
     private string BranchInput { get; set; } = string.Empty;
     private bool Launching { get; set; }
-    private string? Error { get; set; }
+    private bool Launched { get; set; }
+    private PageError? Error { get; set; }
+    private bool Uploading { get; set; }
+
+    // 防重复：agent 不重复拉起，同一个文件不重复传
+    private readonly SubmitLatch _launches = new();
+    private readonly SubmitLatch _uploads = new();
 
     // 页面上「就地查看」用：展开状态 + 解析结果缓存
     private readonly HashSet<Guid> _expandedDocuments = new();
@@ -450,13 +453,22 @@ else
         }
         catch (Exception ex)
         {
-            Error = ex.Message;
+            // 别让异常从初始化方法冒出去 —— 冒出去就是整页白屏
+            Error = PageError.From(ex, "加载任务");
         }
     }
 
     private async Task AssignMilestoneAsync()
     {
         Guid? milestoneId = Guid.TryParse(SelectedMilestoneId, out var parsed) ? parsed : null;
+
+        if (Busy)
+        {
+            return;
+        }
+
+        Busy = true;
+        StateHasChanged();
 
         try
         {
@@ -465,7 +477,11 @@ else
         }
         catch (Exception ex)
         {
-            Error = ex.Message;
+            Error = PageError.From(ex, "调整迭代版本");
+        }
+        finally
+        {
+            Busy = false;
         }
 
         await ReloadAsync();
@@ -518,9 +534,17 @@ else
     {
         if (!TaskTypes.TryParse(SelectedType, out var type))
         {
-            Error = $"未知类型: {SelectedType}";
+            Error = PageError.Simple($"未知类型: {SelectedType}");
             return;
         }
+
+        if (Busy)
+        {
+            return;
+        }
+
+        Busy = true;
+        StateHasChanged();
 
         try
         {
@@ -529,7 +553,11 @@ else
         }
         catch (Exception ex)
         {
-            Error = ex.Message;
+            Error = PageError.From(ex, "修改任务类型");
+        }
+        finally
+        {
+            Busy = false;
         }
 
         await ReloadAsync();
@@ -537,6 +565,14 @@ else
 
     private async Task BindBranchAsync()
     {
+        if (Busy)
+        {
+            return;
+        }
+
+        Busy = true;
+        StateHasChanged();
+
         try
         {
             // 空串 = 解绑
@@ -545,7 +581,11 @@ else
         }
         catch (Exception ex)
         {
-            Error = ex.Message;
+            Error = PageError.From(ex, "绑定分支");
+        }
+        finally
+        {
+            Busy = false;
         }
 
         await ReloadAsync();
@@ -553,7 +593,16 @@ else
 
     private async Task StartReviewAsync()
     {
+        if (Busy)
+        {
+            return;
+        }
+
         Busy = true;
+
+        // 立刻把按钮置灰：Blazor 在 await 期间不重绘
+        StateHasChanged();
+
         try
         {
             await Reviews.StartAsync(TaskId, "human");
@@ -561,7 +610,7 @@ else
         }
         catch (Exception ex)
         {
-            Error = ex.Message;
+            Error = PageError.From(ex, "开始评审");
         }
         finally
         {
@@ -573,17 +622,48 @@ else
 
     private async Task LaunchAgentAsync()
     {
+        // 连点两次：第二个事件到达时第一个可能还没跑完 ——
+        // 那就会拉起两个 agent 进程
+        if (Launching)
+        {
+            return;
+        }
+
+        // 已经启动过就不再来一次：Blazor 的事件是排队串行处理的，
+        // 等第二个事件被处理时，「启动中」标志早就复位了
+        var key = TaskId.ToString();
+        if (_launches.IsLatched(key))
+        {
+            Error = PageError.Simple("这个任务已经启动过 agent 了。要重跑请刷新页面。");
+            return;
+        }
+
+        _launches.TryLatch(key);
         Launching = true;
+
+        // 立刻把按钮置灰：Blazor 在 await 期间不重绘
+        StateHasChanged();
+
         try
         {
             var result = await Launcher.LaunchAsync(TaskId);
-            Error = result.Ok
-                ? $"已拉起外部 agent（PID {result.ProcessId}）：{result.Command}"
-                : result.Error;
+
+            if (result.Ok)
+            {
+                Launched = true;
+                Error = PageError.Notice($"已拉起外部 agent（PID {result.ProcessId}）：{result.Command}");
+            }
+            else
+            {
+                // 没拉起来（分支不对、没配命令…）：把闩锁放掉，改好了还能再试
+                _launches.Release(key);
+                Error = PageError.From(new InvalidOperationException(result.Error), "启动 agent");
+            }
         }
         catch (Exception ex)
         {
-            Error = ex.Message;
+            _launches.Release(key);
+            Error = PageError.From(ex, "启动 agent");
         }
         finally
         {
@@ -595,11 +675,19 @@ else
 
     private async Task ChangeStatusAsync(string target)
     {
+        if (Busy)
+        {
+            return;
+        }
+
+        Busy = true;
+        StateHasChanged();
+
         try
         {
             if (!Enum.TryParse<TaskStatus>(target, ignoreCase: true, out var parsedTarget))
             {
-                Error = $"未知状态: {target}";
+                Error = PageError.Simple($"未知状态: {target}");
                 return;
             }
 
@@ -608,7 +696,11 @@ else
         }
         catch (Exception ex)
         {
-            Error = ex.Message;
+            Error = PageError.From(ex, "修改任务状态");
+        }
+        finally
+        {
+            Busy = false;
         }
 
         await ReloadAsync();
@@ -616,16 +708,43 @@ else
 
     private async Task UploadAsync(InputFileChangeEventArgs args)
     {
+        // 连点两次：第二个事件到达时第一个可能还没跑完 ——
+        // 那就会把同一个文件存两遍
+        if (Uploading)
+        {
+            return;
+        }
+
+        var file = args.File;
+        var key = $"{file.Name}:{file.Size}";
+
+        // 同一个文件不重复传：Blazor 的事件排队处理，
+        // 「正在上传」标志在第二个事件被处理时早就复位了
+        if (_uploads.IsLatched(key))
+        {
+            Error = PageError.Simple($"《{file.Name}》已经传过了。");
+            return;
+        }
+
+        _uploads.TryLatch(key);
+        Uploading = true;
+        StateHasChanged();
+
         try
         {
-            var file = args.File;
             await using var stream = file.OpenReadStream(50 * 1024 * 1024);
             await Documents.UploadAsync(TaskId, file.Name, stream, GuessKind(file.Name));
             Error = null;
         }
         catch (Exception ex)
         {
-            Error = ex.Message;
+            // 失败就放掉，好让人重传
+            _uploads.Release(key);
+            Error = PageError.From(ex, "上传文档");
+        }
+        finally
+        {
+            Uploading = false;
         }
 
         await ReloadAsync();

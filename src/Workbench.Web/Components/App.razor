@@ -12,7 +12,13 @@
 </head>
 
 <body>
-    <Routes />
+    @* 整个路由树（含 MainLayout）都做成交互式：
+       布局里带着「待审」徽章和定时刷新，静态 SSR 下它永远不动。
+       注意：@rendermode 不能加在 MainLayout 自己身上 ——
+       布局的 Body 是 RenderFragment，跨渲染模式边界时框架直接拒绝
+       （"Cannot pass the parameter 'Body' ... arbitrary code and cannot be serialized"）。
+       正确做法是在这里给 Routes 标模式，布局与页面一并继承。 *@
+    <Routes @rendermode="InteractiveServer" />
     <script src="_framework/blazor.web.js"></script>
 </body>
 

@@ -16,14 +16,13 @@
         <div class="wb-form-row">
             <input class="wb-input" placeholder="项目名称" @bind="NewName" @bind:event="oninput" />
             <input class="wb-input" placeholder="描述（可选）" @bind="NewDescription" @bind:event="oninput" />
-            <button class="wb-btn wb-btn-primary" disabled="@string.IsNullOrWhiteSpace(NewName)" @onclick="CreateAsync">创建</button>
+            <button class="wb-btn wb-btn-primary" disabled="@(string.IsNullOrWhiteSpace(NewName) || Creating)" @onclick="CreateAsync">创建</button>
         </div>
-        @if (!string.IsNullOrWhiteSpace(Error))
-        {
-            <p class="wb-error">@Error</p>
-        }
+        <ErrorNotice Error="Error" />
     </div>
 }
+
+<ErrorNotice Error="LoadError" />
 
 @if (Items.Count == 0)
 {
@@ -83,11 +82,25 @@ else
     private bool ShowCreate { get; set; }
     private string NewName { get; set; } = string.Empty;
     private string NewDescription { get; set; } = string.Empty;
-    private string? Error { get; set; }
+    private PageError? Error { get; set; }
+    private PageError? LoadError { get; set; }
+    private bool Creating { get; set; }
 
     protected override async Task OnInitializedAsync() => await ReloadAsync();
 
-    private async Task ReloadAsync() => Items = await Projects.ListAsync();
+    private async Task ReloadAsync()
+    {
+        try
+        {
+            Items = await Projects.ListAsync();
+            LoadError = null;
+        }
+        catch (Exception ex)
+        {
+            // 别让异常从初始化方法冒出去 —— 冒出去就是整页白屏
+            LoadError = PageError.From(ex, "加载项目列表");
+        }
+    }
 
     private void ToggleCreate()
     {
@@ -97,6 +110,17 @@ else
 
     private async Task CreateAsync()
     {
+        // 连点两次：第二个事件到达时第一个可能还没跑完
+        if (Creating)
+        {
+            return;
+        }
+
+        Creating = true;
+
+        // 立刻把按钮置灰：Blazor 在 await 期间不重绘
+        StateHasChanged();
+
         try
         {
             await Projects.CreateAsync(NewName, string.IsNullOrWhiteSpace(NewDescription) ? null : NewDescription);
@@ -108,7 +132,11 @@ else
         }
         catch (Exception ex)
         {
-            Error = ex.Message;
+            Error = PageError.From(ex, "新建项目");
+        }
+        finally
+        {
+            Creating = false;
         }
     }
 

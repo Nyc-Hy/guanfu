@@ -27,6 +27,8 @@ else
         <p class="@(IsError ? "wb-error" : "wb-hint")">@Message</p>
     }
 
+    <ErrorNotice Error="LoadError" />
+
     <div class="wb-detail-grid">
         <div class="wb-detail-main">
             <section class="wb-panel">
@@ -56,7 +58,7 @@ else
                     <input class="wb-input" @bind="DefaultBranch" @bind:event="oninput" />
                 </div>
                 <p class="wb-hint">
-                    仓库路径是 fs.list / fs.read / shell.run / git 工具的作用范围根目录，留空则这些工具不可用。
+                    仓库路径是 fs_list / fs_read / shell_run / git 工具的作用范围根目录，留空则这些工具不可用。
                 </p>
             </section>
 
@@ -81,7 +83,7 @@ else
                               @bind="AllowedCommandsText" @bind:event="oninput"></textarea>
                 </div>
                 <p class="wb-hint">
-                    shell.run 只能执行命中白名单的命令，且每次都要人工审批。
+                    shell_run 只能执行命中白名单的命令，且每次都要人工审批。
                     命令不走 shell 解析，不支持管道与重定向。
                 </p>
             </section>
@@ -145,6 +147,7 @@ else
     private bool Saving { get; set; }
     private string? Message { get; set; }
     private bool IsError { get; set; }
+    private PageError? LoadError { get; set; }
 
     protected override async Task OnParametersSetAsync() => await ReloadAsync();
 
@@ -163,18 +166,29 @@ else
             AllowedCommandsText = string.Join(Environment.NewLine, Config.AllowedCommands);
             NotificationWebhookUrl = Config.NotificationWebhookUrl ?? string.Empty;
             NotificationFormat = Config.NotificationFormat ?? "generic";
+            LoadError = null;
         }
         catch (Exception ex)
         {
+            // 别让异常从初始化方法冒出去 —— 冒出去就是整页白屏
             Config = null;
-            Message = ex.Message;
-            IsError = true;
+            LoadError = PageError.From(ex, "加载项目配置");
         }
     }
 
     private async Task SaveAsync()
     {
+        // 连点两次：第二个事件到达时第一个可能还没跑完
+        if (Saving)
+        {
+            return;
+        }
+
         Saving = true;
+
+        // 立刻把按钮置灰：Blazor 在 await 期间不重绘
+        StateHasChanged();
+
         try
         {
             var allowed = AllowedCommandsText

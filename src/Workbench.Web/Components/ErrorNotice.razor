@@ -1,0 +1,18 @@
+@* 统一的错误提示：人话在上，技术细节收在 <details> 里。
+   页面加载失败时用它代替「异常冒出去 → 电路断开 → 白屏」。 *@
+
+@if (Error is not null)
+{
+    <p class="@(Error.IsError ? "wb-error" : "wb-hint")">@Error.Message</p>
+    @if (!string.IsNullOrWhiteSpace(Error.Details))
+    {
+        <details>
+            <summary class="wb-muted">技术细节</summary>
+            <pre class="wb-pre">@Error.Details</pre>
+        </details>
+    }
+}
+
+@code {
+    [Parameter] public PageError? Error { get; set; }
+}
