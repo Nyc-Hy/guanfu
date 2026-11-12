@@ -10,8 +10,11 @@ namespace Workbench.Application.Services;
 /// **边界**：工作台不提供 AI。这里给的是**骨架** —— 阶段、维度、检查清单、门禁、历史；
 /// 判断由 agent（可以开子 agent / 专家团并行）来做，做完逐维度回写结论。
 /// 工作台负责的是「不评审完不许结项」和「每轮结论都留痕」。
+///
+/// 评审服务同时就是结项门禁的实现（见 <see cref="IReviewGate"/>）——
+/// 注册一次，两个接口共用同一个实例。
 /// </summary>
-public interface IReviewService
+public interface IReviewService : IReviewGate
 {
     /// <summary>开一轮评审。按固定的七个维度各建一条待办。</summary>
     Task<ReviewRoundDto> StartAsync(Guid taskId, string? reviewer = null, CancellationToken cancellationToken = default);
@@ -19,7 +22,13 @@ public interface IReviewService
     /// <summary>取评审包：维度清单 + 任务上下文 + 变更文件。agent 照着这个逐维度评审。</summary>
     Task<ReviewPackDto> GetPackAsync(Guid taskId, int? round = null, CancellationToken cancellationToken = default);
 
-    /// <summary>回写某个维度的结论。</summary>
+    /// <summary>
+    /// 回写某个维度的结论。
+    ///
+    /// <paramref name="skipped"/> 为 true 表示这个维度**不适用**（跳过）——
+    /// 枚举里一直有 Skipped，但以前没有任何入口能写出来，
+    /// 于是「本次改动不涉及安全维度」这类情况只能硬编一个通过。
+    /// </summary>
     Task<ReviewItemDto> SubmitAsync(
         Guid taskId,
         string dimension,
@@ -29,7 +38,8 @@ public interface IReviewService
         string? recommendation = null,
         string? reviewer = null,
         int? round = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        bool skipped = false);
 
     /// <summary>列出全部历史轮次。</summary>
     Task<IReadOnlyList<ReviewRoundDto>> ListAsync(Guid taskId, CancellationToken cancellationToken = default);
@@ -79,47 +89,63 @@ public sealed class ReviewService(IAppDbContext db, IClock clock, IGitInspector 
         var task = await db.Tasks.FirstOrDefaultAsync(t => t.Id == taskId, cancellationToken)
                    ?? throw new NotFoundException("任务", taskId);
 
-        var nextRound = await db.ReviewRounds
-            .Where(r => r.TaskId == taskId)
-            .Select(r => (int?)r.Round)
-            .MaxAsync(cancellationToken) ?? 0;
+        // 轮次号可能撞车：并发开轮时两个请求会算出同一个号。
+        // 唯一索引挡得住，撞了就重算一个再来。
+        ReviewRound round = null!;
 
-        var round = new ReviewRound
+        for (var attempt = 0; ; attempt++)
         {
-            TaskId = taskId,
-            Round = nextRound + 1,
-            Verdict = ReviewVerdict.Pending,
-            Reviewer = reviewer,
-            StartedAt = clock.UtcNow
-        };
+            var nextRound = await db.ReviewRounds
+                .Where(r => r.TaskId == taskId)
+                .Select(r => (int?)r.Round)
+                .MaxAsync(cancellationToken) ?? 0;
 
-        var order = 0;
-        foreach (var dimension in ReviewDimensions.All)
-        {
-            round.Items.Add(new ReviewItem
+            round = new ReviewRound
             {
                 TaskId = taskId,
-                Dimension = dimension.Key,
-                DimensionName = dimension.Name,
-                Order = order++,
-                Status = ReviewStatus.Pending
+                Round = nextRound + 1,
+                Verdict = ReviewVerdict.Pending,
+                Reviewer = reviewer,
+                StartedAt = clock.UtcNow
+            };
+
+            var order = 0;
+            foreach (var dimension in ReviewDimensions.All)
+            {
+                round.Items.Add(new ReviewItem
+                {
+                    TaskId = taskId,
+                    Dimension = dimension.Key,
+                    DimensionName = dimension.Name,
+                    Order = order++,
+                    Status = ReviewStatus.Pending
+                });
+            }
+
+            db.ReviewRounds.Add(round);
+
+            db.StatusEvents.Add(new StatusEvent
+            {
+                TaskId = taskId,
+                // 这不是状态迁移 —— from/to 留空
+                FromStatus = null,
+                ToStatus = null,
+                Source = TaskEventSource.Agent,
+                Actor = reviewer,
+                Note = $"开始第 {round.Round} 轮评审（{round.Items.Count} 个维度）",
+                CreatedAt = clock.UtcNow
             });
+
+            try
+            {
+                await db.SaveChangesAsync(cancellationToken);
+                break;
+            }
+            catch (DbUpdateException) when (attempt < 2)
+            {
+                db.ClearTracking();
+            }
         }
-
-        db.ReviewRounds.Add(round);
-
-        db.StatusEvents.Add(new StatusEvent
-        {
-            TaskId = taskId,
-            FromStatus = task.Status,
-            ToStatus = task.Status,
-            Source = TaskEventSource.Agent,
-            Actor = reviewer,
-            Note = $"开始第 {round.Round} 轮评审（{round.Items.Count} 个维度）",
-            CreatedAt = clock.UtcNow
-        });
-
-        await db.SaveChangesAsync(cancellationToken);
 
         return ToDto(round);
     }
@@ -180,7 +206,8 @@ public sealed class ReviewService(IAppDbContext db, IClock clock, IGitInspector 
         string? recommendation = null,
         string? reviewer = null,
         int? round = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool skipped = false)
     {
         var definition = ReviewDimensions.Find(dimension)
                          ?? throw new WorkbenchException(
@@ -192,7 +219,7 @@ public sealed class ReviewService(IAppDbContext db, IClock clock, IGitInspector 
         var item = current.Items.FirstOrDefault(i => string.Equals(i.Dimension, definition.Key, StringComparison.OrdinalIgnoreCase))
                    ?? throw new WorkbenchException($"本轮没有「{definition.Name}」这个维度。");
 
-        item.Status = passed ? ReviewStatus.Passed : ReviewStatus.Failed;
+        item.Status = skipped ? ReviewStatus.Skipped : (passed ? ReviewStatus.Passed : ReviewStatus.Failed);
         item.Findings = findings;
         item.Evidence = evidence;
         item.Recommendation = recommendation;
@@ -200,8 +227,7 @@ public sealed class ReviewService(IAppDbContext db, IClock clock, IGitInspector 
         item.DecidedAt = clock.UtcNow;
 
         // 汇总：全部维度都有结论才算结束
-        var decided = current.Items.All(i => i.Status != ReviewStatus.Pending);
-        var allPassed = current.Items.All(i => i.Status is ReviewStatus.Passed or ReviewStatus.Skipped);
+        var (decided, allPassed) = EvaluateDimensions(current.Items);
 
         current.Verdict = !decided ? ReviewVerdict.Pending : (allPassed ? ReviewVerdict.Passed : ReviewVerdict.Failed);
 
@@ -221,7 +247,7 @@ public sealed class ReviewService(IAppDbContext db, IClock clock, IGitInspector 
             ToStatus = null,
             Source = TaskEventSource.Agent,
             Actor = item.Reviewer,
-            Note = $"评审[{definition.Name}] {(passed ? "通过" : "不通过")}" +
+            Note = $"评审[{definition.Name}] {(skipped ? "不适用" : (passed ? "通过" : "不通过"))}" +
                    (string.IsNullOrWhiteSpace(findings) ? "" : $"：{findings}"),
             CreatedAt = clock.UtcNow
         });
@@ -270,17 +296,105 @@ public sealed class ReviewService(IAppDbContext db, IClock clock, IGitInspector 
             return new ReviewGateDto(false, nameof(ReviewVerdict.Pending), [], []);
         }
 
-        var pending = current.Items
-            .Where(i => i.Status == ReviewStatus.Pending)
-            .Select(i => i.DimensionName)
-            .ToList();
+        var pending = new List<string>();
+        var failed = new List<string>();
 
-        var failed = current.Items
-            .Where(i => i.Status == ReviewStatus.Failed)
-            .Select(i => i.DimensionName)
-            .ToList();
+        var byKey = current.Items.ToDictionary(i => i.Dimension, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var definition in ReviewDimensions.All)
+        {
+            if (!byKey.TryGetValue(definition.Key, out var item))
+            {
+                // 这一轮压根没建这个维度 —— 当成待评审，不能当它不存在。
+                // 少一个维度就放行的话，六个维度全过也能结项。
+                pending.Add(definition.Name);
+                continue;
+            }
+
+            if (item.Status == ReviewStatus.Pending)
+            {
+                pending.Add(definition.Name);
+            }
+            else if (item.Status == ReviewStatus.Failed)
+            {
+                failed.Add(definition.Name);
+            }
+        }
+
+        // 模型里已经删掉、但历史轮次里还留着的维度，也按实际状态算
+        foreach (var item in current.Items)
+        {
+            if (ReviewDimensions.Keys.Contains(item.Dimension, StringComparer.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (item.Status == ReviewStatus.Pending)
+            {
+                pending.Add(item.DimensionName);
+            }
+            else if (item.Status == ReviewStatus.Failed)
+            {
+                failed.Add(item.DimensionName);
+            }
+        }
 
         return new ReviewGateDto(true, current.Verdict.ToString(), failed, pending);
+    }
+
+    /// <summary>
+    /// 这一轮的维度是不是都有结论了。
+    ///
+    /// 不只是「现有的项都不再是 Pending」——还要看模型里定义的维度
+    /// 这一轮是不是都建出来了。少建一个维度就算没评完，
+    /// 否则六个维度全过就能结项，第七个维度形同虚设。
+    /// </summary>
+    private static (bool Decided, bool AllPassed) EvaluateDimensions(IReadOnlyCollection<ReviewItem> items)
+    {
+        var byKey = items.ToDictionary(i => i.Dimension, StringComparer.OrdinalIgnoreCase);
+
+        var decided = true;
+        var allPassed = true;
+
+        foreach (var definition in ReviewDimensions.All)
+        {
+            if (!byKey.TryGetValue(definition.Key, out var item))
+            {
+                decided = false;
+                allPassed = false;
+                continue;
+            }
+
+            if (item.Status == ReviewStatus.Pending)
+            {
+                decided = false;
+                allPassed = false;
+            }
+            else if (item.Status == ReviewStatus.Failed)
+            {
+                allPassed = false;
+            }
+        }
+
+        foreach (var item in items)
+        {
+            if (ReviewDimensions.Keys.Contains(item.Dimension, StringComparer.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (item.Status == ReviewStatus.Pending)
+            {
+                decided = false;
+                allPassed = false;
+            }
+            else if (item.Status == ReviewStatus.Failed)
+            {
+                allPassed = false;
+            }
+        }
+
+        return (decided, allPassed);
     }
 
     private async Task<ReviewRound?> LoadRoundAsync(Guid taskId, int? round, CancellationToken cancellationToken)

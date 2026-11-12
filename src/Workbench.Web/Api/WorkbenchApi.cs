@@ -522,7 +522,7 @@ public static class WorkbenchApi
             Guid taskId, string dimension, SubmitReviewRequest request, IReviewService reviews, CancellationToken ct) =>
             Results.Ok(await reviews.SubmitAsync(
                 taskId, dimension, request.Passed, request.Findings, request.Evidence,
-                request.Recommendation, request.Reviewer, request.Round, ct)));
+                request.Recommendation, request.Reviewer, request.Round, ct, request.Skipped)));
 
         // ---- MCP 工具开关 ----
         api.MapGet("/mcp/tools", async (IMcpToolService tools, CancellationToken ct) =>
@@ -604,8 +604,14 @@ public sealed record SetMcpToolRequest(bool Enabled);
 
 public sealed record StartReviewRequest(string? Reviewer);
 
+/// <summary>
+/// 回写某个评审维度的结论。
+/// Skipped = true 表示该维度**不适用**（跳过）——枚举里一直有 Skipped，
+/// 但以前没有入口能写出来，"本次改动不涉及安全维度"只能硬编一个通过。
+/// </summary>
 public sealed record SubmitReviewRequest(
-    bool Passed, string? Findings, string? Evidence, string? Recommendation, string? Reviewer, int? Round);
+    bool Passed, string? Findings, string? Evidence, string? Recommendation, string? Reviewer,
+    int? Round, bool Skipped = false);
 
 /// <summary>归档 / 取消归档。归档不是删除。</summary>
 public sealed record ArchiveTaskRequest(bool Archived = true);

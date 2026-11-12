@@ -68,7 +68,8 @@ public sealed class ReviewMcpTools(IReviewService reviews)
         "code_quality(代码是否合适) / comments(注释是否合适) / security(是否有安全问题) / " +
         "scope_impact(是否影响非本次需求的功能) / missing_requirement(是否有需求未实现) / " +
         "over_implementation(是否有需求过度实现) / over_operation(是否有过度操作的代码)。" +
-        "不通过时必须写清 findings 与证据；七个维度全部通过后任务才能结项。")]
+        "不通过时必须写清 findings 与证据；七个维度全部通过后任务才能结项。" +
+        "某个维度确实不适用时，把 skipped 设成 true —— 标了「不适用」也算有结论，不算不通过。")]
     public async Task<ReviewToolResult> SubmitReviewAsync(
         Guid taskId,
         string dimension,
@@ -78,12 +79,13 @@ public sealed class ReviewMcpTools(IReviewService reviews)
         string? recommendation = null,
         string? reviewer = null,
         int? round = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool skipped = false)
     {
         try
         {
             var item = await reviews.SubmitAsync(
-                taskId, dimension, passed, findings, evidence, recommendation, reviewer, round, cancellationToken);
+                taskId, dimension, passed, findings, evidence, recommendation, reviewer, round, cancellationToken, skipped);
 
             var current = await reviews.GetCurrentAsync(taskId, cancellationToken);
             return new ReviewToolResult { Ok = true, Item = item, Round = current };

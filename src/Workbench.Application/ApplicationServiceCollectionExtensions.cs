@@ -20,7 +20,8 @@ public static class ApplicationServiceCollectionExtensions
         services.AddScoped<IMetricsService, MetricsService>();
         services.AddScoped<IFileSystemService, FileSystemService>();
         services.AddScoped<IReviewService, ReviewService>();
-        services.AddScoped<IReviewGate, ReviewService>();
+        // 评审服务同时是门禁的实现 —— 注册同一个实例，别造两份
+        services.AddScoped<IReviewGate>(sp => sp.GetRequiredService<IReviewService>());
         services.AddScoped<IBranchGuard, BranchGuard>();
         services.AddScoped<IShellRunner, ShellRunner>();
         services.AddScoped<ITaskDependencyService, TaskDependencyService>();
