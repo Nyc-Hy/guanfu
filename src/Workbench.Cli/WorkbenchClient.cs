@@ -1,5 +1,6 @@
 using System.Net.Http.Json;
 using System.Text.Json;
+using Workbench.Application;
 
 namespace Workbench.Cli;
 
@@ -9,25 +10,12 @@ public sealed class WorkbenchClient(string baseUrl)
     private readonly HttpClient _http = new() { BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/"), Timeout = TimeSpan.FromMinutes(2) };
 
     /// <summary>
-    /// CLI 统一用这一份 JSON 选项：读服务端、打印给自己看都用它。
+    /// CLI 统一用应用层那一份 JSON 选项：读服务端、打印给自己看都用它。
     /// 抄第二份就会出现「读的时候能读枚举、打印的时候写成数字」这种鬼。
     /// </summary>
     public static JsonSerializerOptions JsonOptions => Json;
 
-    private static readonly JsonSerializerOptions Json = CreateJsonOptions();
-
-    private static JsonSerializerOptions CreateJsonOptions()
-    {
-        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web)
-        {
-            TypeInfoResolver = System.Text.Json.Serialization.Metadata.JsonTypeInfoResolver.Combine(
-                new System.Text.Json.Serialization.Metadata.DefaultJsonTypeInfoResolver())
-        };
-
-        // 服务端把枚举输出成字符串（"Draft" 而不是 1），这边要能读回去
-        options.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
-        return options;
-    }
+    private static readonly JsonSerializerOptions Json = WorkbenchJson.Options;
 
     public async Task<T> GetAsync<T>(string path, CancellationToken ct = default)
     {

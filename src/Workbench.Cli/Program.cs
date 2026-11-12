@@ -59,6 +59,8 @@ try
             return await WorkspaceCommandAsync(url, cliArgs);
         case "tool":
             return await ToolCommandAsync(url, cliArgs);
+        case "review":
+            return await ReviewCommandAsync(url, cliArgs);
         default:
             Console.Error.WriteLine($"未知命令: {command}");
             PrintUsage();
@@ -87,9 +89,9 @@ static void PrintUsage()
           wb project list                       列出项目
           wb project add <名称> [--desc 描述]
           wb project show <项目ID>
-          wb task list [--project <项目ID>] [--status <状态>]
+          wb task list [--project <项目ID>] [--status <状态>] [--key 编号]
           wb task create <项目ID> <标题> [--desc 描述]
-          wb task show <任务ID>
+          wb task show <任务ID或编号> [--project <项目ID>]
           wb task claim <任务ID> --agent <名称> [--lease 30]
           wb status set <任务ID> <状态> [--note 说明]
           wb doc upload <任务ID> <文件路径> [--kind prd|testcase|apidoc|other]
@@ -107,6 +109,9 @@ static void PrintUsage()
           wb tool enable <工具名>
           wb tool disable <工具名>
           wb tool reset
+          wb review start <任务ID>                              开一轮评审（7 个维度）
+          wb review list <任务ID>                               所有轮次与逐维度结论
+          wb review submit <任务ID> <维度> --pass|--fail [--findings 说明] [--evidence 证据]
           wb project config <项目ID> [--repo 路径] [--agent 命令] [--allow 命令1,命令2]
                                  [--webhook 地址] [--format generic|dingtalk|feishu]
           wb task launch <任务ID>
@@ -294,8 +299,10 @@ static async Task<int> TaskCommandAsync(string url, List<string> cliArgs)
             var query = new List<string>();
             var project = GetOption(cliArgs, "--project");
             var status = GetOption(cliArgs, "--status");
+            var key = GetOption(cliArgs, "--key");
             if (project is not null) query.Add($"projectId={project}");
             if (status is not null) query.Add($"status={status}");
+            if (key is not null) query.Add($"key={key}");
 
             var path = "/api/tasks" + (query.Count > 0 ? "?" + string.Join('&', query) : string.Empty);
             var tasks = await client.GetAsync<List<TaskSummaryDto>>(path);
@@ -305,10 +312,10 @@ static async Task<int> TaskCommandAsync(string url, List<string> cliArgs)
                 return 0;
             }
 
-            Console.WriteLine($"{"ID",-38} {"状态",-12} {"项目",-16} 标题");
+            Console.WriteLine($"{"编号",-10} {"ID",-38} {"状态",-12} {"项目",-16} 标题");
             foreach (var t in tasks)
             {
-                Console.WriteLine($"{t.Id,-38} {t.Status,-12} {Truncate(t.ProjectName, 16),-16} {t.Title}");
+                Console.WriteLine($"{Truncate(t.Key ?? "-", 10),-10} {t.Id,-38} {t.Status,-12} {Truncate(t.ProjectName, 16),-16} {t.Title}");
             }
 
             return 0;
@@ -333,12 +340,33 @@ static async Task<int> TaskCommandAsync(string url, List<string> cliArgs)
         {
             if (cliArgs.Count < 2)
             {
-                Console.Error.WriteLine("用法: wb task show <任务ID>");
+                Console.Error.WriteLine("用法: wb task show <任务ID或编号>");
                 return 1;
             }
 
-            var task = await client.GetAsync<TaskSummaryDto>($"/api/tasks/{cliArgs[1]}");
-            Console.WriteLine(JsonSerializer.Serialize(task, CliJson.Pretty));
+            // 传编号（REQ-001）也能找到 —— 人说话是「看下 req001」
+            if (Guid.TryParse(cliArgs[1], out var taskId))
+            {
+                var byId = await client.GetAsync<TaskSummaryDto>($"/api/tasks/{taskId}");
+                Console.WriteLine(JsonSerializer.Serialize(byId, CliJson.Pretty));
+                return 0;
+            }
+
+            var projectId = GetOption(cliArgs, "--project");
+            if (string.IsNullOrWhiteSpace(projectId))
+            {
+                Console.Error.WriteLine("按编号查需要 --project <项目ID>。");
+                return 1;
+            }
+
+            var byKey = await client.GetAsync<List<TaskSummaryDto>>($"/api/tasks?projectId={projectId}&key={cliArgs[1]}");
+            if (byKey.Count == 0)
+            {
+                Console.Error.WriteLine($"项目 {projectId} 里没有编号 {cliArgs[1]} 的任务。");
+                return 1;
+            }
+
+            Console.WriteLine(JsonSerializer.Serialize(byKey[0], CliJson.Pretty));
             return 0;
         }
 
@@ -646,6 +674,104 @@ static async Task<int> WorkspaceCommandAsync(string url, List<string> cliArgs)
 
         default:
             Console.Error.WriteLine("用法: wb workspace export <目录> | wb workspace import <目录> --home <目录>");
+            return 1;
+    }
+}
+
+static async Task<int> ReviewCommandAsync(string url, List<string> cliArgs)
+{
+    var client = new WorkbenchClient(url);
+    var sub = cliArgs.Count > 0 ? cliArgs[0].ToLowerInvariant() : "list";
+
+    switch (sub)
+    {
+        case "start":
+        {
+            if (cliArgs.Count < 2)
+            {
+                Console.Error.WriteLine("用法: wb review start <任务ID>");
+                return 1;
+            }
+
+            var round = await client.PostAsync<ReviewRoundDto>(
+                $"/api/tasks/{cliArgs[1]}/review", new { reviewer = "cli" });
+
+            Console.WriteLine($"已开始第 {round.Round} 轮评审，共 {round.Items.Count} 个维度。");
+            foreach (var item in round.Items)
+            {
+                Console.WriteLine($"  - {item.Dimension,-24}{item.DimensionName}");
+            }
+
+            return 0;
+        }
+
+        case "list":
+        {
+            if (cliArgs.Count < 2)
+            {
+                Console.Error.WriteLine("用法: wb review list <任务ID>");
+                return 1;
+            }
+
+            var rounds = await client.GetAsync<List<ReviewRoundDto>>($"/api/tasks/{cliArgs[1]}/reviews");
+            if (rounds.Count == 0)
+            {
+                Console.WriteLine("还没有评审记录。");
+                return 0;
+            }
+
+            foreach (var round in rounds)
+            {
+                var verdict = round.Verdict == "Passed" ? "通过" : round.Verdict == "Failed" ? "不通过" : "评审中";
+                Console.WriteLine($"第 {round.Round} 轮 · {verdict}");
+
+                foreach (var item in round.Items)
+                {
+                    var mark = item.Status == "Passed" ? "✓" : item.Status == "Failed" ? "×" : "·";
+                    var findings = string.IsNullOrWhiteSpace(item.Findings) ? "" : $"  {item.Findings}";
+                    Console.WriteLine($"  {mark} {item.DimensionName,-24}{findings}");
+                }
+
+                Console.WriteLine();
+            }
+
+            return 0;
+        }
+
+        case "submit":
+        {
+            if (cliArgs.Count < 3)
+            {
+                Console.Error.WriteLine("用法: wb review submit <任务ID> <维度> --pass|--fail [--findings 说明] [--evidence 证据]");
+                return 1;
+            }
+
+            var passed = cliArgs.Contains("--pass");
+            var failed = cliArgs.Contains("--fail");
+
+            if (passed == failed)
+            {
+                Console.Error.WriteLine("必须指定 --pass 或 --fail 其中之一。");
+                return 1;
+            }
+
+            var item = await client.PostAsync<ReviewItemDto>(
+                $"/api/tasks/{cliArgs[1]}/review/{cliArgs[2]}",
+                new
+                {
+                    passed,
+                    findings = GetOption(cliArgs, "--findings"),
+                    evidence = GetOption(cliArgs, "--evidence"),
+                    recommendation = GetOption(cliArgs, "--suggestion"),
+                    reviewer = "cli"
+                });
+
+            Console.WriteLine($"[{item.DimensionName}] 已回写：{(item.Status == "Passed" ? "通过" : "不通过")}");
+            return 0;
+        }
+
+        default:
+            Console.Error.WriteLine($"未知子命令: wb review {sub}");
             return 1;
     }
 }
