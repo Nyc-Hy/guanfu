@@ -36,9 +36,17 @@ public sealed class WebhookNotifier(HttpClient http) : INotifier
             using var response = await http.PostAsync(webhookUrl, content, cancellationToken);
             return response.IsSuccessStatusCode;
         }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            // 通知失败不能影响主流程
+            // 调用方主动取消 —— 不该被当成「通知失败」吞掉
+            throw;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException
+                                   or InvalidOperationException or UriFormatException)
+        {
+            // 通知失败不能影响主流程。
+            // InvalidOperationException / UriFormatException 是 URL 配错时
+            // HttpClient 抛的 —— 以前它们不在名单里，会直接逃出去。
             return false;
         }
     }
