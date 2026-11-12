@@ -55,6 +55,8 @@ try
             return await MetricsCommandAsync(url, cliArgs);
         case "workspace":
             return await WorkspaceCommandAsync(url, cliArgs);
+        case "tool":
+            return await ToolCommandAsync(url, cliArgs);
         default:
             Console.Error.WriteLine($"未知命令: {command}");
             PrintUsage();
@@ -99,6 +101,10 @@ static void PrintUsage()
           wb metrics [<项目ID>]
           wb workspace export <目录>
           wb workspace import <目录> --home <目标WORKBENCH_HOME>
+          wb tool list
+          wb tool enable <工具名>
+          wb tool disable <工具名>
+          wb tool reset
           wb project config <项目ID> [--repo 路径] [--agent 命令] [--allow 命令1,命令2]
                                  [--webhook 地址] [--format generic|dingtalk|feishu]
           wb task launch <任务ID>
@@ -644,6 +650,65 @@ static async Task<int> WorkspaceCommandAsync(string url, List<string> cliArgs)
     }
 }
 
+static async Task<int> ToolCommandAsync(string url, List<string> cliArgs)
+{
+    var client = new WorkbenchClient(url);
+    var sub = cliArgs.Count > 0 ? cliArgs[0].ToLowerInvariant() : "list";
+
+    switch (sub)
+    {
+        case "list":
+        {
+            var tools = await client.GetAsync<List<McpToolView>>("/api/mcp/tools");
+            var byCategory = tools.GroupBy(t => t.Category);
+
+            foreach (var group in byCategory)
+            {
+                Console.WriteLine($"── {group.Key} ──");
+                foreach (var t in group)
+                {
+                    var mark = t.Enabled ? "✓" : "×";
+                    var approval = t.RequiresApproval ? "  [需审批]" : string.Empty;
+                    Console.WriteLine($"  {mark} {t.Name,-34}{approval}");
+                }
+            }
+
+            var off = tools.Count(t => !t.Enabled);
+            Console.WriteLine($"\n{tools.Count - off}/{tools.Count} 开启");
+            return 0;
+        }
+
+        case "enable":
+        case "disable":
+        {
+            if (cliArgs.Count < 2)
+            {
+                Console.Error.WriteLine($"用法: wb tool {sub} <工具名>");
+                return 1;
+            }
+
+            var updated = await client.PutAsync<McpToolView>(
+                $"/api/mcp/tools/{cliArgs[1]}", new { enabled = sub == "enable" });
+
+            Console.WriteLine(sub == "enable"
+                ? $"已开启 {updated.Name}。"
+                : $"已关闭 {updated.Name}。agent 的 tools/list 里不再有它。");
+            return 0;
+        }
+
+        case "reset":
+        {
+            var tools = await client.PostAsync<List<McpToolView>>("/api/mcp/tools/reset", new { });
+            Console.WriteLine($"已恢复默认（{tools.Count} 个工具全部开启）。");
+            return 0;
+        }
+
+        default:
+            Console.Error.WriteLine($"未知子命令: wb tool {sub}");
+            return 1;
+    }
+}
+
 static string? GetOption(List<string> cliArgs, string name)
 {
     var index = cliArgs.IndexOf(name);
@@ -690,3 +755,6 @@ public sealed record WorkspaceArchiveView(bool Ok, string Directory, int FileCou
 
 public sealed record AgentLaunchView(
     bool Ok, int? ProcessId, string Command, string WorkingDirectory, string? Error);
+
+public sealed record McpToolView(
+    string Name, string Category, string Description, bool Enabled, bool RequiresApproval, DateTimeOffset? UpdatedAt);
