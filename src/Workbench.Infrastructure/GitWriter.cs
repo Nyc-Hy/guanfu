@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using Workbench.Application.Services;
 
 namespace Workbench.Infrastructure;
@@ -6,6 +5,12 @@ namespace Workbench.Infrastructure;
 /// <summary>Git 写操作实现。命令不走 shell，参数用 ArgumentList 传。</summary>
 public sealed class GitWriter : IGitWriter
 {
+    /// <summary>
+    /// 写操作的超时上限。commit 可能要等 GPG 口令、push 可能要等凭证，
+    /// 但不能无限期挂着 —— 挂着就会占着 .git/index.lock。
+    /// </summary>
+    private static readonly TimeSpan CommandTimeout = TimeSpan.FromMinutes(5);
+
     public async Task<GitCommandResult> CommitAsync(string repoPath, string message, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(message))
@@ -73,46 +78,31 @@ public sealed class GitWriter : IGitWriter
             return new GitCommandResult(false, string.Empty, $"仓库路径不存在: {repoPath}");
         }
 
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = "git",
-            WorkingDirectory = repoPath,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-
-        startInfo.ArgumentList.Add("-C");
-        startInfo.ArgumentList.Add(repoPath);
-        foreach (var arg in args)
-        {
-            startInfo.ArgumentList.Add(arg);
-        }
+        // git 命令一律用 -C 进仓库，不依赖进程自己的工作目录
+        var fullArgs = new List<string> { "-C", repoPath };
+        fullArgs.AddRange(args);
 
         try
         {
-            using var process = Process.Start(startInfo)
-                               ?? throw new InvalidOperationException("无法启动 git 进程。");
+            // 超时与杀进程树都在 GitProcessRunner 里：
+            // git 挂住时必须把它杀掉，否则子进程会一直占着 .git/index.lock，
+            // 之后所有 git 命令都报 "Unable to create '.git/index.lock': File exists"。
+            var result = await GitProcessRunner.RunAsync(
+                "git", fullArgs, repoPath, CommandTimeout, cancellationToken);
 
-            var stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-            var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
-
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeout.CancelAfter(TimeSpan.FromMinutes(5));
-
-            await process.WaitForExitAsync(timeout.Token);
-
-            var stdout = await stdoutTask;
-            var stderr = await stderrTask;
-
-            return process.ExitCode == 0
-                ? new GitCommandResult(true, stdout.Trim(), null)
-                : new GitCommandResult(false, stdout.Trim(), stderr.Trim());
+            return result.ExitCode == 0
+                ? new GitCommandResult(true, result.Stdout.Trim(), null)
+                : new GitCommandResult(false, result.Stdout.Trim(), result.Stderr.Trim());
+        }
+        catch (TimeoutException)
+        {
+            // 自己等的超时（调用方没取消）：进程树已经被杀掉了
+            return new GitCommandResult(false, string.Empty, "git 命令超时（5 分钟）。");
         }
         catch (OperationCanceledException)
         {
-            return new GitCommandResult(false, string.Empty, "git 命令超时（5 分钟）。");
+            // 调用方主动取消 —— 原样抛出，不该报成超时
+            throw;
         }
         catch (Exception ex)
         {
