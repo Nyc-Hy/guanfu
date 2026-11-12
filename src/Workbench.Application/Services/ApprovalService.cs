@@ -41,8 +41,10 @@ public interface IApprovalService
     Task<int> ExpireOverdueAsync(CancellationToken cancellationToken = default);
 }
 
-public sealed class ApprovalService(IAppDbContext db, IClock clock) : IApprovalService
+public sealed class ApprovalService(IAppDbContext db, IClock clock, INotifier? notifier = null) : IApprovalService
 {
+    private readonly INotifier? _notifier = notifier;
+
     public const int DefaultTtlMinutes = 30;
 
     public async Task<ApprovalDto> RequestAsync(
@@ -74,7 +76,48 @@ public sealed class ApprovalService(IAppDbContext db, IClock clock) : IApprovalS
         db.Approvals.Add(approval);
         await db.SaveChangesAsync(cancellationToken);
 
+        await NotifyAsync(approval, cancellationToken);
+
         return ToDto(approval);
+    }
+
+    /// <summary>
+    /// 审批产生时推通知。人不在电脑前时，审批不该静静躺着等到过期。
+    /// 推送失败不影响主流程 —— 审批已经落库了，通知只是提醒。
+    /// </summary>
+    private async Task NotifyAsync(Approval approval, CancellationToken cancellationToken)
+    {
+        if (_notifier is null || approval.ProjectId is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var project = await db.Projects
+                .AsNoTracking()
+                .FirstOrDefaultAsync(p => p.Id == approval.ProjectId.Value, cancellationToken);
+
+            if (project is null || string.IsNullOrWhiteSpace(project.NotificationWebhookUrl))
+            {
+                return;
+            }
+
+            var title = "工作台待审批";
+            var message =
+                $"工具: {approval.ToolName}\n" +
+                $"类别: {approval.Kind}\n" +
+                $"摘要: {approval.Summary}\n" +
+                $"申请人: {approval.RequestedBy ?? "(未标注)"}\n" +
+                $"审批单: {approval.Id}";
+
+            await _notifier.NotifyAsync(
+                project.NotificationWebhookUrl, project.NotificationFormat, title, message, cancellationToken);
+        }
+        catch (Exception)
+        {
+            // 通知是锦上添花，不能让它把审批请求搞失败
+        }
     }
 
     public async Task<ApprovalDto?> GetAsync(Guid id, CancellationToken cancellationToken = default)

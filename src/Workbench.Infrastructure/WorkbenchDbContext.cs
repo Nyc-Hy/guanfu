@@ -14,6 +14,8 @@ public sealed class WorkbenchDbContext(DbContextOptions<WorkbenchDbContext> opti
     public DbSet<DocumentParse> DocumentParses => Set<DocumentParse>();
     public DbSet<Plan> Plans => Set<Plan>();
     public DbSet<Artifact> Artifacts => Set<Artifact>();
+    public DbSet<Milestone> Milestones => Set<Milestone>();
+    public DbSet<TestRun> TestRuns => Set<TestRun>();
     public DbSet<Approval> Approvals => Set<Approval>();
     public DbSet<ToolCallAudit> ToolCallAudits => Set<ToolCallAudit>();
     public DbSet<DbConnectionConfig> DbConnections => Set<DbConnectionConfig>();
@@ -157,6 +159,36 @@ public sealed class WorkbenchDbContext(DbContextOptions<WorkbenchDbContext> opti
                 .WithMany(t => t.Artifacts)
                 .HasForeignKey(x => x.TaskId)
                 .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<Milestone>(e =>
+        {
+            e.ToTable("milestones");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Name).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Description).HasMaxLength(2000);
+
+            e.HasOne(x => x.Project)
+                .WithMany(p => p.Milestones)
+                .HasForeignKey(x => x.ProjectId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            e.HasIndex(x => new { x.ProjectId, x.Order });
+        });
+
+        modelBuilder.Entity<TestRun>(e =>
+        {
+            e.ToTable("test_runs");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Failures).HasMaxLength(32000);
+            e.Property(x => x.Author).HasMaxLength(200);
+
+            e.HasOne(x => x.Task)
+                .WithMany(t => t.TestRuns)
+                .HasForeignKey(x => x.TaskId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            e.HasIndex(x => new { x.TaskId, x.ReportedAt });
         });
 
         modelBuilder.Entity<Approval>(e =>

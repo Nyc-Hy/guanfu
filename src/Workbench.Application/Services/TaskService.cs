@@ -17,6 +17,7 @@ public interface ITaskService
         Guid? projectId = null,
         TaskStatus? status = null,
         string? keyword = null,
+        Guid? milestoneId = null,
         CancellationToken cancellationToken = default);
 
     Task<TaskSummaryDto?> GetAsync(Guid id, CancellationToken cancellationToken = default);
@@ -130,6 +131,7 @@ public sealed class TaskService(IAppDbContext db, IClock clock, IGitInspector gi
         Guid? projectId = null,
         TaskStatus? status = null,
         string? keyword = null,
+        Guid? milestoneId = null,
         CancellationToken cancellationToken = default)
     {
         var query = db.Tasks.AsNoTracking();
@@ -142,6 +144,11 @@ public sealed class TaskService(IAppDbContext db, IClock clock, IGitInspector gi
         if (status is not null)
         {
             query = query.Where(t => t.Status == status.Value);
+        }
+
+        if (milestoneId is not null)
+        {
+            query = query.Where(t => t.MilestoneId == milestoneId.Value);
         }
 
         if (!string.IsNullOrWhiteSpace(keyword))
@@ -400,6 +407,19 @@ public sealed class TaskService(IAppDbContext db, IClock clock, IGitInspector gi
         };
 
         db.Artifacts.Add(artifact);
+
+        db.TestRuns.Add(new TestRun
+        {
+            TaskId = id,
+            Total = total,
+            Passed = passed,
+            Failed = failed,
+            Coverage = coverage,
+            Failures = failures,
+            Author = author,
+            ReportedAt = clock.UtcNow
+        });
+
         task.UpdatedAt = clock.UtcNow;
         task.LastActivityAt = clock.UtcNow;
 
@@ -517,7 +537,8 @@ public sealed class TaskService(IAppDbContext db, IClock clock, IGitInspector gi
             task.LeaseExpiresAt,
             task.UpdatedAt,
             task.LastActivityAt,
-            (clock.UtcNow - lastActivity).TotalHours > StaleAfterHours);
+            (clock.UtcNow - lastActivity).TotalHours > StaleAfterHours,
+            task.MilestoneId);
     }
 
     internal static StatusEventDto ToEventDto(StatusEvent e) => new(

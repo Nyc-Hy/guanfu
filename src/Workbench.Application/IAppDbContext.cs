@@ -17,6 +17,8 @@ public interface IAppDbContext
     DbSet<DocumentParse> DocumentParses { get; }
     DbSet<Plan> Plans { get; }
     DbSet<Artifact> Artifacts { get; }
+    DbSet<Milestone> Milestones { get; }
+    DbSet<TestRun> TestRuns { get; }
     DbSet<Approval> Approvals { get; }
     DbSet<ToolCallAudit> ToolCallAudits { get; }
     DbSet<DbConnectionConfig> DbConnections { get; }

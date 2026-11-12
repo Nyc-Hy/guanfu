@@ -27,7 +27,21 @@ public sealed record TaskSummaryDto(
     DateTimeOffset? LeaseExpiresAt,
     DateTimeOffset UpdatedAt,
     DateTimeOffset? LastActivityAt,
-    bool Stale);
+    bool Stale,
+    Guid? MilestoneId = null);
+
+/// <summary>项目配置。跟概览分开：概览是给人看的汇总，配置是给人和 agent 改的字段集合。</summary>
+public sealed record ProjectConfigDto(
+    Guid Id,
+    string Name,
+    string? Description,
+    string? RepoPath,
+    string? RepoRemote,
+    string? DefaultBranch,
+    IReadOnlyList<string> AllowedCommands,
+    string? AgentCommand,
+    string? NotificationWebhookUrl,
+    string? NotificationFormat);
 
 public sealed record StatusEventDto(
     Guid Id,

@@ -67,11 +67,12 @@ public sealed class WorkbenchMcpTools(
         => await tasks.CreateAsync(projectId, title, description, parentTaskId, cancellationToken);
 
     [McpServerTool(Name = "workbench_list_tasks")]
-    [Description("按项目 / 状态 / 关键字列出任务")]
+    [Description("按项目 / 状态 / 关键字 / 里程碑列出任务")]
     public async Task<IReadOnlyList<TaskSummaryDto>> ListTasksAsync(
         Guid? projectId = null,
         string? status = null,
         string? keyword = null,
+        Guid? milestoneId = null,
         CancellationToken cancellationToken = default)
     {
         TaskStatus? parsed = null;
@@ -85,7 +86,7 @@ public sealed class WorkbenchMcpTools(
             parsed = value;
         }
 
-        return await tasks.ListAsync(projectId, parsed, keyword, cancellationToken);
+        return await tasks.ListAsync(projectId, parsed, keyword, milestoneId, cancellationToken);
     }
 
     [McpServerTool(Name = "workbench_get_task")]

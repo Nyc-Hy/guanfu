@@ -61,7 +61,7 @@ public static class WorkbenchApi
         });
 
         // ---- 任务 ----
-        api.MapGet("/tasks", async (ITaskService tasks, Guid? projectId, string? status, string? keyword, CancellationToken ct) =>
+        api.MapGet("/tasks", async (ITaskService tasks, Guid? projectId, string? status, string? keyword, Guid? milestoneId, CancellationToken ct) =>
         {
             TaskStatus? parsed = null;
             if (!string.IsNullOrWhiteSpace(status))
@@ -74,7 +74,7 @@ public static class WorkbenchApi
                 parsed = value;
             }
 
-            return Results.Ok(await tasks.ListAsync(projectId, parsed, keyword, ct));
+            return Results.Ok(await tasks.ListAsync(projectId, parsed, keyword, milestoneId, ct));
         });
 
         api.MapPost("/projects/{projectId:guid}/tasks", async (
@@ -251,6 +251,83 @@ public static class WorkbenchApi
             }
         });
 
+        // ---- 项目配置 ----
+        api.MapGet("/projects/{projectId:guid}/config", async (
+            Guid projectId, IProjectService projects, CancellationToken ct) =>
+            Results.Ok(await projects.GetConfigAsync(projectId, ct)));
+
+        api.MapPut("/projects/{projectId:guid}/config", async (
+            Guid projectId, UpdateProjectConfigRequest request, IProjectService projects, CancellationToken ct) =>
+            Results.Ok(await projects.UpdateConfigAsync(
+                projectId,
+                request.Name, request.Description, request.RepoPath, request.RepoRemote, request.DefaultBranch,
+                request.AllowedCommands, request.AgentCommand,
+                request.NotificationWebhookUrl, request.NotificationFormat, ct)));
+
+        // ---- 里程碑 ----
+        api.MapGet("/projects/{projectId:guid}/milestones", async (
+            Guid projectId, IMilestoneService milestones, CancellationToken ct) =>
+            Results.Ok(await milestones.ListAsync(projectId, ct)));
+
+        api.MapPost("/projects/{projectId:guid}/milestones", async (
+            Guid projectId, CreateMilestoneRequest request, IMilestoneService milestones, CancellationToken ct) =>
+        {
+            var created = await milestones.CreateAsync(
+                projectId, request.Name, request.Description, request.DueAt, ct);
+            return Results.Created($"/api/milestones/{created.Id}", created);
+        });
+
+        api.MapPut("/milestones/{milestoneId:guid}", async (
+            Guid milestoneId, UpdateMilestoneRequest request, IMilestoneService milestones, CancellationToken ct) =>
+            Results.Ok(await milestones.UpdateAsync(
+                milestoneId, request.Name, request.Description, request.DueAt, request.Order, ct)));
+
+        api.MapDelete("/milestones/{milestoneId:guid}", async (
+            Guid milestoneId, IMilestoneService milestones, CancellationToken ct) =>
+        {
+            await milestones.DeleteAsync(milestoneId, ct);
+            return Results.NoContent();
+        });
+
+        api.MapPost("/tasks/{taskId:guid}/milestone", async (
+            Guid taskId, AssignMilestoneRequest request, IMilestoneService milestones, ITaskService tasks, CancellationToken ct) =>
+        {
+            await milestones.AssignTaskAsync(taskId, request.MilestoneId, ct);
+            var task = await tasks.GetAsync(taskId, ct);
+            return task is null ? Results.NotFound() : Results.Ok(task);
+        });
+
+        // ---- 度量 ----
+        api.MapGet("/metrics", async (IMetricsService metrics, CancellationToken ct) =>
+            Results.Ok(await metrics.GetAllAsync(ct)));
+
+        api.MapGet("/projects/{projectId:guid}/metrics", async (
+            Guid projectId, IMetricsService metrics, CancellationToken ct) =>
+            Results.Ok(await metrics.GetProjectMetricsAsync(projectId, ct)));
+
+        // ---- 启动外部 agent ----
+        api.MapPost("/tasks/{taskId:guid}/launch-agent", async (
+            Guid taskId, IAgentLauncher launcher, CancellationToken ct) =>
+        {
+            var result = await launcher.LaunchAsync(taskId, ct);
+            return result.Ok ? Results.Ok(result) : Results.BadRequest(new { error = result.Error });
+        });
+
+        // ---- 工作区搬迁（换机）----
+        api.MapPost("/workspace/export", async (
+            ExportWorkspaceRequest request, IWorkspaceArchiver archiver, CancellationToken ct) =>
+        {
+            var result = await archiver.ExportAsync(request.TargetDirectory, ct);
+            return result.Ok ? Results.Ok(result) : Results.BadRequest(new { error = result.Message });
+        });
+
+        api.MapPost("/workspace/import", async (
+            ImportWorkspaceRequest request, IWorkspaceArchiver archiver, CancellationToken ct) =>
+        {
+            var result = await archiver.ImportAsync(request.SourceDirectory, request.TargetHomeDirectory, ct);
+            return result.Ok ? Results.Ok(result) : Results.BadRequest(new { error = result.Message });
+        });
+
         return app;
     }
 }
@@ -271,3 +348,24 @@ public sealed record PostEventRequest(string Message, string? Actor);
 public sealed record DecideApprovalRequest(bool Approve, string? DecidedBy, string? Reason);
 public sealed record CreateDbConnectionRequest(
     string Name, string Server, string Database, string? UserId, string? Password, bool IsDefault = true);
+
+public sealed record UpdateProjectConfigRequest(
+    string? Name,
+    string? Description,
+    string? RepoPath,
+    string? RepoRemote,
+    string? DefaultBranch,
+    IReadOnlyList<string>? AllowedCommands,
+    string? AgentCommand,
+    string? NotificationWebhookUrl,
+    string? NotificationFormat);
+
+public sealed record CreateMilestoneRequest(string Name, string? Description, DateTimeOffset? DueAt);
+
+public sealed record UpdateMilestoneRequest(string? Name, string? Description, DateTimeOffset? DueAt, int? Order);
+
+public sealed record AssignMilestoneRequest(Guid? MilestoneId);
+
+public sealed record ExportWorkspaceRequest(string TargetDirectory);
+
+public sealed record ImportWorkspaceRequest(string SourceDirectory, string TargetHomeDirectory);

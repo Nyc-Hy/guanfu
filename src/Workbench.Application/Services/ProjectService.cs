@@ -17,6 +17,26 @@ public interface IProjectService
         string? repoRemote = null,
         string? defaultBranch = null,
         CancellationToken cancellationToken = default);
+
+    /// <summary>读取项目配置（仓库路径、agent 启动命令、命令白名单、通知地址等）。</summary>
+    Task<ProjectConfigDto> GetConfigAsync(Guid id, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 更新项目配置。空字符串表示「清空该字段」，
+    /// 这样命令行/API 不需要额外的 null 语义来表达「改成没有」。
+    /// </summary>
+    Task<ProjectConfigDto> UpdateConfigAsync(
+        Guid id,
+        string? name = null,
+        string? description = null,
+        string? repoPath = null,
+        string? repoRemote = null,
+        string? defaultBranch = null,
+        IReadOnlyList<string>? allowedCommands = null,
+        string? agentCommand = null,
+        string? notificationWebhookUrl = null,
+        string? notificationFormat = null,
+        CancellationToken cancellationToken = default);
 }
 
 public sealed class ProjectService(IAppDbContext db, IClock clock) : IProjectService
@@ -144,6 +164,120 @@ public sealed class ProjectService(IAppDbContext db, IClock clock) : IProjectSer
             .ToListAsync(cancellationToken);
         return BuildSummary(project, tasks);
     }
+
+    public async Task<ProjectConfigDto> GetConfigAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        var project = await db.Projects.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id, cancellationToken)
+                      ?? throw new NotFoundException("项目", id);
+
+        return BuildConfig(project);
+    }
+
+    public async Task<ProjectConfigDto> UpdateConfigAsync(
+        Guid id,
+        string? name = null,
+        string? description = null,
+        string? repoPath = null,
+        string? repoRemote = null,
+        string? defaultBranch = null,
+        IReadOnlyList<string>? allowedCommands = null,
+        string? agentCommand = null,
+        string? notificationWebhookUrl = null,
+        string? notificationFormat = null,
+        CancellationToken cancellationToken = default)
+    {
+        var project = await db.Projects.FirstOrDefaultAsync(p => p.Id == id, cancellationToken)
+                      ?? throw new NotFoundException("项目", id);
+
+        if (name is not null)
+        {
+            project.Name = name.Trim();
+        }
+
+        if (description is not null)
+        {
+            project.Description = description;
+        }
+
+        if (repoPath is not null)
+        {
+            project.RepoPath = Normalize(repoPath);
+        }
+
+        if (repoRemote is not null)
+        {
+            project.RepoRemote = repoRemote;
+        }
+
+        if (defaultBranch is not null)
+        {
+            project.DefaultBranch = defaultBranch;
+        }
+
+        if (allowedCommands is not null)
+        {
+            var cleaned = allowedCommands
+                .Select(c => c?.Trim() ?? string.Empty)
+                .Where(c => c.Length > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            // 空列表 = 清空白名单
+            project.AllowedCommandsJson = cleaned.Count == 0
+                ? null
+                : System.Text.Json.JsonSerializer.Serialize(cleaned);
+        }
+
+        if (agentCommand is not null)
+        {
+            project.AgentCommand = Normalize(agentCommand);
+        }
+
+        if (notificationWebhookUrl is not null)
+        {
+            project.NotificationWebhookUrl = Normalize(notificationWebhookUrl);
+        }
+
+        if (notificationFormat is not null)
+        {
+            var format = notificationFormat.Trim().ToLowerInvariant();
+            if (format.Length > 0 && format is not ("generic" or "dingtalk" or "feishu"))
+            {
+                throw new WorkbenchException($"未知通知格式: {notificationFormat}。合法值: generic, dingtalk, feishu");
+            }
+
+            project.NotificationFormat = format.Length == 0 ? "generic" : format;
+        }
+
+        project.UpdatedAt = clock.UtcNow;
+        await db.SaveChangesAsync(cancellationToken);
+
+        return BuildConfig(project);
+    }
+
+    /// <summary>空字符串清空字段；仓库路径统一存绝对路径。</summary>
+    private static string? Normalize(string value)
+    {
+        var trimmed = value.Trim();
+        if (trimmed.Length == 0)
+        {
+            return null;
+        }
+
+        return trimmed;
+    }
+
+    private static ProjectConfigDto BuildConfig(Project project) => new(
+        project.Id,
+        project.Name,
+        project.Description,
+        project.RepoPath,
+        project.RepoRemote,
+        project.DefaultBranch,
+        ShellRunner.ParseAllowed(project.AllowedCommandsJson),
+        project.AgentCommand,
+        project.NotificationWebhookUrl,
+        project.NotificationFormat);
 
     private ProjectSummaryDto BuildSummary(
         Project project,

@@ -26,11 +26,41 @@ public class Project
     public string? DefaultBranch { get; set; } = "main";
     public bool ManagedByWorkbench { get; set; }
 
+    /// <summary>允许 shell.run 执行的命令前缀（JSON 数组）。不在白名单里的一律拒绝。</summary>
+    public string? AllowedCommandsJson { get; set; }
+
+    /// <summary>启动 agent 的命令模板，支持 {taskId} {title} {project} {repoPath} 占位符。</summary>
+    public string? AgentCommand { get; set; }
+
+    /// <summary>通知推送地址（钉钉/飞书群机器人 webhook 或通用 webhook）。</summary>
+    public string? NotificationWebhookUrl { get; set; }
+
+    /// <summary>通知格式：dingtalk / feishu / generic。</summary>
+    public string? NotificationFormat { get; set; } = "generic";
+
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
 
     public List<TaskItem> Tasks { get; set; } = [];
+    public List<Milestone> Milestones { get; set; } = [];
     public List<DbConnectionConfig> DbConnections { get; set; } = [];
+}
+
+/// <summary>里程碑：项目内的一批任务归组。</summary>
+public class Milestone
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid ProjectId { get; set; }
+    public Project? Project { get; set; }
+
+    public string Name { get; set; } = string.Empty;
+    public string? Description { get; set; }
+    public DateTimeOffset? DueAt { get; set; }
+    public int Order { get; set; }
+
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    public List<TaskItem> Tasks { get; set; } = [];
 }
 
 /// <summary>需求任务。</summary>
@@ -42,6 +72,10 @@ public class TaskItem
 
     /// <summary>父任务（模块级拆分）。为空表示顶层任务。</summary>
     public Guid? ParentTaskId { get; set; }
+
+    /// <summary>所属里程碑。为空表示不在任何里程碑下。</summary>
+    public Guid? MilestoneId { get; set; }
+    public Milestone? Milestone { get; set; }
 
     public string Title { get; set; } = string.Empty;
     public string? Description { get; set; }
@@ -65,6 +99,7 @@ public class TaskItem
     public List<Document> Documents { get; set; } = [];
     public List<Artifact> Artifacts { get; set; } = [];
     public List<Plan> Plans { get; set; } = [];
+    public List<TestRun> TestRuns { get; set; } = [];
 }
 
 /// <summary>状态流水。append-only，谁在什么时候把状态改成了什么。</summary>
@@ -132,6 +167,22 @@ public class Plan
 
     public string? Author { get; set; }
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
+/// <summary>一次单元测试的结果（结构化，度量看板要用）。</summary>
+public class TestRun
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TaskId { get; set; }
+    public TaskItem? Task { get; set; }
+
+    public int Total { get; set; }
+    public int Passed { get; set; }
+    public int Failed { get; set; }
+    public double? Coverage { get; set; }
+    public string? Failures { get; set; }
+    public string? Author { get; set; }
+    public DateTimeOffset ReportedAt { get; set; } = DateTimeOffset.UtcNow;
 }
 
 /// <summary>开发过程产物。</summary>

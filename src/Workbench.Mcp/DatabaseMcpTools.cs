@@ -200,7 +200,54 @@ public sealed class DatabaseMcpTools(
             .Select(c => new ConnectionInfoDto(c.Id, c.Name, c.Server, c.Database, c.UserId, c.IsDefault))
             .ToList();
     }
+
+    [McpServerTool(Name = "db_schema")]
+    [Description("读取项目数据库的表结构：表名、列名、类型、是否可空、主键。默认放行，只记审计日志。")]
+    public async Task<DbSchemaToolResult> SchemaAsync(
+        Guid projectId,
+        string? schema = null,
+        string? callerId = null,
+        CancellationToken cancellationToken = default)
+    {
+        var started = clock.UtcNow;
+
+        try
+        {
+            var config = await connections.GetAsync(projectId, null, cancellationToken)
+                         ?? throw new WorkbenchException("该项目没有配置数据库连接。");
+
+            var result = await runner.GetSchemaAsync(config, schema, cancellationToken);
+
+            await audit.RecordAsync(new ToolAuditEntry(
+                "db_schema", callerId, projectId, null, schema ?? "(全部 schema)",
+                RequiredApproval: false, ApprovalId: null,
+                Outcome: "success",
+                ResultSummary: $"{result.Tables.Count} 张表",
+                RowsAffected: null,
+                DurationMs: (long)(clock.UtcNow - started).TotalMilliseconds), cancellationToken);
+
+            return new DbSchemaToolResult(true, result.Tables, result.Tables.Count, null);
+        }
+        catch (Exception ex)
+        {
+            await audit.RecordAsync(new ToolAuditEntry(
+                "db_schema", callerId, projectId, null, schema ?? "(全部 schema)",
+                RequiredApproval: false, ApprovalId: null,
+                Outcome: "error",
+                ResultSummary: ex.Message,
+                RowsAffected: null,
+                DurationMs: (long)(clock.UtcNow - started).TotalMilliseconds), cancellationToken);
+
+            return new DbSchemaToolResult(false, [], 0, ex.Message);
+        }
+    }
 }
+
+public sealed record DbSchemaToolResult(
+    bool Ok,
+    IReadOnlyList<DbTableInfo> Tables,
+    int TableCount,
+    string? Error = null);
 
 public sealed record ConnectionInfoDto(
     Guid Id,
