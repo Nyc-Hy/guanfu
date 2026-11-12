@@ -1,4 +1,6 @@
 ﻿using System.Text.Json;
+using Workbench.Application.Contracts;
+using Workbench.Application.Services;
 using Workbench.Cli;
 
 // wb —— 工作台命令行。
@@ -182,7 +184,7 @@ static async Task<int> ProjectCommandAsync(string url, List<string> cliArgs)
     {
         case "list":
         {
-            var projects = await client.GetAsync<List<ProjectView>>("/api/projects");
+            var projects = await client.GetAsync<List<ProjectSummaryDto>>("/api/projects");
             if (projects.Count == 0)
             {
                 Console.WriteLine("还没有项目。");
@@ -208,7 +210,7 @@ static async Task<int> ProjectCommandAsync(string url, List<string> cliArgs)
 
             var name = cliArgs[1];
             var desc = GetOption(cliArgs, "--desc");
-            var created = await client.PostAsync<ProjectView>(
+            var created = await client.PostAsync<ProjectSummaryDto>(
                 "/api/projects", new { name, description = desc });
             Console.WriteLine($"已创建项目 {created.Id} · {created.Name}");
             return 0;
@@ -222,8 +224,8 @@ static async Task<int> ProjectCommandAsync(string url, List<string> cliArgs)
                 return 1;
             }
 
-            var project = await client.GetAsync<ProjectView>($"/api/projects/{cliArgs[1]}");
-            Console.WriteLine(JsonSerializer.Serialize(project, new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }));
+            var project = await client.GetAsync<ProjectSummaryDto>($"/api/projects/{cliArgs[1]}");
+            Console.WriteLine(JsonSerializer.Serialize(project, CliJson.Pretty));
             return 0;
         }
 
@@ -245,9 +247,9 @@ static async Task<int> ProjectCommandAsync(string url, List<string> cliArgs)
 
             if (repo is null && agent is null && allow is null && webhook is null && format is null)
             {
-                var current = await client.GetAsync<ProjectConfigView>($"/api/projects/{projectId}/config");
+                var current = await client.GetAsync<ProjectConfigDto>($"/api/projects/{projectId}/config");
                 Console.WriteLine(JsonSerializer.Serialize(
-                    current, new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }));
+                    current, CliJson.Pretty));
                 return 0;
             }
 
@@ -255,7 +257,7 @@ static async Task<int> ProjectCommandAsync(string url, List<string> cliArgs)
                 ? null
                 : allow.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
 
-            var updated = await client.PutAsync<ProjectConfigView>(
+            var updated = await client.PutAsync<ProjectConfigDto>(
                 $"/api/projects/{projectId}/config",
                 new
                 {
@@ -296,7 +298,7 @@ static async Task<int> TaskCommandAsync(string url, List<string> cliArgs)
             if (status is not null) query.Add($"status={status}");
 
             var path = "/api/tasks" + (query.Count > 0 ? "?" + string.Join('&', query) : string.Empty);
-            var tasks = await client.GetAsync<List<TaskView>>(path);
+            var tasks = await client.GetAsync<List<TaskSummaryDto>>(path);
             if (tasks.Count == 0)
             {
                 Console.WriteLine("没有任务。");
@@ -320,7 +322,7 @@ static async Task<int> TaskCommandAsync(string url, List<string> cliArgs)
                 return 1;
             }
 
-            var created = await client.PostAsync<TaskView>(
+            var created = await client.PostAsync<TaskSummaryDto>(
                 $"/api/projects/{cliArgs[1]}/tasks",
                 new { title = cliArgs[2], description = GetOption(cliArgs, "--desc") });
             Console.WriteLine($"已创建任务 {created.Id} · {created.Title}");
@@ -335,8 +337,8 @@ static async Task<int> TaskCommandAsync(string url, List<string> cliArgs)
                 return 1;
             }
 
-            var task = await client.GetAsync<TaskView>($"/api/tasks/{cliArgs[1]}");
-            Console.WriteLine(JsonSerializer.Serialize(task, new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }));
+            var task = await client.GetAsync<TaskSummaryDto>($"/api/tasks/{cliArgs[1]}");
+            Console.WriteLine(JsonSerializer.Serialize(task, CliJson.Pretty));
             return 0;
         }
 
@@ -350,7 +352,7 @@ static async Task<int> TaskCommandAsync(string url, List<string> cliArgs)
 
             var agent = GetOption(cliArgs, "--agent") ?? "cli";
             var lease = int.Parse(GetOption(cliArgs, "--lease") ?? "30");
-            var task = await client.PostAsync<TaskView>(
+            var task = await client.PostAsync<TaskSummaryDto>(
                 $"/api/tasks/{cliArgs[1]}/claim", new { agentId = agent, leaseMinutes = lease });
             Console.WriteLine($"已认领 {task.Id}，租约至 {task.LeaseExpiresAt}");
             return 0;
@@ -364,7 +366,7 @@ static async Task<int> TaskCommandAsync(string url, List<string> cliArgs)
                 return 1;
             }
 
-            var result = await client.PostAsync<AgentLaunchView>($"/api/tasks/{cliArgs[1]}/launch-agent", new { });
+            var result = await client.PostAsync<AgentLaunchResult>($"/api/tasks/{cliArgs[1]}/launch-agent", new { });
             Console.WriteLine($"已拉起外部 agent（PID {result.ProcessId}）：{result.Command}");
             return 0;
         }
@@ -385,7 +387,7 @@ static async Task<int> StatusCommandAsync(string url, List<string> cliArgs)
         return 1;
     }
 
-    var task = await client.PostAsync<TaskView>(
+    var task = await client.PostAsync<TaskSummaryDto>(
         $"/api/tasks/{cliArgs[1]}/status",
         new { status = cliArgs[2], note = GetOption(cliArgs, "--note"), actor = "cli", source = "Human" });
 
@@ -435,7 +437,7 @@ static async Task<int> ApprovalCommandAsync(string url, List<string> cliArgs)
     {
         case "list":
         {
-            var approvals = await client.GetAsync<List<ApprovalView>>("/api/approvals?status=Pending");
+            var approvals = await client.GetAsync<List<ApprovalDto>>("/api/approvals?status=Pending");
             if (approvals.Count == 0)
             {
                 Console.WriteLine("没有待处理的审批。");
@@ -466,7 +468,7 @@ static async Task<int> ApprovalCommandAsync(string url, List<string> cliArgs)
                 return 1;
             }
 
-            await client.PostAsync<ApprovalView>(
+            await client.PostAsync<ApprovalDto>(
                 $"/api/approvals/{cliArgs[1]}/decide",
                 new { approve = sub == "approve", decidedBy = GetOption(cliArgs, "--by") ?? "cli", reason });
 
@@ -495,7 +497,7 @@ static async Task<int> MilestoneCommandAsync(string url, List<string> cliArgs)
                 return 1;
             }
 
-            var milestones = await client.GetAsync<List<MilestoneView>>($"/api/projects/{cliArgs[1]}/milestones");
+            var milestones = await client.GetAsync<List<MilestoneDto>>($"/api/projects/{cliArgs[1]}/milestones");
             if (milestones.Count == 0)
             {
                 Console.WriteLine("该项目还没有里程碑。");
@@ -518,7 +520,7 @@ static async Task<int> MilestoneCommandAsync(string url, List<string> cliArgs)
                 return 1;
             }
 
-            var created = await client.PostAsync<MilestoneView>(
+            var created = await client.PostAsync<MilestoneDto>(
                 $"/api/projects/{cliArgs[1]}/milestones",
                 new { name = cliArgs[2], description = GetOption(cliArgs, "--desc") });
 
@@ -548,7 +550,7 @@ static async Task<int> MilestoneCommandAsync(string url, List<string> cliArgs)
             }
 
             Guid? milestoneId = cliArgs[2] == "0" ? null : Guid.Parse(cliArgs[2]);
-            var task = await client.PostAsync<TaskView>(
+            var task = await client.PostAsync<TaskSummaryDto>(
                 $"/api/tasks/{cliArgs[1]}/milestone", new { milestoneId });
             Console.WriteLine($"已更新任务 {task.Id} 的里程碑。");
             return 0;
@@ -566,12 +568,12 @@ static async Task<int> MetricsCommandAsync(string url, List<string> cliArgs)
 
     if (cliArgs.Count >= 2)
     {
-        var one = await client.GetAsync<MetricsView>($"/api/projects/{cliArgs[1]}/metrics");
+        var one = await client.GetAsync<ProjectMetricsDto>($"/api/projects/{cliArgs[1]}/metrics");
         PrintMetrics(one);
         return 0;
     }
 
-    var all = await client.GetAsync<List<MetricsView>>("/api/metrics");
+    var all = await client.GetAsync<List<ProjectMetricsDto>>("/api/metrics");
     if (all.Count == 0)
     {
         Console.WriteLine("还没有项目数据。");
@@ -587,7 +589,7 @@ static async Task<int> MetricsCommandAsync(string url, List<string> cliArgs)
     return 0;
 }
 
-static void PrintMetrics(MetricsView m)
+static void PrintMetrics(ProjectMetricsDto m)
 {
     Console.WriteLine($"{m.Name}");
     Console.WriteLine($"  进度 {m.Progress * 100:0.#}%  完成 {m.DoneTasks}/{m.TotalTasks}  阻塞 {m.BlockedTasks}  停滞 {m.StaleTasks}  待审 {m.OpenApprovals}");
@@ -611,7 +613,7 @@ static async Task<int> WorkspaceCommandAsync(string url, List<string> cliArgs)
                 return 1;
             }
 
-            var result = await client.PostAsync<WorkspaceArchiveView>(
+            var result = await client.PostAsync<WorkspaceArchiveResult>(
                 "/api/workspace/export", new { targetDirectory = Path.GetFullPath(cliArgs[1]) });
             Console.WriteLine(result.Message);
             return 0;
@@ -632,15 +634,13 @@ static async Task<int> WorkspaceCommandAsync(string url, List<string> cliArgs)
                 return 1;
             }
 
-            var result = await client.PostAsync<WorkspaceArchiveView>(
-                "/api/workspace/import",
-                new
-                {
-                    sourceDirectory = Path.GetFullPath(cliArgs[1]),
-                    targetHomeDirectory = Path.GetFullPath(home)
-                });
+            // 导入只是搬文件，不碰数据库 —— 所以本地做，不必等服务在跑。
+            // （换机场景恰恰是服务还没起的时候。）
+            var target = Path.GetFullPath(home);
+            var (fileCount, totalBytes) = WorkspaceArchiveFiles.Import(Path.GetFullPath(cliArgs[1]), target);
 
-            Console.WriteLine(result.Message);
+            Console.WriteLine($"已恢复到 {target}（{fileCount} 个文件，{totalBytes} 字节）。");
+            Console.WriteLine("把 WORKBENCH_HOME 指到这个目录再启动服务即可。");
             return 0;
         }
 
@@ -659,7 +659,7 @@ static async Task<int> ToolCommandAsync(string url, List<string> cliArgs)
     {
         case "list":
         {
-            var tools = await client.GetAsync<List<McpToolView>>("/api/mcp/tools");
+            var tools = await client.GetAsync<List<McpToolInfo>>("/api/mcp/tools");
             var byCategory = tools.GroupBy(t => t.Category);
 
             foreach (var group in byCategory)
@@ -687,7 +687,7 @@ static async Task<int> ToolCommandAsync(string url, List<string> cliArgs)
                 return 1;
             }
 
-            var updated = await client.PutAsync<McpToolView>(
+            var updated = await client.PutAsync<McpToolInfo>(
                 $"/api/mcp/tools/{cliArgs[1]}", new { enabled = sub == "enable" });
 
             Console.WriteLine(sub == "enable"
@@ -698,7 +698,7 @@ static async Task<int> ToolCommandAsync(string url, List<string> cliArgs)
 
         case "reset":
         {
-            var tools = await client.PostAsync<List<McpToolView>>("/api/mcp/tools/reset", new { });
+            var tools = await client.PostAsync<List<McpToolInfo>>("/api/mcp/tools/reset", new { });
             Console.WriteLine($"已恢复默认（{tools.Count} 个工具全部开启）。");
             return 0;
         }
@@ -717,44 +717,3 @@ static string? GetOption(List<string> cliArgs, string name)
 
 static string Truncate(string value, int length) =>
     value.Length <= length ? value : value[..(length - 1)] + "…";
-
-public sealed record ProjectView(
-    Guid Id, string Name, string? Description, double Progress,
-    int TotalTasks, int DoneTasks, int BlockedTasks, int ActiveTasks,
-    DateTimeOffset? LastActivityAt, bool Stale, string? RepoPath, string? Branch, string? RepoRemote);
-
-public sealed record TaskView(
-    Guid Id, Guid ProjectId, string ProjectName, string Title, string Status,
-    string? ClaimedBy, DateTimeOffset? LeaseExpiresAt, DateTimeOffset UpdatedAt,
-    DateTimeOffset? LastActivityAt, bool Stale);
-
-public sealed record ApprovalView(
-    Guid Id, string ToolName, string Kind, string Summary, string Status,
-    string? RequestedBy, string? DecidedBy, string? DecisionReason, string? ResultSummary,
-    Guid? TaskId, Guid? ProjectId, DateTimeOffset CreatedAt, DateTimeOffset ExpiresAt, DateTimeOffset? DecidedAt);
-
-public sealed record MilestoneView(
-    Guid Id, Guid ProjectId, string Name, string? Description, DateTimeOffset? DueAt,
-    int Order, int TotalTasks, int DoneTasks, double Progress);
-
-public sealed record StatusCountView(string Status, int Count);
-
-public sealed record ThroughputView(string Week, int Completed);
-
-public sealed record MetricsView(
-    Guid ProjectId, string Name, int TotalTasks, int DoneTasks, int BlockedTasks, int StaleTasks,
-    int ActiveTasks, double Progress, List<StatusCountView> StatusCounts, List<ThroughputView> Throughput,
-    double? AvgCycleHours, double? TestPassRate, int OpenApprovals, double? AvgTestCoverage);
-
-public sealed record ProjectConfigView(
-    Guid Id, string Name, string? Description, string? RepoPath, string? RepoRemote,
-    string? DefaultBranch, List<string> AllowedCommands, string? AgentCommand,
-    string? NotificationWebhookUrl, string? NotificationFormat);
-
-public sealed record WorkspaceArchiveView(bool Ok, string Directory, int FileCount, long TotalBytes, string Message);
-
-public sealed record AgentLaunchView(
-    bool Ok, int? ProcessId, string Command, string WorkingDirectory, string? Error);
-
-public sealed record McpToolView(
-    string Name, string Category, string Description, bool Enabled, bool RequiresApproval, DateTimeOffset? UpdatedAt);

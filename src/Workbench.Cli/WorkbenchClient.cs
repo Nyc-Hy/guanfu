@@ -8,11 +8,26 @@ public sealed class WorkbenchClient(string baseUrl)
 {
     private readonly HttpClient _http = new() { BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/"), Timeout = TimeSpan.FromMinutes(2) };
 
-    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
+    /// <summary>
+    /// CLI 统一用这一份 JSON 选项：读服务端、打印给自己看都用它。
+    /// 抄第二份就会出现「读的时候能读枚举、打印的时候写成数字」这种鬼。
+    /// </summary>
+    public static JsonSerializerOptions JsonOptions => Json;
+
+    private static readonly JsonSerializerOptions Json = CreateJsonOptions();
+
+    private static JsonSerializerOptions CreateJsonOptions()
     {
-        TypeInfoResolver = System.Text.Json.Serialization.Metadata.JsonTypeInfoResolver.Combine(
-            new System.Text.Json.Serialization.Metadata.DefaultJsonTypeInfoResolver())
-    };
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web)
+        {
+            TypeInfoResolver = System.Text.Json.Serialization.Metadata.JsonTypeInfoResolver.Combine(
+                new System.Text.Json.Serialization.Metadata.DefaultJsonTypeInfoResolver())
+        };
+
+        // 服务端把枚举输出成字符串（"Draft" 而不是 1），这边要能读回去
+        options.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
+        return options;
+    }
 
     public async Task<T> GetAsync<T>(string path, CancellationToken ct = default)
     {
@@ -61,3 +76,11 @@ public sealed class WorkbenchClient(string baseUrl)
 }
 
 public sealed class WorkbenchCliException(string message) : Exception(message);
+
+/// <summary>CLI 的 JSON 选项集中在这里，别再抄第二份。</summary>
+internal static class CliJson
+{
+    /// <summary>给人看的 JSON：缩进 + 枚举输出成字符串，和服务端一致。</summary>
+    public static JsonSerializerOptions Pretty { get; } =
+        new(WorkbenchClient.JsonOptions) { WriteIndented = true };
+}

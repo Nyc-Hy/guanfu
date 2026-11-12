@@ -16,10 +16,10 @@ public sealed class WorkspaceArchiver(
     WorkbenchDbContext db,
     IOptions<WorkbenchOptions> options) : IWorkspaceArchiver
 {
-    private const string ManifestFileName = "manifest.json";
-    private const string DatabaseFileName = "workbench.db";
-    private const string DocumentsFolderName = "documents";
-    private const string KeyFileName = "secret.key";
+    private const string ManifestFileName = WorkspaceArchiveFiles.ManifestFileName;
+    private const string DatabaseFileName = WorkspaceArchiveFiles.DatabaseFileName;
+    private const string DocumentsFolderName = WorkspaceArchiveFiles.DocumentsFolderName;
+    private const string KeyFileName = WorkspaceArchiveFiles.KeyFileName;
 
     private readonly WorkbenchOptions _options = options.Value;
 
@@ -63,8 +63,8 @@ public sealed class WorkspaceArchiver(
                 Directory.Delete(documentsTarget, recursive: true);
             }
 
-            CopyDirectory(documentsSource, documentsTarget);
-            var (count, bytes) = Measure(documentsTarget);
+            WorkspaceArchiveFiles.CopyDirectory(documentsSource, documentsTarget);
+            var (count, bytes) = WorkspaceArchiveFiles.Measure(documentsTarget);
             fileCount += count;
             totalBytes += bytes;
         }
@@ -116,7 +116,6 @@ public sealed class WorkspaceArchiver(
             throw new WorkbenchException("目标 WORKBENCH_HOME 不能为空。");
         }
 
-        var source = Path.GetFullPath(sourceDirectory);
         var target = Path.GetFullPath(targetHomeDirectory);
 
         // 导入到正在跑的 WORKBENCH_HOME 会把正在用的库覆盖掉 —— 直接拒
@@ -126,41 +125,7 @@ public sealed class WorkspaceArchiver(
                 "不能导入到正在运行的 WORKBENCH_HOME。请先停掉服务，或指定一个新的目录。");
         }
 
-        var dbSource = Path.Combine(source, DatabaseFileName);
-        if (!File.Exists(dbSource))
-        {
-            throw new WorkbenchException($"源目录里没有 {DatabaseFileName}，不是一个工作台导出目录: {source}");
-        }
-
-        Directory.CreateDirectory(target);
-
-        var dbTarget = Path.Combine(target, DatabaseFileName);
-        File.Copy(dbSource, dbTarget, overwrite: true);
-
-        var fileCount = 1;
-        var totalBytes = new FileInfo(dbTarget).Length;
-
-        var documentsSource = Path.Combine(source, DocumentsFolderName);
-        var documentsTarget = Path.Combine(target, DocumentsFolderName);
-        if (Directory.Exists(documentsSource))
-        {
-            if (Directory.Exists(documentsTarget))
-            {
-                Directory.Delete(documentsTarget, recursive: true);
-            }
-
-            CopyDirectory(documentsSource, documentsTarget);
-            var (count, bytes) = Measure(documentsTarget);
-            fileCount += count;
-            totalBytes += bytes;
-        }
-
-        var keySource = Path.Combine(source, KeyFileName);
-        if (File.Exists(keySource))
-        {
-            File.Copy(keySource, Path.Combine(target, KeyFileName), overwrite: true);
-            fileCount++;
-        }
+        var (fileCount, totalBytes) = WorkspaceArchiveFiles.Import(sourceDirectory, target);
 
         await Task.CompletedTask;
 
@@ -189,32 +154,4 @@ public sealed class WorkspaceArchiver(
         }
     }
 
-    private static void CopyDirectory(string source, string target)
-    {
-        Directory.CreateDirectory(target);
-
-        foreach (var file in Directory.EnumerateFiles(source))
-        {
-            File.Copy(file, Path.Combine(target, Path.GetFileName(file)), overwrite: true);
-        }
-
-        foreach (var dir in Directory.EnumerateDirectories(source))
-        {
-            CopyDirectory(dir, Path.Combine(target, Path.GetFileName(dir)));
-        }
-    }
-
-    private static (int Count, long Bytes) Measure(string directory)
-    {
-        var count = 0;
-        long bytes = 0;
-
-        foreach (var file in Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories))
-        {
-            count++;
-            bytes += new FileInfo(file).Length;
-        }
-
-        return (count, bytes);
-    }
 }

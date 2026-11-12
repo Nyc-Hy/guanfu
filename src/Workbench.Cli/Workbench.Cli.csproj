@@ -7,4 +7,9 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- 共享应用层的 DTO：CLI 不再自己抄一份，字段不会漏同步 -->
+    <ProjectReference Include="..\Workbench.Application\Workbench.Application.csproj" />
+  </ItemGroup>
+
 </Project>
