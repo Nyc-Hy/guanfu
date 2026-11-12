@@ -52,6 +52,17 @@ dotnet run --project src/Workbench.Cli -- --help # CLI
 数据目录由 `WORKBENCH_HOME` 决定（默认 `~/.workbench`），里面是 SQLite、文档原件、密钥文件与
 外部 agent 的运行日志（`runs/`）。换机用 `wb workspace export` / `wb workspace import`。
 
+## 三个前端，权重不一样
+
+`Web UI` / `MCP 工具集` / `CLI (wb)` 是**平行**的三个入口，共用同一批应用服务。
+
+**主路径是 Web UI + MCP**（人看界面，agent 走工具）。CLI 是次要入口——
+功能上大多被前两者覆盖，但 **`wb mcp` 的 stdio 桥接不可替代**（只支持 stdio 的
+MCP 客户端全靠它接进来），改动桥接时要格外小心。
+
+CLI 命令**全部保留**（用户 2026-11-12 决定），不因为「大概率不用」就精简——
+但也别在 CLI 上花与主路径不成比例的功夫。
+
 ## 代码位置
 
 | 目录 | 职责 |
