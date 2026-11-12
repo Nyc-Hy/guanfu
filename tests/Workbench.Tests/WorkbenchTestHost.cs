@@ -65,6 +65,9 @@ public sealed class WorkbenchTestHost : IDisposable
     public MetricsService Metrics => new(_db, Clock);
     public FileSystemService Files => new(_db);
 
+    /// <summary>数据库连接服务。密码保护器用假的 —— 测试里不需要真的加密。</summary>
+    public DbConnectionService DbConnections => new(_db, new FakeSecretProtector());
+
     public void Dispose()
     {
         _provider.Dispose();
@@ -87,5 +90,14 @@ public sealed class WorkbenchTestHost : IDisposable
 
         public GitState Inspect(string repoPath) =>
             new(Branch, "abc123", false, 0, Error);
+    }
+
+    /// <summary>假密钥保护器。测试里不需要真的加密，只关心「密码存进去了」。</summary>
+    public sealed class FakeSecretProtector : ISecretProtector
+    {
+        public string Protect(string plaintext) => "enc:" + plaintext;
+
+        public string Unprotect(string ciphertext) =>
+            ciphertext.StartsWith("enc:", StringComparison.Ordinal) ? ciphertext[4..] : ciphertext;
     }
 }
