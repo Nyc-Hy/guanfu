@@ -400,6 +400,42 @@ public static class WorkbenchApi
             }
         });
 
+        // 批量批准。一条一条点太慢了 —— 人工审核通常是「这批都同意」。
+        // 部分失败不吞掉：哪些批了、哪些没批，逐条回。
+        api.MapPost("/approvals/batch-decide", async (
+            BatchDecideApprovalRequest request, IApprovalService approvals, CancellationToken ct) =>
+        {
+            if (request.ApprovalIds.Count == 0)
+            {
+                return Results.BadRequest("审批 id 列表不能为空。");
+            }
+
+            if (request.ApprovalIds.Count > 200)
+            {
+                return Results.BadRequest("一次最多批 200 条。");
+            }
+
+            var results = new List<BatchDecisionResult>();
+            var failed = 0;
+
+            foreach (var id in request.ApprovalIds.Distinct())
+            {
+                try
+                {
+                    var approval = await approvals.DecideAsync(
+                        id, request.Approve, request.DecidedBy, request.Reason, ct);
+                    results.Add(new BatchDecisionResult(id, true, approval.Status, null));
+                }
+                catch (WorkbenchException ex)
+                {
+                    failed++;
+                    results.Add(new BatchDecisionResult(id, false, null, ex.Message));
+                }
+            }
+
+            return Results.Ok(new { total = results.Count, failed, results });
+        });
+
         // ---- 项目配置 ----
         api.MapGet("/projects/{projectId:guid}/config", async (
             Guid projectId, IProjectService projects, CancellationToken ct) =>
@@ -628,3 +664,17 @@ public sealed record AddDependencyRequest(
     Guid DependsOnTaskId,
     string? Type = null,
     string? Note = null);
+
+/// <summary>批量裁决审批。部分失败不吞掉 —— 逐条回。</summary>
+public sealed record BatchDecideApprovalRequest(
+    IReadOnlyList<Guid> ApprovalIds,
+    bool Approve = true,
+    string? DecidedBy = null,
+    string? Reason = null);
+
+/// <summary>批量裁决的单条结果。</summary>
+public sealed record BatchDecisionResult(
+    Guid Id,
+    bool Ok,
+    string? Status = null,
+    string? Error = null);
