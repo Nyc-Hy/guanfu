@@ -1,6 +1,6 @@
-# 开发工作台 — 实施计划（v0.3，已落地）
+# 开发工作台 — 实施计划（v0.4，P0~P4 全部落地）
 
-> v0.1 征求意见 → v0.2 锁定六项决策 → **v0.3 同步实现现状**。
+> v0.1 征求意见 → v0.2 锁定六项决策 → v0.3 同步实现现状 → **v0.4 P3/P4 收尾**。
 > 计划文档随代码走，放在仓库 `docs/PLAN.md`。
 
 ---
@@ -23,7 +23,7 @@
 | 3 | **项目库 = SQL Server** | ✅ `Microsoft.Data.SqlClient`。**读默认放行**（`db_query`），**写/改/DDL 必须人工审批**（`db_execute`） |
 | 4 | **agent 自己领任务** | ✅ `workbench_claim_task` 带租约；租约未过期时其他 agent 领不走，过期可再领 |
 | 5 | **完整文档解读工具** | ✅ `Workbench.Documents`：MD/DOCX/PDF/diff → 统一模型，**保留删除线与修订（补丁）语义** |
-| 6 | **Git 托管 + 开源 + 可换机** | ✅ 仓库已 git 化（MIT / README / AGENTS.md / CI）；数据目录可整体搬迁；项目级 git 只读检视已实现 |
+| 6 | **Git 托管 + 开源 + 可换机** | ✅ 仓库已 git 化（MIT / README / AGENTS.md / CI）；`wb workspace export/import` 整目录搬迁（库+文档+密钥）；git 读写工具齐备（写走审批） |
 
 ---
 
@@ -36,10 +36,10 @@ Workbench.sln
 │  ├─ Workbench.Application     用例服务、DTO、事件、审批编排
 │  ├─ Workbench.Documents       文档解析引擎（MD/DOCX/PDF/diff → 统一模型）
 │  ├─ Workbench.Infrastructure  EF Core/SQLite、文档存储、Git 检视、SQL Server 执行器、密钥加密
-│  ├─ Workbench.Mcp             MCP 工具集（25 个工具）+ 注册
+│  ├─ Workbench.Mcp             MCP 工具集（35 个工具）+ 注册
 │  ├─ Workbench.Web             Blazor UI + REST API + /mcp 端点（宿主进程）
 │  └─ Workbench.Cli             wb 命令行 + stdio↔HTTP MCP 桥接
-└─ tests/Workbench.Tests        43 项测试
+└─ tests/Workbench.Tests        87 项测试
 ```
 
 **唯一数据通路**：Web 独占 SQLite（唯一写者）。MCP 与 CLI 都是 Web 的 HTTP 客户端，不直连数据库。
@@ -51,11 +51,13 @@ Workbench.sln
 
 ```
 Draft → DocsReady → Planned → InDev → Testing → Review → Done
-  │        │           │         │         │         │
-  └────────┴───────────┴─────────┴─────────┴─────────┴──► Blocked（任意态可进）
-                                                         └──► Cancelled
+          │           │         │         │         │         │
+          └───────────┴─────────┴─────────┴─────────┴─────────┴──► Blocked
+   └──► Cancelled（任意态可取消）
 ```
 
+- `Draft` **不能**直接进 `Blocked`：草稿不算阻塞，要先有文档（`Draft → Blocked` 被状态机拒绝）
+- `Blocked` 可以回到流水线的任一状态；`Cancelled` 只能回到 `Draft` 重开
 - 非法迁移直接拒绝，并返回**当前允许的迁移列表**（agent 拿得到反馈，不会瞎试）
 - `Review → InDev` 是合法的打回回路
 - 每次迁移写一条 append-only 的 `status_events`（来源：人 / agent / CI）
@@ -63,18 +65,24 @@ Draft → DocsReady → Planned → InDev → Testing → Review → Done
 
 ---
 
-## 4. MCP 工具（25 个，下划线命名）
+## 4. MCP 工具（35 个，下划线命名）
 
-**工作台组**：`workbench_list_projects` / `get_project` / `create_task` / `list_tasks` / `get_task` /
-`claim_task` / **`get_context`**（一次取全上下文）/ `set_plan` / `update_status` / `add_artifact` /
-`report_test_result` / `post_event` / `list_approvals` / `get_approval` / `await_approval`
+**工作台组（19）**：`workbench_list_projects` / `get_project` / `get_project_config` / `create_task` /
+`list_tasks` / `get_task` / `claim_task` / **`get_context`**（一次取全上下文）/ `set_plan` /
+`update_status` / `add_artifact` / `report_test_result` / `post_event` / `list_approvals` /
+`get_approval` / `await_approval` / `list_milestones` / `assign_milestone` / `get_metrics`
 
-**文档组**：`doc_parse` / `doc_get_outline` / `doc_get_text` / `doc_get_revisions` /
+**文档组（7）**：`doc_parse` / `doc_get_outline` / `doc_get_text` / `doc_get_revisions` /
 `doc_list_struck` / `doc_search` / `doc_list_formats`
 
-**数据库组**：`db_query`（读，直通）/ `db_execute`（写，必须审批）/ `db_list_connections`
+**数据库组（4）**：`db_query`（读，直通）/ `db_execute`（写，必须审批）/ `db_list_connections` /
+`db_schema`（表结构，直通）
+
+**通用组（5）**：`fs_list` / `fs_read`（项目仓库内，越界拒绝）/ `git_commit` / `git_push`（**走审批**）/
+`shell_run`（**白名单 + 强制审批**，不走 shell 解析）
 
 > 工具名用下划线而非点号：部分 MCP 客户端不接受点号。
+> 写类工具（`db_execute` / `git_*` / `shell_run`）统一是「先建审批 → 等待 → 批准后带 `approvalId` 续跑」。
 
 ---
 
@@ -95,7 +103,8 @@ Draft → DocsReady → Planned → InDev → Testing → Review → Done
 ## 6. 审批与审计
 
 - **读**：默认放心读，直接执行，只记审计日志
-- **写 / 改 / DDL**：必须人工审批通过后才真正执行
+- **写 / 改 / DDL / git 写 / shell**：必须人工审批通过后才真正执行
+- `shell_run` 额外受**项目白名单**约束：不在白名单里的命令直接拒，连审批都不进
 - 独立审批页 `/approvals`：待审列表（风险色标 + 倒计时 + 角标）、详情（SQL 原文 / 影响表 / 发起上下文）、批准 / 驳回（必填理由）
 - 闭环：agent 调 `db_execute` → 挂起等待 → 人工批准 → agent 带 `approvalId` 续跑执行（令牌式）
 - 所有工具调用与审批决定写 append-only 审计表
@@ -111,8 +120,17 @@ Draft → DocsReady → Planned → InDev → Testing → Review → Done
 | **P1 MCP + CLI** | ✅ 完成 | 25 个 MCP 工具、REST 回调、`wb` CLI、stdio↔HTTP 桥接 |
 | **P1.5 文档解读** | ✅ 完成 | 四种格式解析、删除线与修订还原、`doc_*` 工具、文档详情页 |
 | **P2 审批审计** | ✅ 完成 | 审批模型、审批页、`db_query`/`db_execute`、审计表、过期、SSE 预留 |
-| **P3 Git + 通用工具** | ⏳ 部分 | 项目级 git **只读**检视已实现；`git.commit`/`git.push`（走审批）、`fs.read/list`、`db.schema`、`shell.run` 白名单待做 |
-| **P4 开源就绪** | ⏳ 部分 | LICENSE / README / AGENTS.md / CI 已就绪；`wb workspace export/import`、「启动 agent」按钮、里程碑、度量看板待做 |
+| **P3 Git + 通用工具** | ✅ 完成 | `git_commit`/`git_push`（走审批）、`fs_list`/`fs_read`（越界拒绝）、`db_schema`、`shell_run`（白名单+强制审批，不走 shell 解析） |
+| **P4 开源就绪** | ✅ 完成 | LICENSE / README / AGENTS.md / CI；`wb workspace export/import`（整目录搬迁，含库+文档+密钥）、「启动 agent」按钮、里程碑（实体+服务+看板筛选）、度量看板（流速/周期/通过率/阻塞/停滞） |
+
+### P3/P4 新增界面
+
+| 页面 | 作用 |
+|---|---|
+| `/projects/{id}/settings` | 仓库路径、git 远端、agent 启动命令、命令白名单、审批通知 webhook |
+| `/metrics` | 各项目度量：状态分布、近 8 周流速、平均周期、测试通过率、平均覆盖率、待审数、阻塞与停滞 |
+| 看板页 | 里程碑筛选 + 里程碑增删 |
+| 任务详情页 | 里程碑归属、**「启动 agent」按钮**（拉起外部 CLI，输出落 `WORKBENCH_HOME/runs/{taskId}/`） |
 
 ---
 
@@ -139,3 +157,6 @@ Draft → DocsReady → Planned → InDev → Testing → Review → Done
 | MCP 会把工具异常吞成泛化信息 | agent 看不到「当前允许的迁移列表」 | 工具改为返回带 `error` / `allowedTransitions` 的结构化结果 |
 | 审批在工具返回后才批准 → SQL 永不执行 | 长流程走不通 | `db_execute` 增加 `approvalId` 令牌式续跑 |
 | `AwaitAsync` 用注入的业务时钟判超时 | 测试里时钟冻结 → 死等 | 超时改用墙上时间（Stopwatch） |
+| `git push` 只给分支不给远端 | 命令变成 `git push main`，git 去找一个叫 main 的远端 → `does not appear to be a git repository` | 只给分支时补 `origin`（`GitWriter.BuildPushArgs`，已补回归测试） |
+| 边跑边复制 SQLite 文件 | 导出的是撕裂的库，导入后打不开 | 用 SQLite 的 `VACUUM INTO` 做一致性快照 |
+| shell 白名单用字符串前缀匹配 | `dotnet test` 会匹配到 `dotnet test-foo` | 白名单按「完全相等或前缀+空格」匹配，且命令拆成 exec 参数，**不经过 shell** |

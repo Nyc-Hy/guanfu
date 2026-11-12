@@ -26,10 +26,16 @@
    **当前允许的迁移列表**带回给调用方（agent 靠这个自我纠正）。
 3. **MCP 工具不要抛异常**：SDK 会把异常吞成一句 "An error occurred invoking ..."，
    agent 就看不到原因了。要返回带 `error` 字段的结构化结果。
-4. **写数据库必须审批**：读直通，写走 `db_execute` → 审批 → 批准后带
-   `approvalId` 续跑执行。
+4. **写操作必须审批**：读直通，写走 `db_execute` / `git_commit` / `git_push` /
+   `shell_run` → 审批 → 批准后带 `approvalId` 续跑执行。这几个工具共用同一套
+   闸门，别各写各的。
 5. **SQLite 不能对 `DateTimeOffset` 列排序**：所有 DateTimeOffset 一律经
    `UtcDateTimeOffsetConverter` 转成 UTC DateTime 存储，别绕过这个约定。
+6. **shell 不走 shell 解析**：`shell_run` 的命令被拆成可执行文件 + 参数直接 exec，
+   杜绝 `;` / `&` / `|` 拼接注入；且必须命中项目白名单（`Project.AllowedCommandsJson`）。
+   别改成 `ProcessStartInfo.Arguments` 或 `cmd /c`。
+7. **外部命令只在白名单里跑**：git 命令走 `IGitWriter`（同样不走 shell），
+   agent 启动命令走 `IAgentLauncher`。工作台不提供 AI，只执行用户配置好的外部命令。
 
 ## 常用命令
 
@@ -40,7 +46,8 @@ dotnet run --project src/Workbench.Web          # 起服务（UI + REST + /mcp�
 dotnet run --project src/Workbench.Cli -- --help # CLI
 ```
 
-数据目录由 `WORKBENCH_HOME` 决定（默认 `~/.workbench`），里面是 SQLite、文档原件与密钥文件。
+数据目录由 `WORKBENCH_HOME` 决定（默认 `~/.workbench`），里面是 SQLite、文档原件、密钥文件与
+外部 agent 的运行日志（`runs/`）。换机用 `wb workspace export` / `wb workspace import`。
 
 ## 代码位置
 
@@ -49,7 +56,7 @@ dotnet run --project src/Workbench.Cli -- --help # CLI
 | `src/Workbench.Domain` | 实体、任务状态机、规则 |
 | `src/Workbench.Application` | 用例服务、DTO、事件、审批编排 |
 | `src/Workbench.Documents` | 文档解析引擎（MD/DOCX/PDF/diff → 统一模型） |
-| `src/Workbench.Infrastructure` | EF Core/SQLite、文档存储、Git 检视、SQL Server 执行器 |
+| `src/Workbench.Infrastructure` | EF Core/SQLite、文档存储、Git 读写、SQL Server 执行器、工作区搬迁 |
 | `src/Workbench.Mcp` | MCP 工具集 |
 | `src/Workbench.Web` | Blazor UI + REST API + /mcp 端点（宿主进程） |
 | `src/Workbench.Cli` | `wb` 命令行 + stdio↔HTTP MCP 桥接 |

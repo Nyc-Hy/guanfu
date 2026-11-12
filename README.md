@@ -32,11 +32,12 @@
 
 ```
 Draft → DocsReady → Planned → InDev → Testing → Review → Done
-  │        │           │         │         │         │
-  └────────┴───────────┴─────────┴─────────┴─────────┴──► Blocked（任意态可进）
-                                                         └──► Cancelled
+          │           │         │         │         │         │
+          └───────────┴─────────┴─────────┴─────────┴─────────┴──► Blocked
+   └──► Cancelled（任意态可取消）
 ```
 
+- `Draft` 不能直接进 `Blocked`（草稿不算阻塞，要先有文档）
 - 非法迁移直接拒绝，并返回**当前允许的迁移列表**（agent 拿得到反馈，不会瞎试）
 - `Review → InDev` 是合法的打回回路
 - 每次迁移写一条 append-only 的 `status_events`（谁 / 何时 / 从哪来 / 说明）
@@ -55,10 +56,12 @@ Draft → DocsReady → Planned → InDev → Testing → Review → Done
 ### 5. 审批与审计
 
 - **读**：默认放心读，直接执行，只记审计日志
-- **写 / 改 / DDL**：必须人工审批通过后才真正执行
+- **写 / 改 / DDL / git 写 / shell**：必须人工审批通过后才真正执行
+- `shell_run` 额外受**项目白名单**约束：不在白名单里的命令直接拒，连审批都不进
 - 审批请求携带 SQL 原文、涉及表、预估影响行数、发起 agent、关联任务上下文
 - 所有工具调用与所有审批决定写 append-only 审计表
 - 默认 30 分钟未处理自动过期，防僵尸审批堆积
+- 项目可配 webhook（钉钉 / 飞书 / 通用），有人请求审批时推一条消息——人不在电脑前时审批不会静静躺到过期
 
 ---
 
@@ -112,6 +115,16 @@ wb status set <任务ID> Planned --note "计划已出"
 wb doc upload <任务ID> ./PRD.md --kind prd
 wb approval list
 wb approval approve <审批ID>
+
+wb milestone list <项目ID>              # 里程碑
+wb milestone create <项目ID> "第一期"
+wb metrics [<项目ID>]                   # 度量：流速 / 周期 / 通过率 / 阻塞
+
+wb project config <项目ID> --repo /path --agent "claude -p \"{title}\"" --allow "dotnet test,npm run build"
+wb task launch <任务ID>                 # 拉起外部 agent
+
+wb workspace export /tmp/wb-backup       # 换机：整目录导出（库+文档+密钥）
+wb workspace import /tmp/wb-backup --home ~/.workbench
 ```
 
 全局参数 `--url`（或环境变量 `WORKBENCH_URL`）指定服务地址。
@@ -138,6 +151,9 @@ wb approval approve <审批ID>
 | `workbench_post_event` | 写一条事件流水 |
 | `workbench_list_approvals` / `workbench_get_approval` | 查审批 |
 | `workbench_await_approval` | 阻塞等待人工审批 |
+| `workbench_list_milestones` / `workbench_assign_milestone` | 里程碑归组 |
+| `workbench_get_metrics` | 度量（流速 / 周期 / 通过率 / 阻塞） |
+| `workbench_get_project_config` | 项目配置（仓库路径 / 白名单 / agent 命令 / 通知地址） |
 
 **文档组**
 
@@ -158,6 +174,17 @@ wb approval approve <审批ID>
 | `db_query` | 只读，**默认放行**，只记审计日志 |
 | `db_execute` | 写 / 改 / DDL，**必须人工审批** |
 | `db_list_connections` | 列连接（不含密码） |
+| `db_schema` | 表结构（表 / 列 / 类型 / 主键），默认放行 |
+
+**通用组**
+
+| 工具 | 审计策略 | 说明 |
+|---|---|---|
+| `fs_list` / `fs_read` | 只读，放行 | 项目仓库目录内；越界路径直接拒 |
+| `git_commit` / `git_push` | **必须人工审批** | 项目级 git 写操作 |
+| `shell_run` | **白名单 + 强制审批** | 命令拆成 exec 参数直接跑，**不经过 shell**，不支持管道与重定向 |
+
+> 写类工具统一是「先建审批 → 等待人工决定 → 批准后带 `approvalId` 再次调用即执行」。
 
 ---
 
@@ -187,10 +214,20 @@ Workbench.sln
 ├─ workbench.db        SQLite
 ├─ documents/          上传的文档原件
 ├─ secret.key          数据库密码的加密密钥（AES-GCM，0600）
+├─ runs/               外部 agent 的运行日志（按 taskId 分目录）
 ```
 
-换电脑时把整个目录搬过去，设好 `WORKBENCH_HOME` 即可。
-项目配置里的仓库绝对路径需要重新指向。
+换电脑时：
+
+```bash
+wb workspace export /tmp/wb-backup          # 导出（库用 VACUUM INTO 做一致性快照）
+# 把 /tmp/wb-backup 整个目录拷到新机器
+wb workspace import /tmp/wb-backup --home ~/.workbench
+export WORKBENCH_HOME=~/.workbench
+```
+
+导出的目录含 `workbench.db`、`documents/`、`secret.key` 与 `manifest.json`。
+密钥必须一起搬，否则老库的密码解不开。项目配置里的仓库绝对路径需要重新指向。
 
 ---
 
