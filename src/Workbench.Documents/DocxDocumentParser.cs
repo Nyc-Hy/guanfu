@@ -14,17 +14,35 @@ public sealed class DocxDocumentParser : IDocumentParser
 {
     public DocFormat Format => DocFormat.Docx;
 
+    /// <summary>v2：纯文本保留删除线标记。</summary>
+    public int ParserVersion => 2;
+
     public bool CanParse(string fileName) =>
         Path.GetExtension(fileName).Equals(".docx", StringComparison.OrdinalIgnoreCase);
 
     public async Task<ParsedDocDto> ParseAsync(Stream stream, string fileName, CancellationToken cancellationToken)
     {
-        // OpenXml 需要可 seek 的流：先缓冲到内存
-        using var buffer = new MemoryStream();
-        await stream.CopyToAsync(buffer, cancellationToken).ConfigureAwait(false);
-        buffer.Position = 0;
+        try
+        {
+            // OpenXml 需要可 seek 的流：先缓冲到内存
+            using var buffer = new MemoryStream();
+            await stream.CopyToAsync(buffer, cancellationToken).ConfigureAwait(false);
+            buffer.Position = 0;
 
-        using var document = WordprocessingDocument.Open(buffer, isEditable: false);
+            using var document = WordprocessingDocument.Open(buffer, isEditable: false);
+            return ParseDocument(document, fileName);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // 损坏 / 不是 docx 的文件：包格式异常（FileFormatException / OpenXmlPackageException）
+            // 不能穿到上层，上层只认 IO 异常，接不住就会变成页面 500。
+            // 解析器自己兜住：返回空结果 + 明确错误信息。
+            return ParseFailure.Create(fileName, DocFormat.Docx, ex, "docx 文件损坏或不是有效的 Word 文档");
+        }
+    }
+
+    private static ParsedDocDto ParseDocument(WordprocessingDocument document, string fileName)
+    {
         var body = document.MainDocumentPart?.Document?.Body;
         if (body is null)
         {
@@ -124,7 +142,8 @@ public sealed class DocxDocumentParser : IDocumentParser
             return null;
         }
 
-        plain.Append(text).Append('\n');
+        // 纯文本通道保留删除线标记：agent 不能把已废弃的内容当需求读
+        plain.Append(MarkdownDocumentParser.SemanticText(inlines)).Append('\n');
 
         var headingLevel = ResolveHeadingLevel(styleName, outlineLevel);
         if (headingLevel is not null)

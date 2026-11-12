@@ -1,3 +1,4 @@
+using System.Globalization;
 using Workbench.Domain;
 
 namespace Workbench.Documents;
@@ -85,45 +86,154 @@ public static class DiffTextParser
         return lines;
     }
 
+    /// <summary>
+    /// 解析 hunk 头 <c>@@ -a,b +c,d @@</c>，同时取出旧文件与新文件的起始行号。
+    ///
+    /// 之前只取了 '-' 段就返回，新增行的行号恒为 null —— 补丁定位不到新文件的位置。
+    /// context 行在新旧两个文件里都有，所以它的行号取 '+' 段的值。
+    /// </summary>
     private static (int? Old, int? New) ParseHunkHeader(string header)
     {
-        // @@ -a,b +c,d @@
-        try
+        int? oldLine = null;
+        int? newLine = null;
+
+        // @@ -a,b +c,d @@ 可选上下文
+        var parts = header.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        for (var i = 0; i < parts.Length; i++)
         {
-            var parts = header.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            foreach (var part in parts)
+            var part = parts[i];
+
+            if (part.StartsWith("@@", StringComparison.Ordinal))
             {
-                if (part.StartsWith('-') && part.Length > 1)
+                if (i > 0)
                 {
-                    var seg = part[1..].Split(',');
-                    var start = int.Parse(seg[0]);
-                    return (start, null);
+                    // 收尾的 @@：后面是函数名之类的上下文，不再看
+                    break;
                 }
+
+                continue;
             }
 
-            foreach (var part in parts)
+            if (oldLine is null && part.Length > 1 && part[0] == '-')
             {
-                if (part.StartsWith('+') && part.Length > 1)
-                {
-                    var seg = part[1..].Split(',');
-                    var start = int.Parse(seg[0]);
-                    return (null, start);
-                }
+                oldLine = TryParseStart(part[1..]);
+                continue;
+            }
+
+            if (newLine is null && part.Length > 1 && part[0] == '+')
+            {
+                newLine = TryParseStart(part[1..]);
+                continue;
             }
         }
-        catch (FormatException)
+
+        return (oldLine, newLine);
+    }
+
+    private static int? TryParseStart(string segment)
+    {
+        var parts = segment.Split(',');
+        return int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var start)
+            ? start
+            : null;
+    }
+
+    /// <summary>
+    /// 拆出 <c>git format-patch</c> 风格的邮件头：作者与时间。
+    ///
+    /// 补丁文件本身不带作者与时间，但 format-patch 的头里有（From: / Date:），
+    /// AGENTS.md 要求「修订要带作者与时间」，所以这里解析出来。
+    /// </summary>
+    public static DiffFileHeader ParseFile(string text)
+    {
+        string? author = null;
+        DateTimeOffset? date = null;
+        string? subject = null;
+
+        var lines = text.Replace("\r\n", "\n").Split('\n');
+        var index = 0;
+
+        for (; index < lines.Length; index++)
         {
-            // 头格式异常时忽略行号，不影响内容解析
+            var line = lines[index].Trim();
+
+            if (line.StartsWith("From:", StringComparison.Ordinal))
+            {
+                author = line["From:".Length..].Trim();
+                continue;
+            }
+
+            if (line.StartsWith("Date:", StringComparison.Ordinal))
+            {
+                var value = line["Date:".Length..].Trim();
+                if (DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AllowWhiteSpaces, out var parsed))
+                {
+                    date = parsed;
+                }
+
+                continue;
+            }
+
+            if (line.StartsWith("Subject:", StringComparison.Ordinal))
+            {
+                subject = line["Subject:".Length..].Trim();
+                continue;
+            }
+
+            if (IsCommitLine(line))
+            {
+                // format-patch 的第一行 "From <sha> Mon Sep 17 00:00:00 2001"，不是作者
+                continue;
+            }
+
+            break;
         }
 
-        return (null, null);
+        // 邮件头与正文之间常有空行，别把它算进补丁正文
+        while (index < lines.Length && lines[index].Trim().Length == 0)
+        {
+            index++;
+        }
+
+        var body = index >= lines.Length ? string.Empty : string.Join("\n", lines.Skip(index));
+
+        return new DiffFileHeader(author, date, subject, body);
+    }
+
+    /// <summary>判断是不是 format-patch 的 "From &lt;sha&gt; ..." 那行。</summary>
+    private static bool IsCommitLine(string line)
+    {
+        if (!line.StartsWith("From ", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var rest = line["From ".Length..].Trim();
+        var space = rest.IndexOf(' ');
+        if (space <= 0)
+        {
+            return false;
+        }
+
+        var sha = rest[..space];
+        return sha.Length >= 7 && sha.All(c => char.IsAsciiHexDigit(c));
     }
 }
+
+/// <summary>diff 文件的邮件头（作者 / 时间 / 主题）与正文。</summary>
+public sealed record DiffFileHeader(
+    string? Author,
+    DateTimeOffset? Date,
+    string? Subject,
+    string Body);
 
 /// <summary>diff / patch 文件解析器。</summary>
 public sealed class DiffDocumentParser : IDocumentParser
 {
     public DocFormat Format => DocFormat.UnifiedDiff;
+
+    /// <summary>v2：hunk 头带出新文件行号；修订带作者与时间。</summary>
+    public int ParserVersion => 2;
 
     public bool CanParse(string fileName)
     {
@@ -135,12 +245,17 @@ public sealed class DiffDocumentParser : IDocumentParser
     {
         using var reader = new StreamReader(stream, leaveOpen: true);
         var text = await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
-        var lines = DiffTextParser.ParseLines(text);
+
+        // format-patch 的邮件头里带作者与时间，正文才是补丁
+        var header = DiffTextParser.ParseFile(text);
+        var lines = DiffTextParser.ParseLines(header.Body);
 
         var revisions = lines
             .Where(l => l.Kind is DiffTextParser.Added or DiffTextParser.Removed)
             .Select(l => new ParsedRevisionDto(
                 l.Kind == DiffTextParser.Added ? RevisionKindName.Insert : RevisionKindName.Delete,
+                Author: header.Author,
+                Date: header.Date,
                 Text: l.Text,
                 Context: Path.GetFileName(fileName)))
             .ToList();
@@ -148,7 +263,7 @@ public sealed class DiffDocumentParser : IDocumentParser
         var block = new ParsedBlockDto(
             BlockKind.Diff,
             Language: "diff",
-            Text: text,
+            Text: header.Body,
             IsDiff: true,
             Lines: lines);
 

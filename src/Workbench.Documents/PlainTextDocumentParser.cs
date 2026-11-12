@@ -1,6 +1,5 @@
 using System.Text;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using Workbench.Domain;
 
 namespace Workbench.Documents;
@@ -10,12 +9,18 @@ public sealed class PlainTextDocumentParser : IDocumentParser
 {
     public DocFormat Format => DocFormat.PlainText;
 
+    /// <summary>v2：按内容探测编码（UTF-8 / GB18030），不再一律按 UTF-8 解码。</summary>
+    public int ParserVersion => 2;
+
     public bool CanParse(string fileName) => true;
 
     public async Task<ParsedDocDto> ParseAsync(Stream stream, string fileName, CancellationToken cancellationToken)
     {
-        using var reader = new StreamReader(stream, leaveOpen: true);
-        var text = await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
+        // 先取字节再自己判断编码：StreamReader 只会按 UTF-8 解，GBK 文件会变乱码
+        using var buffer = new MemoryStream();
+        await stream.CopyToAsync(buffer, cancellationToken).ConfigureAwait(false);
+
+        var text = TextEncodingDetector.Decode(buffer.ToArray());
         return Parse(text, fileName);
     }
 
@@ -52,6 +57,8 @@ public sealed class PlainTextDocumentParser : IDocumentParser
 public sealed class JsonDocumentParser : IDocumentParser
 {
     public DocFormat Format => DocFormat.Json;
+
+    public int ParserVersion => 1;
 
     public bool CanParse(string fileName) =>
         Path.GetExtension(fileName).Equals(".json", StringComparison.OrdinalIgnoreCase);
@@ -141,10 +148,13 @@ public sealed class JsonDocumentParser : IDocumentParser
     }
 }
 
-/// <summary>HTML 解析器：去标签 + 解实体 + 分段。</summary>
+/// <summary>HTML 解析器：抽正文 + 解实体 + 分段。</summary>
 public sealed class HtmlDocumentParser : IDocumentParser
 {
     public DocFormat Format => DocFormat.Html;
+
+    /// <summary>v2：脚本 / 样式整块剔除，标题不再混进正文。</summary>
+    public int ParserVersion => 2;
 
     public bool CanParse(string fileName) =>
         Path.GetExtension(fileName).Equals(".html", StringComparison.OrdinalIgnoreCase) ||
@@ -162,12 +172,10 @@ public sealed class HtmlDocumentParser : IDocumentParser
         var blocks = new List<ParsedBlockDto>();
         var plain = new StringBuilder();
 
-        // 块级标签切开
-        var normalized = Regex.Replace(html, @"(?i)</?(p|div|li|tr|h[1-6]|section|article|blockquote|pre|table|ul|ol)\b[^>]*>", "\n");
-        normalized = Regex.Replace(normalized, @"(?s)<[^>]+>", string.Empty);
-        normalized = DecodeEntities(normalized);
+        // 脚本 / 样式整块剔除，标题单独抽走 —— 它们的源码不是正文
+        var (title, body) = HtmlTextExtractor.Extract(html);
 
-        foreach (var line in normalized.Replace("\r\n", "\n").Split('\n'))
+        foreach (var line in body.Replace("\r\n", "\n").Split('\n'))
         {
             var trimmed = line.Trim();
             if (trimmed.Length == 0)
@@ -179,8 +187,6 @@ public sealed class HtmlDocumentParser : IDocumentParser
             blocks.Add(new ParsedBlockDto(BlockKind.Paragraph, Inlines: [new ParsedInlineDto(trimmed)]));
         }
 
-        var title = Regex.Match(html, @"(?is)<title[^>]*>(.*?)</title>").Groups[1].Value.Trim();
-
         return new ParsedDocDto(
             string.IsNullOrEmpty(title)
                 ? (string.IsNullOrEmpty(fileName) ? "未命名文档" : Path.GetFileNameWithoutExtension(fileName))
@@ -191,12 +197,4 @@ public sealed class HtmlDocumentParser : IDocumentParser
             [],
             plain.ToString());
     }
-
-    private static string DecodeEntities(string input) => input
-        .Replace("&nbsp;", " ")
-        .Replace("&lt;", "<")
-        .Replace("&gt;", ">")
-        .Replace("&quot;", "\"")
-        .Replace("&#39;", "'")
-        .Replace("&amp;", "&");
 }

@@ -7,6 +7,14 @@ public interface IDocumentParser
 {
     DocFormat Format { get; }
 
+    /// <summary>
+    /// 解析器版本号。解析语义（输出内容）一变就要 +1。
+    ///
+    /// 解析结果会缓存进数据库，缓存按 (DocumentId, ParserVersion) 命中，
+    /// 版本号一涨，旧缓存自然失效，不用等人手动 force 重解析。
+    /// </summary>
+    int ParserVersion { get; }
+
     /// <summary>能否处理该文件（按扩展名判断）。</summary>
     bool CanParse(string fileName);
 

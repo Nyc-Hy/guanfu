@@ -15,35 +15,46 @@ public sealed class PdfDocumentParser : IDocumentParser
 
     public DocFormat Format => DocFormat.Pdf;
 
+    public int ParserVersion => 1;
+
     public bool CanParse(string fileName) =>
         Path.GetExtension(fileName).Equals(".pdf", StringComparison.OrdinalIgnoreCase);
 
     public async Task<ParsedDocDto> ParseAsync(Stream stream, string fileName, CancellationToken cancellationToken)
     {
-        using var buffer = new MemoryStream();
-        await stream.CopyToAsync(buffer, cancellationToken).ConfigureAwait(false);
-        buffer.Position = 0;
-
-        using var document = PdfDocument.Open(buffer);
-        var blocks = new List<ParsedBlockDto>();
-        var plain = new StringBuilder();
-
-        foreach (var page in document.GetPages())
+        try
         {
-            foreach (var paragraph in ExtractParagraphs(page))
-            {
-                plain.Append(paragraph).Append('\n');
-                blocks.Add(new ParsedBlockDto(BlockKind.Paragraph, Inlines: [new ParsedInlineDto(paragraph)]));
-            }
-        }
+            using var buffer = new MemoryStream();
+            await stream.CopyToAsync(buffer, cancellationToken).ConfigureAwait(false);
+            buffer.Position = 0;
 
-        return new ParsedDocDto(
-            Path.GetFileNameWithoutExtension(fileName),
-            DocFormat.Pdf.ToString(),
-            blocks,
-            [],
-            [],
-            plain.ToString());
+            using var document = PdfDocument.Open(buffer);
+            var blocks = new List<ParsedBlockDto>();
+            var plain = new StringBuilder();
+
+            foreach (var page in document.GetPages())
+            {
+                foreach (var paragraph in ExtractParagraphs(page))
+                {
+                    plain.Append(paragraph).Append('\n');
+                    blocks.Add(new ParsedBlockDto(BlockKind.Paragraph, Inlines: [new ParsedInlineDto(paragraph)]));
+                }
+            }
+
+            return new ParsedDocDto(
+                Path.GetFileNameWithoutExtension(fileName),
+                DocFormat.Pdf.ToString(),
+                blocks,
+                [],
+                [],
+                plain.ToString());
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // 损坏 / 不是 pdf 的文件：PdfDocumentFormatException 不在上层的异常名单里，
+            // 穿出去就是页面 500。解析器自己兜住：返回空结果 + 明确错误信息。
+            return ParseFailure.Create(fileName, DocFormat.Pdf, ex, "pdf 文件损坏或不是有效的 PDF");
+        }
     }
 
     private static IEnumerable<string> ExtractParagraphs(Page page)

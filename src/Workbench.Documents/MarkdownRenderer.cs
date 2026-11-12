@@ -10,6 +10,10 @@ namespace Workbench.Documents;
 ///
 /// **刻意关掉原始 HTML** —— 内容来自 agent 与外部上传的文档，属于不可信输入，
 /// 渲染成 MarkupString 之前必须把裸 HTML 摘掉，不然就是 XSS 口子。
+///
+/// 另外还要卡链接的 scheme：`javascript:` / `data:` 这类 URL 在 href 里
+/// 一样能执行脚本，所以渲染前在 AST 上把它们降级成纯文字
+/// （见 <see cref="MarkdownLinkSanitizer"/> 与 <see cref="LinkUrlPolicy"/>）。
 /// </summary>
 public static class MarkdownRenderer
 {
@@ -25,7 +29,12 @@ public static class MarkdownRenderer
             return string.Empty;
         }
 
-        return Markdig.Markdown.ToHtml(markdown, Pipeline);
+        var document = Markdig.Markdown.Parse(markdown, Pipeline);
+
+        // 链接降级必须在 AST 上做：渲染完再改 HTML 串会破坏转义，也拦不住畸形 HTML
+        MarkdownLinkSanitizer.Sanitize(document);
+
+        return Markdig.Markdown.ToHtml(document, Pipeline);
     }
 
     /// <summary>粗略判断一段文本是不是 Markdown（有标题、列表、代码块这类结构）。</summary>

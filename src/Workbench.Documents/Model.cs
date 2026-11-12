@@ -12,7 +12,18 @@ public sealed record ParsedDocDto(
     IReadOnlyList<ParsedBlockDto> Blocks,
     IReadOnlyList<ParsedRevisionDto> Revisions,
     IReadOnlyList<ParsedOutlineDto> Outline,
-    string PlainText);
+    string PlainText)
+{
+    /// <summary>
+    /// 解析失败时的错误说明；成功时为 null。
+    ///
+    /// 解析器自己兜住包格式异常（损坏的 docx / pdf）后，
+    /// 错误信息靠这个字段回传上层 —— 页面要显示「为什么没内容」，
+    /// 而不是让异常穿出去变成 500。
+    /// </summary>
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Error { get; init; }
+}
 
 /// <summary>行内片段。Strike=true 表示原文是删除线（内容已废弃）。</summary>
 public sealed record ParsedInlineDto(
