@@ -1,0 +1,122 @@
+@page "/metrics"
+@rendermode InteractiveServer
+@inject IMetricsService MetricsService
+
+<PageTitle>度量 · 开发工作台</PageTitle>
+
+<div class="wb-page-head">
+    <div>
+        <h1>度量</h1>
+        <p class="wb-muted">流速、周期、测试通过率、阻塞与停滞。</p>
+    </div>
+</div>
+
+@if (Items.Count == 0)
+{
+    <div class="wb-empty">还没有项目数据。</div>
+}
+else
+{
+    @foreach (var metrics in Items)
+    {
+        <section class="wb-panel">
+            <div class="wb-card-head">
+                <a href="/projects/@metrics.ProjectId"><h2>@metrics.Name</h2></a>
+                <span class="wb-chip">@Percent(metrics.Progress)</span>
+                @if (metrics.BlockedTasks > 0)
+                {
+                    <span class="wb-tag wb-tag-danger">@metrics.BlockedTasks 阻塞</span>
+                }
+                @if (metrics.StaleTasks > 0)
+                {
+                    <span class="wb-tag wb-tag-warn">@metrics.StaleTasks 停滞</span>
+                }
+                @if (metrics.OpenApprovals > 0)
+                {
+                    <span class="wb-tag">@metrics.OpenApprovals 待审</span>
+                }
+            </div>
+
+            <div class="wb-progress">
+                <div class="wb-progress-bar" style="width:@Percent(metrics.Progress)"></div>
+            </div>
+
+            <div class="wb-metric-grid">
+                <div class="wb-metric">
+                    <span class="wb-metric-label">完成 / 总数</span>
+                    <span class="wb-metric-value">@metrics.DoneTasks / @metrics.TotalTasks</span>
+                </div>
+                <div class="wb-metric">
+                    <span class="wb-metric-label">平均周期</span>
+                    <span class="wb-metric-value">@(metrics.AvgCycleHours is null ? "—" : Hours(metrics.AvgCycleHours.Value))</span>
+                </div>
+                <div class="wb-metric">
+                    <span class="wb-metric-label">测试通过率</span>
+                    <span class="wb-metric-value">@(metrics.TestPassRate is null ? "—" : Percent(metrics.TestPassRate.Value))</span>
+                </div>
+                <div class="wb-metric">
+                    <span class="wb-metric-label">平均覆盖率</span>
+                    <span class="wb-metric-value">@(metrics.AvgTestCoverage is null ? "—" : Percent(metrics.AvgTestCoverage.Value))</span>
+                </div>
+                <div class="wb-metric">
+                    <span class="wb-metric-label">进行中</span>
+                    <span class="wb-metric-value">@metrics.ActiveTasks</span>
+                </div>
+                <div class="wb-metric">
+                    <span class="wb-metric-label">待审</span>
+                    <span class="wb-metric-value">@metrics.OpenApprovals</span>
+                </div>
+            </div>
+
+            <h4>状态分布</h4>
+            <div class="wb-form-row">
+                @foreach (var s in metrics.StatusCounts)
+                {
+                    <span class="wb-chip">@StatusLabel(s.Status) @s.Count</span>
+                }
+            </div>
+
+            <h4>近 8 周流速</h4>
+            <div class="wb-bars">
+                @foreach (var point in metrics.Throughput)
+                {
+                    var max = metrics.Throughput.Count == 0 ? 0 : metrics.Throughput.Max(p => p.Completed);
+                    var height = max <= 0 ? 2 : Math.Max(4, (int)Math.Round(point.Completed * 100d / max));
+                    <div class="wb-bar-col" title="@(point.Week) 完成 @point.Completed">
+                        <div class="wb-bar" style="height:@(height)px"></div>
+                        <span class="wb-bar-label">@point.Completed</span>
+                        <span class="wb-bar-week">@point.Week[5..]</span>
+                    </div>
+                }
+            </div>
+        </section>
+    }
+}
+
+@code {
+    private IReadOnlyList<ProjectMetricsDto> Items { get; set; } = [];
+
+    protected override async Task OnInitializedAsync() => await ReloadAsync();
+
+    private async Task ReloadAsync() => Items = await MetricsService.GetAllAsync();
+
+    private static string Percent(double ratio) => $"{ratio * 100:0.#}%";
+
+    private static string Hours(double hours) => hours < 24
+        ? $"{hours:0.#} 小时"
+        : $"{hours / 24:0.#} 天";
+
+    private static string StatusLabel(string status) => status switch
+    {
+        "Draft" => "草稿",
+        "DocsReady" => "文档就绪",
+        "Planned" => "已规划",
+        "InDev" => "开发中",
+        "Testing" => "测试中",
+        "Review" => "待评审",
+        "Done" => "已完成",
+        "Blocked" => "阻塞",
+        "Cancelled" => "已取消",
+        _ => status
+    };
+}

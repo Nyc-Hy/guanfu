@@ -1,0 +1,211 @@
+@page "/projects/{ProjectId:guid}/settings"
+@rendermode InteractiveServer
+@inject IProjectService Projects
+@inject NavigationManager Nav
+
+<PageTitle>项目设置 · 开发工作台</PageTitle>
+
+@if (Config is null)
+{
+    <div class="wb-empty">项目不存在。<a href="/">返回</a></div>
+}
+else
+{
+    <div class="wb-page-head">
+        <div>
+            <a class="wb-back" href="/projects/@Config.Id">← @Config.Name</a>
+            <h1>项目设置</h1>
+            <p class="wb-muted">仓库路径、agent 启动命令、命令白名单、审批通知。</p>
+        </div>
+        <button class="wb-btn wb-btn-primary" disabled="@Saving" @onclick="SaveAsync">
+            @(Saving ? "保存中…" : "保存")
+        </button>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(Message))
+    {
+        <p class="@(IsError ? "wb-error" : "wb-hint")">@Message</p>
+    }
+
+    <div class="wb-detail-grid">
+        <div class="wb-detail-main">
+            <section class="wb-panel">
+                <h3>基本信息</h3>
+                <div class="wb-form-row">
+                    <label class="wb-label">名称</label>
+                    <input class="wb-input" @bind="Name" @bind:event="oninput" />
+                </div>
+                <div class="wb-form-row">
+                    <label class="wb-label">描述</label>
+                    <input class="wb-input" @bind="Description" @bind:event="oninput" />
+                </div>
+            </section>
+
+            <section class="wb-panel">
+                <h3>Git 托管</h3>
+                <div class="wb-form-row">
+                    <label class="wb-label">仓库路径</label>
+                    <input class="wb-input" placeholder="/Users/you/code/your-repo" @bind="RepoPath" @bind:event="oninput" />
+                </div>
+                <div class="wb-form-row">
+                    <label class="wb-label">远端</label>
+                    <input class="wb-input" placeholder="git@github.com:you/repo.git" @bind="RepoRemote" @bind:event="oninput" />
+                </div>
+                <div class="wb-form-row">
+                    <label class="wb-label">默认分支</label>
+                    <input class="wb-input" @bind="DefaultBranch" @bind:event="oninput" />
+                </div>
+                <p class="wb-hint">
+                    仓库路径是 fs.list / fs.read / shell.run / git 工具的作用范围根目录，留空则这些工具不可用。
+                </p>
+            </section>
+
+            <section class="wb-panel">
+                <h3>启动 agent</h3>
+                <div class="wb-form-row">
+                    <label class="wb-label">启动命令</label>
+                    <input class="wb-input" placeholder="claude -p &quot;实现 {title}&quot;" @bind="AgentCommand" @bind:event="oninput" />
+                </div>
+                <p class="wb-hint">
+                    工作台<strong>不提供 AI 服务</strong>，这里只是执行你写好的外部命令。
+                    可用占位符：<code>{taskId}</code> <code>{title}</code> <code>{project}</code> <code>{repoPath}</code> <code>{description}</code>。
+                </p>
+            </section>
+
+            <section class="wb-panel">
+                <h3>命令白名单</h3>
+                <div class="wb-form-row">
+                    <label class="wb-label">允许的命令</label>
+                    <textarea class="wb-input wb-textarea" rows="5"
+                              placeholder="一行一条，例如&#10;dotnet test&#10;npm run build"
+                              @bind="AllowedCommandsText" @bind:event="oninput"></textarea>
+                </div>
+                <p class="wb-hint">
+                    shell.run 只能执行命中白名单的命令，且每次都要人工审批。
+                    命令不走 shell 解析，不支持管道与重定向。
+                </p>
+            </section>
+        </div>
+
+        <aside class="wb-detail-side">
+            <section class="wb-panel">
+                <h3>审批通知</h3>
+                <div class="wb-form-row">
+                    <label class="wb-label">Webhook</label>
+                    <input class="wb-input" placeholder="https://oapi.dingtalk.com/robot/send?access_token=..."
+                           @bind="NotificationWebhookUrl" @bind:event="oninput" />
+                </div>
+                <div class="wb-form-row">
+                    <label class="wb-label">格式</label>
+                    <select class="wb-input" @bind="NotificationFormat">
+                        <option value="generic">generic（通用 JSON）</option>
+                        <option value="dingtalk">dingtalk（钉钉）</option>
+                        <option value="feishu">feishu（飞书）</option>
+                    </select>
+                </div>
+                <p class="wb-hint">有人请求审批时推一条消息过去。人不在电脑前时，审批不会静静躺到过期。</p>
+            </section>
+
+            <section class="wb-panel">
+                <h3>当前配置</h3>
+                <ul class="wb-timeline">
+                    <li>
+                        <div class="wb-timeline-what"><span>白名单 @Config.AllowedCommands.Count 条</span></div>
+                        @foreach (var cmd in Config.AllowedCommands)
+                        {
+                            <div class="wb-timeline-note">@cmd</div>
+                        }
+                    </li>
+                    <li>
+                        <div class="wb-timeline-what">
+                            <span>通知 @(string.IsNullOrWhiteSpace(Config.NotificationWebhookUrl) ? "未配置" : Config.NotificationFormat)</span>
+                        </div>
+                    </li>
+                </ul>
+            </section>
+        </aside>
+    </div>
+}
+
+@code {
+    [Parameter] public Guid ProjectId { get; set; }
+
+    private ProjectConfigDto? Config { get; set; }
+
+    private string Name { get; set; } = string.Empty;
+    private string Description { get; set; } = string.Empty;
+    private string RepoPath { get; set; } = string.Empty;
+    private string RepoRemote { get; set; } = string.Empty;
+    private string DefaultBranch { get; set; } = string.Empty;
+    private string AgentCommand { get; set; } = string.Empty;
+    private string AllowedCommandsText { get; set; } = string.Empty;
+    private string NotificationWebhookUrl { get; set; } = string.Empty;
+    private string NotificationFormat { get; set; } = "generic";
+
+    private bool Saving { get; set; }
+    private string? Message { get; set; }
+    private bool IsError { get; set; }
+
+    protected override async Task OnParametersSetAsync() => await ReloadAsync();
+
+    private async Task ReloadAsync()
+    {
+        try
+        {
+            Config = await Projects.GetConfigAsync(ProjectId);
+
+            Name = Config.Name;
+            Description = Config.Description ?? string.Empty;
+            RepoPath = Config.RepoPath ?? string.Empty;
+            RepoRemote = Config.RepoRemote ?? string.Empty;
+            DefaultBranch = Config.DefaultBranch ?? "main";
+            AgentCommand = Config.AgentCommand ?? string.Empty;
+            AllowedCommandsText = string.Join(Environment.NewLine, Config.AllowedCommands);
+            NotificationWebhookUrl = Config.NotificationWebhookUrl ?? string.Empty;
+            NotificationFormat = Config.NotificationFormat ?? "generic";
+        }
+        catch (Exception ex)
+        {
+            Config = null;
+            Message = ex.Message;
+            IsError = true;
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        Saving = true;
+        try
+        {
+            var allowed = AllowedCommandsText
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(l => l.Length > 0)
+                .ToList();
+
+            Config = await Projects.UpdateConfigAsync(
+                ProjectId,
+                Name,
+                Description,
+                RepoPath,
+                RepoRemote,
+                DefaultBranch,
+                allowed,
+                AgentCommand,
+                NotificationWebhookUrl,
+                NotificationFormat);
+
+            AllowedCommandsText = string.Join(Environment.NewLine, Config.AllowedCommands);
+            Message = "已保存。";
+            IsError = false;
+        }
+        catch (Exception ex)
+        {
+            Message = ex.Message;
+            IsError = true;
+        }
+        finally
+        {
+            Saving = false;
+        }
+    }
+}

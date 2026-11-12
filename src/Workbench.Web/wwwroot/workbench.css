@@ -286,3 +286,36 @@ body {
 .wb-todo-done { color: var(--wb-ok); }
 
 .wb-hint { font-size: 12px; color: var(--wb-muted); margin-top: 6px; }
+
+/* ---- P3/P4 新增：设置页、度量页、里程碑 ---- */
+.wb-label { font-size: 12px; color: var(--wb-muted); min-width: 72px; }
+.wb-textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; resize: vertical; width: 100%; }
+.wb-chip-x {
+    background: none; border: none; color: inherit; cursor: pointer;
+    font-size: 13px; line-height: 1; padding: 0 0 0 4px; opacity: 0.6;
+}
+.wb-chip-x:hover { opacity: 1; color: var(--wb-danger); }
+
+.wb-metric-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    gap: 10px; margin: 14px 0;
+}
+.wb-metric {
+    background: var(--wb-bg); border: 1px solid var(--wb-border); border-radius: 10px;
+    padding: 10px 12px; display: flex; flex-direction: column; gap: 4px;
+}
+.wb-metric-label { font-size: 11px; color: var(--wb-muted); }
+.wb-metric-value { font-size: 17px; font-weight: 600; }
+
+.wb-bars {
+    display: flex; align-items: flex-end; gap: 10px;
+    height: 130px; padding: 8px 0 0;
+}
+.wb-bar-col { display: flex; flex-direction: column; align-items: center; gap: 4px; flex: 1; }
+.wb-bar {
+    width: 100%; max-width: 42px; min-height: 4px;
+    background: linear-gradient(180deg, var(--wb-accent), rgba(76,141,255,0.35));
+    border-radius: 4px 4px 0 0;
+}
+.wb-bar-label { font-size: 11px; color: var(--wb-text); }
+.wb-bar-week { font-size: 10px; color: var(--wb-muted); }

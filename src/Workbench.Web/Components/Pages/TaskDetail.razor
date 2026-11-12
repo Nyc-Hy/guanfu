@@ -2,6 +2,8 @@
 @rendermode InteractiveServer
 @inject ITaskService Tasks
 @inject IDocumentService Documents
+@inject IMilestoneService Milestones
+@inject IAgentLauncher Launcher
 @inject NavigationManager Nav
 
 <PageTitle>任务 · 开发工作台</PageTitle>
@@ -32,6 +34,9 @@ else
                 }
             </p>
         </div>
+        <button class="wb-btn wb-btn-primary" disabled="@Launching" @onclick="LaunchAgentAsync">
+            @(Launching ? "启动中…" : "启动 agent")
+        </button>
     </div>
 
     <div class="wb-detail-grid">
@@ -174,6 +179,23 @@ else
 
         <aside class="wb-detail-side">
             <section class="wb-panel">
+                <h3>里程碑</h3>
+                <div class="wb-form-row">
+                    <select class="wb-input" @bind="SelectedMilestoneId" @bind:after="AssignMilestoneAsync">
+                        <option value="">不在任何里程碑</option>
+                        @foreach (var m in MilestoneItems)
+                        {
+                            <option value="@m.Id">@m.Name（@m.DoneTasks/@m.TotalTasks）</option>
+                        }
+                    </select>
+                </div>
+                @if (MilestoneItems.Count == 0)
+                {
+                    <p class="wb-muted">项目还没有里程碑，去看板页添加。</p>
+                }
+            </section>
+
+            <section class="wb-panel">
                 <h3>事件流水</h3>
                 @if (Context.RecentEvents.Count == 0)
                 {
@@ -218,6 +240,9 @@ else
     [Parameter] public Guid TaskId { get; set; }
 
     private TaskContextDto? Context { get; set; }
+    private IReadOnlyList<MilestoneDto> MilestoneItems { get; set; } = [];
+    private string SelectedMilestoneId { get; set; } = string.Empty;
+    private bool Launching { get; set; }
     private string? Error { get; set; }
 
     protected override async Task OnParametersSetAsync() => await ReloadAsync();
@@ -227,12 +252,53 @@ else
         try
         {
             Context = await Tasks.GetContextAsync(TaskId);
+            MilestoneItems = await Milestones.ListAsync(Context.Task.ProjectId);
+            SelectedMilestoneId = Context.Task.MilestoneId?.ToString() ?? string.Empty;
             Error = null;
         }
         catch (Exception ex)
         {
             Error = ex.Message;
         }
+    }
+
+    private async Task AssignMilestoneAsync()
+    {
+        Guid? milestoneId = Guid.TryParse(SelectedMilestoneId, out var parsed) ? parsed : null;
+
+        try
+        {
+            await Milestones.AssignTaskAsync(TaskId, milestoneId);
+            Error = null;
+        }
+        catch (Exception ex)
+        {
+            Error = ex.Message;
+        }
+
+        await ReloadAsync();
+    }
+
+    private async Task LaunchAgentAsync()
+    {
+        Launching = true;
+        try
+        {
+            var result = await Launcher.LaunchAsync(TaskId);
+            Error = result.Ok
+                ? $"已拉起外部 agent（PID {result.ProcessId}）：{result.Command}"
+                : result.Error;
+        }
+        catch (Exception ex)
+        {
+            Error = ex.Message;
+        }
+        finally
+        {
+            Launching = false;
+        }
+
+        await ReloadAsync();
     }
 
     private async Task ChangeStatusAsync(string target)

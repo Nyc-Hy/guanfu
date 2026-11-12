@@ -2,6 +2,7 @@
 @rendermode InteractiveServer
 @inject IProjectService Projects
 @inject ITaskService Tasks
+@inject IMilestoneService Milestones
 @inject NavigationManager Nav
 
 <PageTitle>看板 · 开发工作台</PageTitle>
@@ -24,7 +25,10 @@ else
                 }
             </p>
         </div>
-        <button class="wb-btn wb-btn-primary" @onclick="ToggleCreate">@(ShowCreate ? "取消" : "新建任务")</button>
+        <div class="wb-form-row">
+            <a class="wb-btn" href="/projects/@ProjectId/settings">设置</a>
+            <button class="wb-btn wb-btn-primary" @onclick="ToggleCreate">@(ShowCreate ? "取消" : "新建任务")</button>
+        </div>
     </div>
 
     @if (ShowCreate)
@@ -42,6 +46,43 @@ else
         </div>
     }
 
+    <section class="wb-panel">
+        <div class="wb-card-head">
+            <h3>里程碑</h3>
+            <span class="wb-muted">@MilestoneItems.Count 个</span>
+        </div>
+
+        <div class="wb-form-row">
+            <label class="wb-label">筛选</label>
+            <select class="wb-input" @bind="SelectedMilestoneFilter" @bind:after="ReloadAsync">
+                <option value="">全部任务</option>
+                @foreach (var m in MilestoneItems)
+                {
+                    <option value="@m.Id">@m.Name（@m.DoneTasks/@m.TotalTasks）</option>
+                }
+            </select>
+        </div>
+
+        @if (MilestoneItems.Count > 0)
+        {
+            <div class="wb-form-row">
+                @foreach (var m in MilestoneItems)
+                {
+                    <span class="wb-chip">
+                        @m.Name @Percent(m.Progress)
+                        <button class="wb-chip-x" title="删除里程碑" @onclick="() => DeleteMilestoneAsync(m.Id)">×</button>
+                    </span>
+                }
+            </div>
+        }
+
+        <div class="wb-form-row">
+            <input class="wb-input" placeholder="新里程碑名称" @bind="NewMilestoneName" @bind:event="oninput" />
+            <button class="wb-btn" disabled="@string.IsNullOrWhiteSpace(NewMilestoneName)" @onclick="CreateMilestoneAsync">添加</button>
+        </div>
+        <p class="wb-hint">删除里程碑只会把任务摘出来，不会删任务。</p>
+    </section>
+
     <div class="wb-board">
         @foreach (var status in Columns)
         {
@@ -56,6 +97,12 @@ else
                 {
                     <a class="wb-task" href="/tasks/@task.Id">
                         <div class="wb-task-title">@task.Title</div>
+                        @if (MilestoneName(task.MilestoneId) is { } milestoneName)
+                        {
+                            <div class="wb-task-meta">
+                                <span class="wb-chip wb-chip-muted">@milestoneName</span>
+                            </div>
+                        }
                         @if (!string.IsNullOrWhiteSpace(task.ClaimedBy))
                         {
                             <div class="wb-task-meta">
@@ -99,9 +146,12 @@ else
 
     private ProjectSummaryDto? Project { get; set; }
     private IReadOnlyList<TaskSummaryDto> Items { get; set; } = [];
+    private IReadOnlyList<MilestoneDto> MilestoneItems { get; set; } = [];
     private bool ShowCreate { get; set; }
     private string NewTitle { get; set; } = string.Empty;
     private string NewDescription { get; set; } = string.Empty;
+    private string NewMilestoneName { get; set; } = string.Empty;
+    private string SelectedMilestoneFilter { get; set; } = string.Empty;
     private string? Error { get; set; }
 
     protected override async Task OnParametersSetAsync() => await ReloadAsync();
@@ -109,7 +159,10 @@ else
     private async Task ReloadAsync()
     {
         Project = await Projects.GetAsync(ProjectId);
-        Items = await Tasks.ListAsync(ProjectId);
+        MilestoneItems = await Milestones.ListAsync(ProjectId);
+
+        Guid? milestoneId = Guid.TryParse(SelectedMilestoneFilter, out var parsed) ? parsed : null;
+        Items = await Tasks.ListAsync(ProjectId, null, null, milestoneId);
     }
 
     private void ToggleCreate()
@@ -133,6 +186,51 @@ else
         {
             Error = ex.Message;
         }
+    }
+
+    private async Task CreateMilestoneAsync()
+    {
+        try
+        {
+            await Milestones.CreateAsync(ProjectId, NewMilestoneName);
+            NewMilestoneName = string.Empty;
+            Error = null;
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            Error = ex.Message;
+        }
+    }
+
+    private async Task DeleteMilestoneAsync(Guid milestoneId)
+    {
+        try
+        {
+            await Milestones.DeleteAsync(milestoneId);
+
+            if (SelectedMilestoneFilter == milestoneId.ToString())
+            {
+                SelectedMilestoneFilter = string.Empty;
+            }
+
+            Error = null;
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            Error = ex.Message;
+        }
+    }
+
+    private string? MilestoneName(Guid? milestoneId)
+    {
+        if (milestoneId is null)
+        {
+            return null;
+        }
+
+        return MilestoneItems.FirstOrDefault(m => m.Id == milestoneId.Value)?.Name;
     }
 
     private static string Percent(double ratio) => $"{ratio * 100:0.#}%";
