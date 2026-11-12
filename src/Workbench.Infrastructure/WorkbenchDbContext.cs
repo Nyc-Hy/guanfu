@@ -21,6 +21,8 @@ public sealed class WorkbenchDbContext(DbContextOptions<WorkbenchDbContext> opti
     public DbSet<DbConnectionConfig> DbConnections => Set<DbConnectionConfig>();
     public DbSet<DbTableRule> DbTableRules => Set<DbTableRule>();
     public DbSet<McpToolSetting> McpToolSettings => Set<McpToolSetting>();
+    public DbSet<ReviewRound> ReviewRounds => Set<ReviewRound>();
+    public DbSet<ReviewItem> ReviewItems => Set<ReviewItem>();
 
     /// <summary>
     /// 全局约定：DateTimeOffset 一律以 UTC DateTime 落库。
@@ -73,9 +75,12 @@ public sealed class WorkbenchDbContext(DbContextOptions<WorkbenchDbContext> opti
             e.Property(x => x.Status).HasConversion<string>().HasMaxLength(32);
             e.Property(x => x.ClaimedByAgentId).HasMaxLength(200);
 
+            e.Property(x => x.Key).HasMaxLength(50);
+
             e.HasIndex(t => t.ProjectId);
             e.HasIndex(t => t.Status);
             e.HasIndex(t => t.ParentTaskId);
+            e.HasIndex(t => new { t.ProjectId, t.Key });
         });
 
         modelBuilder.Entity<StatusEvent>(e =>
@@ -235,6 +240,42 @@ public sealed class WorkbenchDbContext(DbContextOptions<WorkbenchDbContext> opti
                 .WithMany(p => p.DbConnections)
                 .HasForeignKey(x => x.ProjectId)
                 .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ReviewRound>(e =>
+        {
+            e.ToTable("review_rounds");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Verdict).HasConversion<string>().HasMaxLength(32);
+            e.Property(x => x.Summary).HasMaxLength(8000);
+            e.Property(x => x.Reviewer).HasMaxLength(200);
+
+            e.HasOne(x => x.Task)
+                .WithMany(t => t.ReviewRounds)
+                .HasForeignKey(x => x.TaskId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            e.HasIndex(x => new { x.TaskId, x.Round });
+        });
+
+        modelBuilder.Entity<ReviewItem>(e =>
+        {
+            e.ToTable("review_items");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Dimension).HasMaxLength(100).IsRequired();
+            e.Property(x => x.DimensionName).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Status).HasConversion<string>().HasMaxLength(32);
+            e.Property(x => x.Findings).HasMaxLength(8000);
+            e.Property(x => x.Evidence).HasMaxLength(8000);
+            e.Property(x => x.Recommendation).HasMaxLength(8000);
+            e.Property(x => x.Reviewer).HasMaxLength(200);
+
+            e.HasOne(x => x.Round)
+                .WithMany(r => r.Items)
+                .HasForeignKey(x => x.ReviewRoundId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            e.HasIndex(x => new { x.ReviewRoundId, x.Order });
         });
 
         modelBuilder.Entity<McpToolSetting>(e =>

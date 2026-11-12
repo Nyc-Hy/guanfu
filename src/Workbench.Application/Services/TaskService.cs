@@ -11,6 +11,8 @@ public interface ITaskService
         string title,
         string? description = null,
         Guid? parentTaskId = null,
+        Guid? milestoneId = null,
+        string? key = null,
         CancellationToken cancellationToken = default);
 
     Task<IReadOnlyList<TaskSummaryDto>> ListAsync(
@@ -18,6 +20,7 @@ public interface ITaskService
         TaskStatus? status = null,
         string? keyword = null,
         Guid? milestoneId = null,
+        string? key = null,
         CancellationToken cancellationToken = default);
 
     Task<TaskSummaryDto?> GetAsync(Guid id, CancellationToken cancellationToken = default);
@@ -78,7 +81,11 @@ public interface ITaskService
     Task<TaskContextDto> GetContextAsync(Guid id, int eventLimit = 20, CancellationToken cancellationToken = default);
 }
 
-public sealed class TaskService(IAppDbContext db, IClock clock, IGitInspector git) : ITaskService
+public sealed class TaskService(
+    IAppDbContext db,
+    IClock clock,
+    IGitInspector git,
+    IReviewGate? reviewGate = null) : ITaskService
 {
     public const int StaleAfterHours = 72;
 
@@ -87,6 +94,8 @@ public sealed class TaskService(IAppDbContext db, IClock clock, IGitInspector gi
         string title,
         string? description = null,
         Guid? parentTaskId = null,
+        Guid? milestoneId = null,
+        string? key = null,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(title))
@@ -100,10 +109,24 @@ public sealed class TaskService(IAppDbContext db, IClock clock, IGitInspector gi
             throw new NotFoundException("项目", projectId);
         }
 
+        // 里程碑要属于本项目，否则「12月版本」这种归属就是假的
+        if (milestoneId is not null)
+        {
+            var milestoneBelongs = await db.Milestones
+                .AnyAsync(m => m.Id == milestoneId.Value && m.ProjectId == projectId, cancellationToken);
+
+            if (!milestoneBelongs)
+            {
+                throw new WorkbenchException($"里程碑 {milestoneId} 不属于项目 {projectId}。");
+            }
+        }
+
         var task = new TaskItem
         {
             ProjectId = projectId,
             ParentTaskId = parentTaskId,
+            MilestoneId = milestoneId,
+            Key = await ResolveKeyAsync(projectId, key, cancellationToken),
             Title = title.Trim(),
             Description = description,
             Status = TaskStatus.Draft,
@@ -132,6 +155,7 @@ public sealed class TaskService(IAppDbContext db, IClock clock, IGitInspector gi
         TaskStatus? status = null,
         string? keyword = null,
         Guid? milestoneId = null,
+        string? key = null,
         CancellationToken cancellationToken = default)
     {
         var query = db.Tasks.AsNoTracking();
@@ -158,6 +182,15 @@ public sealed class TaskService(IAppDbContext db, IClock clock, IGitInspector gi
         }
 
         var tasks = await query.OrderBy(t => t.CreatedAt).ToListAsync(cancellationToken);
+
+        // 编号匹配在内存里做：人嘴里说的是「req001」，库里存的是「REQ-001」，
+        // 差一个连字符。归一化后（只留字母数字、转小写）两边才认得出是同一个。
+        if (!string.IsNullOrWhiteSpace(key))
+        {
+            var k = NormalizeKey(key);
+            tasks = tasks.Where(t => t.Key is not null && NormalizeKey(t.Key) == k).ToList();
+        }
+
         if (tasks.Count == 0)
         {
             return [];
@@ -199,6 +232,19 @@ public sealed class TaskService(IAppDbContext db, IClock clock, IGitInspector gi
 
         var from = task.Status;
         TaskStatusMachine.EnsureTransition(from, to);
+
+        // 结项门禁：开过评审的任务，当前轮必须全部维度通过。
+        // 没开过评审的老流程不受影响（门禁只在有评审记录时生效）。
+        if (from == TaskStatus.Review && to == TaskStatus.Done && reviewGate is not null)
+        {
+            var gate = await reviewGate.GetGateAsync(id, cancellationToken);
+
+            if (gate.HasReview &&
+                (gate.PendingDimensions.Count > 0 || gate.FailedDimensions.Count > 0))
+            {
+                throw new ReviewGateException(gate);
+            }
+        }
 
         task.Status = to;
         task.UpdatedAt = clock.UtcNow;
@@ -524,6 +570,76 @@ public sealed class TaskService(IAppDbContext db, IClock clock, IGitInspector gi
             TaskStatusMachine.AllowedFrom(task.Status).Select(s => s.ToString()).ToList());
     }
 
+    /// <summary>
+    /// 决定任务的编号。没给就按项目内序号自动分配（REQ-001、REQ-002…）；
+    /// 给了就用给的，但项目内不能重号。
+    /// </summary>
+    private async Task<string> ResolveKeyAsync(Guid projectId, string? requested, CancellationToken cancellationToken)
+    {
+        if (!string.IsNullOrWhiteSpace(requested))
+        {
+            var key = requested.Trim();
+
+            var existing = await db.Tasks
+                .Where(t => t.ProjectId == projectId && t.Key != null)
+                .Select(t => t.Key)
+                .ToListAsync(cancellationToken);
+
+            if (existing.Any(k => k is not null && NormalizeKey(k) == NormalizeKey(key)))
+            {
+                throw new WorkbenchException($"编号 {key} 在该项目里已经有了。");
+            }
+
+            return key;
+        }
+
+        var max = await db.Tasks
+            .Where(t => t.ProjectId == projectId && t.Key != null)
+            .Select(t => t.Key)
+            .ToListAsync(cancellationToken);
+
+        var next = 1;
+        foreach (var existing in max)
+        {
+            if (existing is null)
+            {
+                continue;
+            }
+
+            // 只认 REQ-123 这种能解析出数字的，避免手填的编号把自动序号算歪
+            var dash = existing.LastIndexOf('-');
+            if (dash <= 0 || !int.TryParse(existing[(dash + 1)..], out var number))
+            {
+                continue;
+            }
+
+            next = Math.Max(next, number + 1);
+        }
+
+        return $"REQ-{next:000}";
+    }
+
+    /// <summary>
+    /// 编号归一化：只留字母数字并转小写。
+    /// 人嘴里的「req001」和库里的「REQ-001」得认成同一个编号，
+    /// 少个连字符就不该让人再去猜写法。
+    /// </summary>
+    internal static string NormalizeKey(string value)
+    {
+        Span<char> buffer = stackalloc char[value.Length];
+        var len = 0;
+
+        foreach (var ch in value)
+        {
+            if (char.IsLetterOrDigit(ch))
+            {
+                buffer[len++] = char.ToLowerInvariant(ch);
+            }
+        }
+
+        return new string(buffer[..len]);
+    }
+
     internal TaskSummaryDto ToSummary(TaskItem task, Project? project)
     {
         var lastActivity = task.LastActivityAt ?? task.UpdatedAt;
@@ -538,7 +654,8 @@ public sealed class TaskService(IAppDbContext db, IClock clock, IGitInspector gi
             task.UpdatedAt,
             task.LastActivityAt,
             (clock.UtcNow - lastActivity).TotalHours > StaleAfterHours,
-            task.MilestoneId);
+            task.MilestoneId,
+            task.Key);
     }
 
     internal static StatusEventDto ToEventDto(StatusEvent e) => new(

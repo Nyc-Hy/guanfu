@@ -28,7 +28,8 @@ public sealed record TaskSummaryDto(
     DateTimeOffset UpdatedAt,
     DateTimeOffset? LastActivityAt,
     bool Stale,
-    Guid? MilestoneId = null);
+    Guid? MilestoneId = null,
+    string? Key = null);
 
 /// <summary>项目配置。跟概览分开：概览是给人看的汇总，配置是给人和 agent 改的字段集合。</summary>
 public sealed record ProjectConfigDto(
@@ -133,3 +134,55 @@ public sealed record TaskContextDto(
     IReadOnlyList<ArtifactDto> Artifacts,
     IReadOnlyList<StatusEventDto> RecentEvents,
     IReadOnlyList<string> AllowedTransitions);
+
+/// <summary>单个评审维度的结论。</summary>
+public sealed record ReviewItemDto(
+    Guid Id,
+    string Dimension,
+    string DimensionName,
+    int Order,
+    string Status,
+    string? Findings,
+    string? Evidence,
+    string? Recommendation,
+    string? Reviewer,
+    DateTimeOffset? DecidedAt);
+
+/// <summary>一轮评审。</summary>
+public sealed record ReviewRoundDto(
+    Guid Id,
+    Guid TaskId,
+    int Round,
+    string Verdict,
+    string? Summary,
+    string? Reviewer,
+    DateTimeOffset StartedAt,
+    DateTimeOffset? FinishedAt,
+    IReadOnlyList<ReviewItemDto> Items);
+
+/// <summary>评审维度的定义（检查清单）。</summary>
+public sealed record ReviewDimensionDto(
+    string Key,
+    string Name,
+    string Question,
+    IReadOnlyList<string> Checklist);
+
+/// <summary>
+/// 给 agent 的评审包：维度定义 + 任务上下文 + 变更文件。
+/// agent（或它开的子 agent）照着包里的清单逐维度评审，再逐维度回写结论。
+/// </summary>
+public sealed record ReviewPackDto(
+    ReviewRoundDto Round,
+    TaskSummaryDto Task,
+    PlanDto? Plan,
+    IReadOnlyList<ArtifactDto> Artifacts,
+    IReadOnlyList<DocumentDto> Documents,
+    IReadOnlyList<string> ChangedFiles,
+    IReadOnlyList<ReviewDimensionDto> Dimensions);
+
+/// <summary>评审门禁状态。状态机用它决定 Review → Done 放不放行。</summary>
+public sealed record ReviewGateDto(
+    bool HasReview,
+    string Verdict,
+    IReadOnlyList<string> FailedDimensions,
+    IReadOnlyList<string> PendingDimensions);

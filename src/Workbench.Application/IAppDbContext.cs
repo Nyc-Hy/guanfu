@@ -24,6 +24,8 @@ public interface IAppDbContext
     DbSet<DbConnectionConfig> DbConnections { get; }
     DbSet<DbTableRule> DbTableRules { get; }
     DbSet<McpToolSetting> McpToolSettings { get; }
+    DbSet<ReviewRound> ReviewRounds { get; }
+    DbSet<ReviewItem> ReviewItems { get; }
 
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
 }

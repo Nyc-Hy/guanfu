@@ -6,7 +6,11 @@ public sealed record GitState(
     string? HeadSha,
     bool Dirty,
     int ChangedFiles,
-    string? Error);
+    string? Error)
+{
+    /// <summary>有改动的文件（相对 HEAD）。评审时要逐个看，所以单独列出来。</summary>
+    public IReadOnlyList<string> ChangedFilePaths { get; init; } = [];
+}
 
 /// <summary>
 /// 只读 Git 检视。P3 会扩展出 commit/push（写操作走审批）。

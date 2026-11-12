@@ -77,6 +77,12 @@ public class TaskItem
     public Guid? MilestoneId { get; set; }
     public Milestone? Milestone { get; set; }
 
+    /// <summary>
+    /// 项目内可读编号（如 REQ-001）。
+    /// agent 是听人话来的 ——「看下 req001」这种话要能落地，得有个稳定的短标识。
+    /// </summary>
+    public string? Key { get; set; }
+
     public string Title { get; set; } = string.Empty;
     public string? Description { get; set; }
 
@@ -100,6 +106,7 @@ public class TaskItem
     public List<Artifact> Artifacts { get; set; } = [];
     public List<Plan> Plans { get; set; } = [];
     public List<TestRun> TestRuns { get; set; } = [];
+    public List<ReviewRound> ReviewRounds { get; set; } = [];
 }
 
 /// <summary>状态流水。append-only，谁在什么时候把状态改成了什么。</summary>
@@ -284,6 +291,67 @@ public class McpToolSetting
     public string ToolName { get; set; } = string.Empty;
     public bool Enabled { get; set; } = true;
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
+/// <summary>
+/// 评审轮次。一次开发完成后的一轮「专家团评审」。
+///
+/// 一轮 = 若干个维度（见 <see cref="ReviewDimensions"/>），每个维度独立出结论。
+/// 多轮保留，形成可追溯的评审历史。
+/// </summary>
+public class ReviewRound
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TaskId { get; set; }
+    public TaskItem? Task { get; set; }
+
+    /// <summary>第几轮（从 1 开始）。</summary>
+    public int Round { get; set; }
+
+    /// <summary>汇总结论：全部维度通过才算通过。</summary>
+    public ReviewVerdict Verdict { get; set; } = ReviewVerdict.Pending;
+
+    /// <summary>总体说明（agent 汇总的话）。</summary>
+    public string? Summary { get; set; }
+
+    public string? Reviewer { get; set; }
+    public DateTimeOffset StartedAt { get; set; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset? FinishedAt { get; set; }
+
+    public List<ReviewItem> Items { get; set; } = [];
+}
+
+/// <summary>某个维度的评审结论。</summary>
+public class ReviewItem
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid ReviewRoundId { get; set; }
+    public ReviewRound? Round { get; set; }
+
+    public Guid TaskId { get; set; }
+
+    /// <summary>维度标识（见 <see cref="ReviewDimensions"/>）。</summary>
+    public string Dimension { get; set; } = string.Empty;
+
+    /// <summary>维度中文名（存一份，历史记录不依赖代码里的定义）。</summary>
+    public string DimensionName { get; set; } = string.Empty;
+
+    public int Order { get; set; }
+    public ReviewStatus Status { get; set; } = ReviewStatus.Pending;
+
+    /// <summary>发现的问题。</summary>
+    public string? Findings { get; set; }
+
+    /// <summary>证据（文件路径、行号、片段）。</summary>
+    public string? Evidence { get; set; }
+
+    /// <summary>建议怎么改。</summary>
+    public string? Recommendation { get; set; }
+
+    /// <summary>谁评的（agent id / 子 agent 名）。</summary>
+    public string? Reviewer { get; set; }
+
+    public DateTimeOffset? DecidedAt { get; set; }
 }
 
 /// <summary>表级白名单规则。写操作一律需要审批，此处只控制是否可免审批。</summary>
