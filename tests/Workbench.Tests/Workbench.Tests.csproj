@@ -22,6 +22,7 @@
     <ProjectReference Include="..\..\src\Workbench.Application\Workbench.Application.csproj" />
     <ProjectReference Include="..\..\src\Workbench.Documents\Workbench.Documents.csproj" />
     <ProjectReference Include="..\..\src\Workbench.Infrastructure\Workbench.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\Workbench.Mcp\Workbench.Mcp.csproj" />
   </ItemGroup>
 
   <ItemGroup>
