@@ -1,0 +1,153 @@
+@page "/projects/{ProjectId:guid}"
+@rendermode InteractiveServer
+@inject IProjectService Projects
+@inject ITaskService Tasks
+@inject NavigationManager Nav
+
+<PageTitle>看板 · 开发工作台</PageTitle>
+
+@if (Project is null)
+{
+    <div class="wb-empty">项目不存在。<a href="/">返回</a></div>
+}
+else
+{
+    <div class="wb-page-head">
+        <div>
+            <a class="wb-back" href="/">← 项目</a>
+            <h1>@Project.Name</h1>
+            <p class="wb-muted">
+                @Percent(Project.Progress) · @Project.DoneTasks/@Project.TotalTasks 完成
+                @if (!string.IsNullOrWhiteSpace(Project.Branch))
+                {
+                    <span> · ⎇ @Project.Branch</span>
+                }
+            </p>
+        </div>
+        <button class="wb-btn wb-btn-primary" @onclick="ToggleCreate">@(ShowCreate ? "取消" : "新建任务")</button>
+    </div>
+
+    @if (ShowCreate)
+    {
+        <div class="wb-panel">
+            <div class="wb-form-row">
+                <input class="wb-input" placeholder="任务标题" @bind="NewTitle" @bind:event="oninput" />
+                <input class="wb-input" placeholder="描述（可选）" @bind="NewDescription" @bind:event="oninput" />
+                <button class="wb-btn wb-btn-primary" disabled="@string.IsNullOrWhiteSpace(NewTitle)" @onclick="CreateTaskAsync">创建</button>
+            </div>
+            @if (!string.IsNullOrWhiteSpace(Error))
+            {
+                <p class="wb-error">@Error</p>
+            }
+        </div>
+    }
+
+    <div class="wb-board">
+        @foreach (var status in Columns)
+        {
+            var column = Items.Where(t => t.Status == status).ToList();
+            <section class="wb-column">
+                <header class="wb-column-head">
+                    <span>@StatusLabel(status)</span>
+                    <span class="wb-count">@column.Count</span>
+                </header>
+
+                @foreach (var task in column)
+                {
+                    <a class="wb-task" href="/tasks/@task.Id">
+                        <div class="wb-task-title">@task.Title</div>
+                        @if (!string.IsNullOrWhiteSpace(task.ClaimedBy))
+                        {
+                            <div class="wb-task-meta">
+                                <span class="wb-chip wb-chip-agent">@task.ClaimedBy</span>
+                                @if (task.LeaseExpiresAt is not null)
+                                {
+                                    <span class="wb-chip wb-chip-muted">租至 @task.LeaseExpiresAt.Value.ToLocalTime().ToString("HH:mm")</span>
+                                }
+                            </div>
+                        }
+                        @if (task.Stale)
+                        {
+                            <span class="wb-tag wb-tag-warn">停滞</span>
+                        }
+                    </a>
+                }
+
+                @if (column.Count == 0)
+                {
+                    <div class="wb-column-empty">—</div>
+                }
+            </section>
+        }
+    </div>
+}
+
+@code {
+    private static readonly TaskStatus[] Columns =
+    [
+        TaskStatus.Draft,
+        TaskStatus.DocsReady,
+        TaskStatus.Planned,
+        TaskStatus.InDev,
+        TaskStatus.Testing,
+        TaskStatus.Review,
+        TaskStatus.Done,
+        TaskStatus.Blocked
+    ];
+
+    [Parameter] public Guid ProjectId { get; set; }
+
+    private ProjectSummaryDto? Project { get; set; }
+    private IReadOnlyList<TaskSummaryDto> Items { get; set; } = [];
+    private bool ShowCreate { get; set; }
+    private string NewTitle { get; set; } = string.Empty;
+    private string NewDescription { get; set; } = string.Empty;
+    private string? Error { get; set; }
+
+    protected override async Task OnParametersSetAsync() => await ReloadAsync();
+
+    private async Task ReloadAsync()
+    {
+        Project = await Projects.GetAsync(ProjectId);
+        Items = await Tasks.ListAsync(ProjectId);
+    }
+
+    private void ToggleCreate()
+    {
+        ShowCreate = !ShowCreate;
+        Error = null;
+    }
+
+    private async Task CreateTaskAsync()
+    {
+        try
+        {
+            await Tasks.CreateAsync(ProjectId, NewTitle, string.IsNullOrWhiteSpace(NewDescription) ? null : NewDescription);
+            NewTitle = string.Empty;
+            NewDescription = string.Empty;
+            ShowCreate = false;
+            Error = null;
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            Error = ex.Message;
+        }
+    }
+
+    private static string Percent(double ratio) => $"{ratio * 100:0.#}%";
+
+    private static string StatusLabel(TaskStatus status) => status switch
+    {
+        TaskStatus.Draft => "草稿",
+        TaskStatus.DocsReady => "文档就绪",
+        TaskStatus.Planned => "已规划",
+        TaskStatus.InDev => "开发中",
+        TaskStatus.Testing => "测试中",
+        TaskStatus.Review => "待评审",
+        TaskStatus.Done => "已完成",
+        TaskStatus.Blocked => "阻塞",
+        TaskStatus.Cancelled => "已取消",
+        _ => status.ToString()
+    };
+}

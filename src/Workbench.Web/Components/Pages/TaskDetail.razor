@@ -1,0 +1,283 @@
+@page "/tasks/{TaskId:guid}"
+@rendermode InteractiveServer
+@inject ITaskService Tasks
+@inject IDocumentService Documents
+@inject NavigationManager Nav
+
+<PageTitle>任务 · 开发工作台</PageTitle>
+
+@if (Context is null)
+{
+    <div class="wb-empty">任务不存在。<a href="/">返回</a></div>
+}
+else
+{
+    <div class="wb-page-head">
+        <div>
+            <a class="wb-back" href="/projects/@Context.Project.Id">← @Context.Project.Name</a>
+            <h1>@Context.Task.Title</h1>
+            <p class="wb-muted">
+                @Context.Task.Status
+                @if (!string.IsNullOrWhiteSpace(Context.Task.ClaimedBy))
+                {
+                    <span> · 持有者 @Context.Task.ClaimedBy</span>
+                }
+                @if (!string.IsNullOrWhiteSpace(Context.Project.Branch))
+                {
+                    <span> · ⎇ @Context.Project.Branch</span>
+                }
+                @if (!string.IsNullOrWhiteSpace(Context.Project.HeadSha))
+                {
+                    <span> · @Context.Project.HeadSha[..Math.Min(8, Context.Project.HeadSha.Length)]</span>
+                }
+            </p>
+        </div>
+    </div>
+
+    <div class="wb-detail-grid">
+        <div class="wb-detail-main">
+            <section class="wb-panel">
+                <h3>状态流转</h3>
+                <div class="wb-form-row">
+                    @foreach (var next in Context.AllowedTransitions)
+                    {
+                        <button class="wb-btn" @onclick="() => ChangeStatusAsync(next)">→ @next</button>
+                    }
+                    @if (Context.AllowedTransitions.Count == 0)
+                    {
+                        <span class="wb-muted">当前状态没有可用的后续迁移。</span>
+                    }
+                </div>
+                @if (!string.IsNullOrWhiteSpace(Error))
+                {
+                    <p class="wb-error">@Error</p>
+                }
+            </section>
+
+            <section class="wb-panel">
+                <h3>需求理解与开发计划</h3>
+                @if (Context.Plan is null)
+                {
+                    <p class="wb-muted">还没有计划。agent 通过 <code>workbench_set_plan</code> 回写。</p>
+                }
+                else
+                {
+                    <p class="wb-muted">v@Context.Plan.Version · @(Context.Plan.Author ?? "未知作者") · @Context.Plan.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</p>
+                    @if (!string.IsNullOrWhiteSpace(Context.Plan.Background))
+                    {
+                        <h4>背景</h4>
+                        <p class="wb-pre">@Context.Plan.Background</p>
+                    }
+                    @if (!string.IsNullOrWhiteSpace(Context.Plan.Understanding))
+                    {
+                        <h4>需求理解</h4>
+                        <p class="wb-pre">@Context.Plan.Understanding</p>
+                    }
+                    @if (!string.IsNullOrWhiteSpace(Context.Plan.Breakdown))
+                    {
+                        <h4>任务拆解</h4>
+                        <p class="wb-pre">@Context.Plan.Breakdown</p>
+                    }
+                    @if (!string.IsNullOrWhiteSpace(Context.Plan.AcceptanceCriteria))
+                    {
+                        <h4>验收标准</h4>
+                        <p class="wb-pre">@Context.Plan.AcceptanceCriteria</p>
+                    }
+                    @if (!string.IsNullOrWhiteSpace(Context.Plan.Risks))
+                    {
+                        <h4>风险</h4>
+                        <p class="wb-pre">@Context.Plan.Risks</p>
+                    }
+                }
+            </section>
+
+            <section class="wb-panel">
+                <h3>文档</h3>
+                <div class="wb-form-row">
+                    <InputFile OnChange="UploadAsync" />
+                    <span class="wb-muted">PRD / 测试用例 / 接口文档等</span>
+                </div>
+
+                @if (Context.Documents.Count == 0)
+                {
+                    <p class="wb-muted">还没有文档。</p>
+                }
+                else
+                {
+                    <table class="wb-table">
+                        <thead>
+                        <tr>
+                            <th>文件名</th>
+                            <th>类型</th>
+                            <th>大小</th>
+                            <th>解析</th>
+                            <th></th>
+                        </tr>
+                        </thead>
+                        <tbody>
+                        @foreach (var doc in Context.Documents)
+                        {
+                            <tr>
+                                <td>@doc.FileName</td>
+                                <td><span class="wb-chip">@doc.Kind</span></td>
+                                <td>@(doc.SizeBytes / 1024) KB</td>
+                                <td>
+                                    @if (doc.Parsed)
+                                    {
+                                        <span class="wb-tag wb-tag-ok">已解析</span>
+                                    }
+                                    else if (!string.IsNullOrWhiteSpace(doc.ParseError))
+                                    {
+                                        <span class="wb-tag wb-tag-danger">失败</span>
+                                    }
+                                    else
+                                    {
+                                        <span class="wb-tag">未解析</span>
+                                    }
+                                </td>
+                                <td><a href="/documents/@doc.Id">查看</a></td>
+                            </tr>
+                        }
+                        </tbody>
+                    </table>
+                }
+            </section>
+
+            <section class="wb-panel">
+                <h3>产物</h3>
+                @if (Context.Artifacts.Count == 0)
+                {
+                    <p class="wb-muted">还没有产物。</p>
+                }
+                else
+                {
+                    @foreach (var artifact in Context.Artifacts)
+                    {
+                        <div class="wb-artifact">
+                            <div class="wb-card-head">
+                                <strong>@artifact.Title</strong>
+                                <span class="wb-chip">@artifact.Type</span>
+                                @if (!string.IsNullOrWhiteSpace(artifact.CommitSha))
+                                {
+                                    <span class="wb-chip wb-chip-muted">@artifact.CommitSha[..Math.Min(8, artifact.CommitSha.Length)]</span>
+                                }
+                            </div>
+                            @if (!string.IsNullOrWhiteSpace(artifact.Content))
+                            {
+                                <p class="wb-pre">@artifact.Content</p>
+                            }
+                        </div>
+                    }
+                }
+            </section>
+        </div>
+
+        <aside class="wb-detail-side">
+            <section class="wb-panel">
+                <h3>事件流水</h3>
+                @if (Context.RecentEvents.Count == 0)
+                {
+                    <p class="wb-muted">没有事件。</p>
+                }
+                else
+                {
+                    <ul class="wb-timeline">
+                        @foreach (var evt in Context.RecentEvents)
+                        {
+                            <li>
+                                <div class="wb-timeline-when">@evt.CreatedAt.ToLocalTime().ToString("MM-dd HH:mm:ss")</div>
+                                <div class="wb-timeline-what">
+                                    @if (evt.From is not null && evt.To is not null && evt.From != evt.To)
+                                    {
+                                        <span>@evt.From → @evt.To</span>
+                                    }
+                                    else if (evt.To is not null)
+                                    {
+                                        <span>@evt.To</span>
+                                    }
+                                    <span class="wb-chip wb-chip-muted">@evt.Source</span>
+                                    @if (!string.IsNullOrWhiteSpace(evt.Actor))
+                                    {
+                                        <span class="wb-chip wb-chip-agent">@evt.Actor</span>
+                                    }
+                                </div>
+                                @if (!string.IsNullOrWhiteSpace(evt.Note))
+                                {
+                                    <div class="wb-timeline-note">@evt.Note</div>
+                                }
+                            </li>
+                        }
+                    </ul>
+                }
+            </section>
+        </aside>
+    </div>
+}
+
+@code {
+    [Parameter] public Guid TaskId { get; set; }
+
+    private TaskContextDto? Context { get; set; }
+    private string? Error { get; set; }
+
+    protected override async Task OnParametersSetAsync() => await ReloadAsync();
+
+    private async Task ReloadAsync()
+    {
+        try
+        {
+            Context = await Tasks.GetContextAsync(TaskId);
+            Error = null;
+        }
+        catch (Exception ex)
+        {
+            Error = ex.Message;
+        }
+    }
+
+    private async Task ChangeStatusAsync(string target)
+    {
+        try
+        {
+            if (!Enum.TryParse<TaskStatus>(target, ignoreCase: true, out var parsedTarget))
+            {
+                Error = $"未知状态: {target}";
+                return;
+            }
+
+            await Tasks.ChangeStatusAsync(TaskId, parsedTarget, "人工操作", TaskEventSource.Human, "human");
+            Error = null;
+        }
+        catch (Exception ex)
+        {
+            Error = ex.Message;
+        }
+
+        await ReloadAsync();
+    }
+
+    private async Task UploadAsync(InputFileChangeEventArgs args)
+    {
+        try
+        {
+            var file = args.File;
+            await using var stream = file.OpenReadStream(50 * 1024 * 1024);
+            await Documents.UploadAsync(TaskId, file.Name, stream, GuessKind(file.Name));
+            Error = null;
+        }
+        catch (Exception ex)
+        {
+            Error = ex.Message;
+        }
+
+        await ReloadAsync();
+    }
+
+    private static string GuessKind(string fileName) => Path.GetFileName(fileName).ToLowerInvariant() switch
+    {
+        var n when n.Contains("prd") || n.Contains("需求") => "prd",
+        var n when n.Contains("test") || n.Contains("用例") => "testcase",
+        var n when n.Contains("api") || n.Contains("接口") => "apidoc",
+        _ => "other"
+    };
+}

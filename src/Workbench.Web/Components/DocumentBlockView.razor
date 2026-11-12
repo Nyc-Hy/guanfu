@@ -1,0 +1,122 @@
+@using System.Text.Encodings.Web
+@using Workbench.Documents
+
+@if (Block.Kind == BlockKind.Heading)
+{
+    <h4 class="wb-doc-h">@RenderInlines(Block.Inlines)</h4>
+}
+else if (Block.Kind == BlockKind.Paragraph)
+{
+    <p class="wb-doc-p">@RenderInlines(Block.Inlines)</p>
+}
+else if (Block.Kind == BlockKind.List)
+{
+    @if (Block.ListKind == "ordered")
+    {
+        <ol class="wb-doc-list">
+            @foreach (var child in Block.Children ?? [])
+            {
+                <li>@RenderListItem(child)</li>
+            }
+        </ol>
+    }
+    else
+    {
+        <ul class="wb-doc-list">
+            @foreach (var child in Block.Children ?? [])
+            {
+                <li>@RenderListItem(child)</li>
+            }
+        </ul>
+    }
+}
+else if (Block.Kind == BlockKind.ListItem)
+{
+    @RenderListItem(Block)
+}
+else if (Block.Kind == BlockKind.Table)
+{
+    <table class="wb-doc-table">
+        @if (Block.Headers is { Count: > 0 })
+        {
+            <thead>
+            <tr>
+                @foreach (var header in Block.Headers)
+                {
+                    <th>@header</th>
+                }
+            </tr>
+            </thead>
+        }
+        <tbody>
+        @foreach (var row in Block.Rows ?? [])
+        {
+            <tr>
+                @foreach (var cell in row)
+                {
+                    <td>@RenderInlines(cell)</td>
+                }
+            </tr>
+        }
+        </tbody>
+    </table>
+}
+else if (Block.Kind == BlockKind.Code)
+{
+    <pre class="wb-doc-code"><code>@Block.Text</code></pre>
+}
+else if (Block.Kind == BlockKind.Diff)
+{
+    <pre class="wb-doc-diff">@foreach (var line in Block.Lines ?? [])
+    {
+        <span class="wb-diff-@line.Kind">@line.Text</span>
+    }</pre>
+}
+else if (Block.Kind == BlockKind.Quote)
+{
+    <blockquote class="wb-doc-quote">
+        @foreach (var child in Block.Children ?? [])
+        {
+            <DocumentBlockView Block="child" />
+        }
+    </blockquote>
+}
+
+@code {
+    [Parameter, EditorRequired] public ParsedBlockDto Block { get; set; } = default!;
+
+    private RenderFragment RenderInlines(IReadOnlyList<ParsedInlineDto>? inlines) => builder =>
+    {
+        if (inlines is null)
+        {
+            return;
+        }
+
+        foreach (var inline in inlines)
+        {
+            var encoded = HtmlEncoder.Default.Encode(inline.Text);
+            var markup = inline.Strike ? $"<s>{encoded}</s>" : encoded;
+            builder.AddMarkupContent(0, markup);
+        }
+    };
+
+    private RenderFragment RenderListItem(ParsedBlockDto item) => builder =>
+    {
+        if (item.Checked is not null)
+        {
+            builder.OpenElement(0, "span");
+            builder.AddAttribute(1, "class", item.Checked.Value ? "wb-todo wb-todo-done" : "wb-todo");
+            builder.AddContent(2, item.Checked.Value ? "☑" : "☐");
+            builder.CloseElement();
+        }
+
+        builder.AddContent(3, RenderInlines(item.Inlines));
+
+        foreach (var child in item.Children ?? [])
+        {
+            builder.OpenElement(4, "div");
+            builder.AddContent(5, RenderInlines(child.Inlines));
+            builder.CloseElement();
+        }
+    };
+}

@@ -1,0 +1,82 @@
+@page "/approvals"
+@rendermode InteractiveServer
+@inject IApprovalService ApprovalService
+
+<PageTitle>审批 · 开发工作台</PageTitle>
+
+<div class="wb-page-head">
+    <h1>审批</h1>
+    <button class="wb-btn" @onclick="RefreshAsync">刷新</button>
+</div>
+
+@if (Items.Count == 0)
+{
+    <div class="wb-empty">没有待处理的审批。</div>
+}
+else
+{
+    <div class="wb-approval-list">
+        @foreach (var approval in Items)
+        {
+            <div class="wb-panel">
+                <div class="wb-card-head">
+                    <div>
+                        <strong>@approval.ToolName</strong>
+                        <span class="wb-chip">@approval.Kind</span>
+                        @if (!string.IsNullOrWhiteSpace(approval.RequestedBy))
+                        {
+                            <span class="wb-chip wb-chip-agent">@approval.RequestedBy</span>
+                        }
+                    </div>
+                    <span class="wb-chip wb-chip-muted">
+                        等待 @Math.Max(0, (int)(approval.ExpiresAt - DateTimeOffset.UtcNow).TotalMinutes) 分钟
+                    </span>
+                </div>
+
+                <p class="wb-muted">@approval.Summary</p>
+
+                <pre class="wb-sql">@approval.Payload</pre>
+
+                <div class="wb-form-row">
+                    <input class="wb-input" placeholder="驳回理由（驳回必填）" @bind="Reason" @bind:event="oninput" />
+                    <button class="wb-btn wb-btn-primary" @onclick="() => DecideAsync(approval.Id, true)">批准</button>
+                    <button class="wb-btn wb-btn-danger" @onclick="() => DecideAsync(approval.Id, false)">驳回</button>
+                </div>
+
+                @if (!string.IsNullOrWhiteSpace(Error))
+                {
+                    <p class="wb-error">@Error</p>
+                }
+            </div>
+        }
+    </div>
+}
+
+@code {
+    private IReadOnlyList<ApprovalDto> Items { get; set; } = [];
+    private string Reason { get; set; } = string.Empty;
+    private string? Error { get; set; }
+
+    protected override async Task OnInitializedAsync() => await RefreshAsync();
+
+    private async Task RefreshAsync()
+    {
+        Items = await ApprovalService.ListAsync(ApprovalStatus.Pending);
+        Error = null;
+    }
+
+    private async Task DecideAsync(Guid approvalId, bool approve)
+    {
+        try
+        {
+            await ApprovalService.DecideAsync(approvalId, approve, "human", string.IsNullOrWhiteSpace(Reason) ? null : Reason);
+            Reason = string.Empty;
+            Error = null;
+            await RefreshAsync();
+        }
+        catch (Exception ex)
+        {
+            Error = ex.Message;
+        }
+    }
+}

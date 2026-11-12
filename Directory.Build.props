@@ -1,0 +1,23 @@
+<Project>
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnforceCodeStyleInBuild>false</EnforceCodeStyleInBuild>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+  <!-- 统一的包版本，避免各工程版本漂移 -->
+  <PropertyGroup>
+    <EfCoreVersion>8.0.34</EfCoreVersion>
+    <McpSdkVersion>2.4.0</McpSdkVersion>
+    <MarkdigVersion>1.6.0</MarkdigVersion>
+    <OpenXmlVersion>3.5.1</OpenXmlVersion>
+    <PdfPigVersion>0.1.16</PdfPigVersion>
+    <SqlClientVersion>5.2.2</SqlClientVersion>
+  </PropertyGroup>
+
+</Project>

@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ModelContextProtocol.AspNetCore" Version="$(McpSdkVersion)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Workbench.Domain\Workbench.Domain.csproj" />
+    <ProjectReference Include="..\Workbench.Application\Workbench.Application.csproj" />
+    <ProjectReference Include="..\Workbench.Documents\Workbench.Documents.csproj" />
+    <ProjectReference Include="..\Workbench.Infrastructure\Workbench.Infrastructure.csproj" />
+    <ProjectReference Include="..\Workbench.Mcp\Workbench.Mcp.csproj" />
+  </ItemGroup>
+
+</Project>

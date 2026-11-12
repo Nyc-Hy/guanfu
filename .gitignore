@@ -1,0 +1,32 @@
+# .NET
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+*.user
+*.suo
+.vs/
+.idea/
+*.swp
+
+# 本地隔离安装的 .NET SDK（用 install-dotnet.sh 重建，不要提交）
+.dotnet/
+*.nupkg
+
+# 工作台运行时数据（WORKBENCH_HOME）
+workbench.db
+workbench.db-shm
+workbench.db-wal
+documents/
+*.db
+*.db-shm
+*.db-wal
+
+# 测试与覆盖率
+TestResults/
+coverage*.json
+coverage*.xml
+*.coverage
+
+# macOS
+.DS_Store

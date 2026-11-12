@@ -1,0 +1,40 @@
+﻿@inherits LayoutComponentBase
+@inject IApprovalService Approvals
+
+<div class="wb-shell">
+    <header class="wb-topbar">
+        <a class="wb-brand" href="/">开发工作台</a>
+        <nav class="wb-nav">
+            <a href="/">项目</a>
+            <a href="/approvals">审批 @if (PendingCount > 0)
+            {
+                <span class="wb-badge">@PendingCount</span>
+            }</a>
+        </nav>
+    </header>
+
+    <main class="wb-main">
+        @Body
+    </main>
+</div>
+
+<div id="blazor-error-ui">
+    出错了。
+    <a href="" class="reload">重载</a>
+    <a class="dismiss">🗙</a>
+</div>
+
+@code {
+    private int PendingCount { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshAsync();
+    }
+
+    private async Task RefreshAsync()
+    {
+        var pending = await Approvals.ListAsync(ApprovalStatus.Pending);
+        PendingCount = pending.Count;
+    }
+}

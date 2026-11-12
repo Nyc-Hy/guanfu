@@ -1,0 +1,288 @@
+/* 开发工作台样式 —— 独立于模板自带的 app.css */
+
+:root {
+    --wb-bg: #0f1115;
+    --wb-panel: #171a21;
+    --wb-panel-2: #1e222b;
+    --wb-border: #2a2f3a;
+    --wb-text: #e6e8ee;
+    --wb-muted: #8b93a5;
+    --wb-accent: #4c8dff;
+    --wb-ok: #35c48a;
+    --wb-warn: #e0a33a;
+    --wb-danger: #e05561;
+}
+
+body {
+    background: var(--wb-bg);
+    color: var(--wb-text);
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+    margin: 0;
+}
+
+.wb-shell { min-height: 100vh; }
+
+.wb-topbar {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    padding: 12px 24px;
+    border-bottom: 1px solid var(--wb-border);
+    background: var(--wb-panel);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+}
+
+.wb-brand {
+    font-weight: 700;
+    font-size: 16px;
+    color: var(--wb-text);
+    text-decoration: none;
+}
+
+.wb-nav { display: flex; gap: 18px; }
+.wb-nav a { color: var(--wb-muted); text-decoration: none; font-size: 14px; }
+.wb-nav a:hover { color: var(--wb-text); }
+
+.wb-badge {
+    display: inline-block;
+    min-width: 18px;
+    padding: 1px 6px;
+    margin-left: 6px;
+    border-radius: 9px;
+    background: var(--wb-danger);
+    color: #fff;
+    font-size: 11px;
+    text-align: center;
+}
+
+.wb-main { padding: 24px; max-width: 1400px; margin: 0 auto; }
+
+.wb-page-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 16px;
+    margin-bottom: 20px;
+}
+
+.wb-page-head h1 { margin: 4px 0 6px; font-size: 22px; }
+
+.wb-back { color: var(--wb-muted); text-decoration: none; font-size: 13px; }
+.wb-back:hover { color: var(--wb-accent); }
+
+.wb-muted { color: var(--wb-muted); font-size: 13px; margin: 4px 0; }
+.wb-empty { padding: 48px; text-align: center; color: var(--wb-muted); border: 1px dashed var(--wb-border); border-radius: 10px; }
+.wb-error { color: var(--wb-danger); font-size: 13px; margin: 8px 0 0; }
+
+.wb-panel {
+    background: var(--wb-panel);
+    border: 1px solid var(--wb-border);
+    border-radius: 10px;
+    padding: 16px;
+    margin-bottom: 16px;
+}
+
+.wb-panel h3 { margin: 0 0 12px; font-size: 15px; }
+.wb-panel h4 { margin: 14px 0 6px; font-size: 13px; color: var(--wb-muted); }
+
+.wb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+
+.wb-card {
+    display: block;
+    background: var(--wb-panel);
+    border: 1px solid var(--wb-border);
+    border-radius: 10px;
+    padding: 16px;
+    text-decoration: none;
+    color: var(--wb-text);
+}
+
+.wb-card:hover { border-color: var(--wb-accent); }
+
+.wb-card-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+.wb-card-head h2 { margin: 0; font-size: 16px; }
+.wb-card-meta { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+
+.wb-progress { height: 6px; background: var(--wb-panel-2); border-radius: 3px; overflow: hidden; margin-top: 10px; }
+.wb-progress-bar { height: 100%; background: var(--wb-accent); }
+.wb-progress-label { font-size: 12px; color: var(--wb-muted); margin-top: 6px; }
+
+.wb-tag {
+    display: inline-block;
+    padding: 1px 7px;
+    border-radius: 4px;
+    background: var(--wb-panel-2);
+    border: 1px solid var(--wb-border);
+    font-size: 11px;
+    color: var(--wb-muted);
+}
+
+.wb-tag-ok { color: var(--wb-ok); border-color: var(--wb-ok); }
+.wb-tag-warn { color: var(--wb-warn); border-color: var(--wb-warn); }
+.wb-tag-danger { color: var(--wb-danger); border-color: var(--wb-danger); }
+
+.wb-chip {
+    display: inline-block;
+    padding: 1px 7px;
+    border-radius: 10px;
+    background: var(--wb-panel-2);
+    font-size: 11px;
+    color: var(--wb-muted);
+    margin-right: 4px;
+}
+
+.wb-chip-agent { color: var(--wb-accent); }
+.wb-chip-muted { color: var(--wb-muted); opacity: .75; }
+
+.wb-btn {
+    padding: 7px 14px;
+    border-radius: 6px;
+    border: 1px solid var(--wb-border);
+    background: var(--wb-panel-2);
+    color: var(--wb-text);
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.wb-btn:hover { border-color: var(--wb-accent); }
+.wb-btn:disabled { opacity: .5; cursor: not-allowed; }
+.wb-btn-primary { background: var(--wb-accent); border-color: var(--wb-accent); color: #fff; }
+.wb-btn-danger { background: transparent; border-color: var(--wb-danger); color: var(--wb-danger); }
+
+.wb-input {
+    padding: 7px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--wb-border);
+    background: var(--wb-bg);
+    color: var(--wb-text);
+    font-size: 13px;
+    min-width: 220px;
+    flex: 1;
+}
+
+.wb-form-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+.wb-board { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 12px; }
+
+.wb-column {
+    flex: 0 0 240px;
+    background: var(--wb-panel);
+    border: 1px solid var(--wb-border);
+    border-radius: 10px;
+    padding: 10px;
+}
+
+.wb-column-head {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    color: var(--wb-muted);
+    padding: 2px 4px 10px;
+}
+
+.wb-count { background: var(--wb-panel-2); border-radius: 8px; padding: 0 6px; }
+.wb-column-empty { color: var(--wb-border); text-align: center; padding: 12px 0; }
+
+.wb-task {
+    display: block;
+    background: var(--wb-panel-2);
+    border: 1px solid var(--wb-border);
+    border-radius: 8px;
+    padding: 10px;
+    margin-bottom: 8px;
+    text-decoration: none;
+    color: var(--wb-text);
+}
+
+.wb-task:hover { border-color: var(--wb-accent); }
+.wb-task-title { font-size: 13px; margin-bottom: 6px; }
+.wb-task-meta { display: flex; gap: 4px; flex-wrap: wrap; }
+
+.wb-detail-grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; align-items: start; }
+.wb-detail-side .wb-panel { position: sticky; top: 76px; }
+
+@media (max-width: 1000px) {
+    .wb-detail-grid { grid-template-columns: 1fr; }
+    .wb-detail-side .wb-panel { position: static; }
+}
+
+.wb-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.wb-table th, .wb-table td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--wb-border); }
+.wb-table th { color: var(--wb-muted); font-weight: 500; font-size: 12px; }
+
+.wb-pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 13px;
+    line-height: 1.6;
+    margin: 4px 0 10px;
+    color: var(--wb-text);
+}
+
+.wb-sql {
+    background: var(--wb-bg);
+    border: 1px solid var(--wb-border);
+    border-radius: 8px;
+    padding: 12px;
+    font-size: 12px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 320px;
+    overflow: auto;
+}
+
+.wb-timeline { list-style: none; margin: 0; padding: 0; }
+.wb-timeline li { border-left: 2px solid var(--wb-border); padding: 0 0 14px 12px; position: relative; }
+.wb-timeline li::before {
+    content: '';
+    position: absolute;
+    left: -5px;
+    top: 4px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--wb-accent);
+}
+
+.wb-timeline-when { font-size: 11px; color: var(--wb-muted); }
+.wb-timeline-what { font-size: 13px; display: flex; gap: 4px; align-items: center; flex-wrap: wrap; margin: 2px 0; }
+.wb-timeline-note { font-size: 12px; color: var(--wb-muted); white-space: pre-wrap; }
+
+.wb-artifact { border-top: 1px solid var(--wb-border); padding: 10px 0; }
+.wb-artifact:first-of-type { border-top: none; }
+
+.wb-approval-list .wb-panel { margin-bottom: 12px; }
+
+.wb-outline { list-style: none; margin: 0; padding: 0; font-size: 13px; }
+.wb-outline li { padding: 3px 0; color: var(--wb-muted); }
+
+.wb-revisions { list-style: none; margin: 0; padding: 0; }
+.wb-revisions li { border-left: 3px solid var(--wb-border); padding: 4px 0 8px 10px; margin-bottom: 8px; }
+.wb-rev-insert { border-left-color: var(--wb-ok); }
+.wb-rev-delete { border-left-color: var(--wb-danger); }
+.wb-rev-moveFrom, .wb-rev-moveTo { border-left-color: var(--wb-warn); }
+.wb-rev-head { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--wb-muted); }
+.wb-rev-text { font-size: 12px; white-space: pre-wrap; word-break: break-word; margin-top: 3px; }
+
+.wb-struck { list-style: none; margin: 0; padding: 0; font-size: 13px; }
+.wb-struck li { padding: 3px 0; color: var(--wb-muted); }
+
+.wb-doc-h { font-size: 15px; margin: 16px 0 8px; }
+.wb-doc-p { font-size: 13px; line-height: 1.7; margin: 6px 0; }
+.wb-doc-list { font-size: 13px; line-height: 1.7; }
+.wb-doc-table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 10px 0; }
+.wb-doc-table th, .wb-doc-table td { border: 1px solid var(--wb-border); padding: 5px 8px; text-align: left; }
+.wb-doc-code { background: var(--wb-bg); border: 1px solid var(--wb-border); border-radius: 8px; padding: 12px; font-size: 12px; overflow: auto; }
+.wb-doc-diff { background: var(--wb-bg); border: 1px solid var(--wb-border); border-radius: 8px; padding: 12px; font-size: 12px; overflow: auto; }
+.wb-diff-added { color: var(--wb-ok); display: block; }
+.wb-diff-removed { color: var(--wb-danger); display: block; }
+.wb-diff-context { color: var(--wb-muted); display: block; }
+.wb-diff-header { color: var(--wb-accent); display: block; }
+.wb-doc-quote { border-left: 3px solid var(--wb-border); margin: 8px 0; padding-left: 12px; color: var(--wb-muted); }
+
+.wb-todo { margin-right: 6px; }
+.wb-todo-done { color: var(--wb-ok); }
+
+.wb-hint { font-size: 12px; color: var(--wb-muted); margin-top: 6px; }

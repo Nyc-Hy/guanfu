@@ -1,0 +1,125 @@
+﻿@page "/"
+@rendermode InteractiveServer
+@inject IProjectService Projects
+@inject ITaskService Tasks
+
+<PageTitle>项目 · 开发工作台</PageTitle>
+
+<div class="wb-page-head">
+    <h1>项目</h1>
+    <button class="wb-btn wb-btn-primary" @onclick="ToggleCreate">@(ShowCreate ? "取消" : "新建项目")</button>
+</div>
+
+@if (ShowCreate)
+{
+    <div class="wb-panel">
+        <div class="wb-form-row">
+            <input class="wb-input" placeholder="项目名称" @bind="NewName" @bind:event="oninput" />
+            <input class="wb-input" placeholder="描述（可选）" @bind="NewDescription" @bind:event="oninput" />
+            <button class="wb-btn wb-btn-primary" disabled="@string.IsNullOrWhiteSpace(NewName)" @onclick="CreateAsync">创建</button>
+        </div>
+        @if (!string.IsNullOrWhiteSpace(Error))
+        {
+            <p class="wb-error">@Error</p>
+        }
+    </div>
+}
+
+@if (Items.Count == 0)
+{
+    <div class="wb-empty">
+        还没有项目。点右上角「新建项目」开始。
+    </div>
+}
+else
+{
+    <div class="wb-grid">
+        @foreach (var project in Items)
+        {
+            <a class="wb-card" href="/projects/@project.Id">
+                <div class="wb-card-head">
+                    <h2>@project.Name</h2>
+                    @if (project.Stale)
+                    {
+                        <span class="wb-tag wb-tag-warn">停滞</span>
+                    }
+                    @if (project.BlockedTasks > 0)
+                    {
+                        <span class="wb-tag wb-tag-danger">@project.BlockedTasks 阻塞</span>
+                    }
+                </div>
+
+                @if (!string.IsNullOrWhiteSpace(project.Description))
+                {
+                    <p class="wb-muted">@project.Description</p>
+                }
+
+                <div class="wb-progress">
+                    <div class="wb-progress-bar" style="width:@Percent(project.Progress)"></div>
+                </div>
+                <div class="wb-progress-label">@Percent(project.Progress) · @project.DoneTasks/@project.TotalTasks 完成</div>
+
+                <div class="wb-card-meta">
+                    @if (!string.IsNullOrWhiteSpace(project.Branch))
+                    {
+                        <span class="wb-chip">⎇ @project.Branch</span>
+                    }
+                    @if (project.ActiveTasks > 0)
+                    {
+                        <span class="wb-chip">@project.ActiveTasks 进行中</span>
+                    }
+                    @if (project.LastActivityAt is not null)
+                    {
+                        <span class="wb-chip wb-chip-muted">@Relative(project.LastActivityAt.Value)</span>
+                    }
+                </div>
+            </a>
+        }
+    </div>
+}
+
+@code {
+    private IReadOnlyList<ProjectSummaryDto> Items { get; set; } = [];
+    private bool ShowCreate { get; set; }
+    private string NewName { get; set; } = string.Empty;
+    private string NewDescription { get; set; } = string.Empty;
+    private string? Error { get; set; }
+
+    protected override async Task OnInitializedAsync() => await ReloadAsync();
+
+    private async Task ReloadAsync() => Items = await Projects.ListAsync();
+
+    private void ToggleCreate()
+    {
+        ShowCreate = !ShowCreate;
+        Error = null;
+    }
+
+    private async Task CreateAsync()
+    {
+        try
+        {
+            await Projects.CreateAsync(NewName, string.IsNullOrWhiteSpace(NewDescription) ? null : NewDescription);
+            NewName = string.Empty;
+            NewDescription = string.Empty;
+            ShowCreate = false;
+            Error = null;
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            Error = ex.Message;
+        }
+    }
+
+    private static string Percent(double ratio) => $"{ratio * 100:0.#}%";
+
+    private static string Relative(DateTimeOffset time)
+    {
+        var delta = DateTimeOffset.UtcNow - time;
+        if (delta.TotalMinutes < 1) return "刚刚";
+        if (delta.TotalHours < 1) return $"{(int)delta.TotalMinutes} 分钟前";
+        if (delta.TotalDays < 1) return $"{(int)delta.TotalHours} 小时前";
+        return $"{(int)delta.TotalDays} 天前";
+    }
+}
