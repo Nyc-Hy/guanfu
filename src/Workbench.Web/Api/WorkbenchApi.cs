@@ -547,6 +547,36 @@ public static class WorkbenchApi
             return Results.NoContent();
         });
 
+        // ---- 人工凭证 ----
+        // 只有「直接从本机发出来」的请求才能拿到 token：内网远程攻击者拿不到，
+        // 也就没法自己批准自己的写操作。顺带把 Cookie 种下 ——
+        // UI 首次引导只要调这一个接口就够了。
+        api.MapGet("/human-token", (HttpContext context, HumanTokenAccessor tokens) =>
+        {
+            if (!tokens.IsDirectLoopbackRequest(context))
+            {
+                return Results.Json(
+                    new { ok = false, error = "人工凭证只能在工作台本机获取。请从启动服务的控制台复制 token。" },
+                    statusCode: StatusCodes.Status403Forbidden);
+            }
+
+            context.Response.Cookies.Append(HumanTokenPolicy.CookieName, tokens.Token, new CookieOptions
+            {
+                HttpOnly = true,
+                SameSite = SameSiteMode.Strict,
+                Path = "/",
+                Secure = context.Request.IsHttps
+            });
+
+            return Results.Ok(new
+            {
+                ok = true,
+                token = tokens.Token,
+                headerName = HumanTokenPolicy.HeaderName,
+                cookieName = HumanTokenPolicy.CookieName
+            });
+        });
+
         // ---- 评审 ----
         api.MapPost("/tasks/{taskId:guid}/review", async (
             Guid taskId, StartReviewRequest request, IReviewService reviews, CancellationToken ct) =>
