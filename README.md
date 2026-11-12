@@ -125,6 +125,10 @@ wb task launch <任务ID>                 # 拉起外部 agent
 
 wb workspace export /tmp/wb-backup       # 换机：整目录导出（库+文档+密钥）
 wb workspace import /tmp/wb-backup --home ~/.workbench
+
+wb tool list                             # MCP 工具清单（按分类分组）
+wb tool disable shell_run                # 关掉某个 MCP 工具
+wb tool reset                            # 全部恢复默认
 ```
 
 全局参数 `--url`（或环境变量 `WORKBENCH_URL`）指定服务地址。
@@ -185,6 +189,18 @@ wb workspace import /tmp/wb-backup --home ~/.workbench
 | `shell_run` | **白名单 + 强制审批** | 命令拆成 exec 参数直接跑，**不经过 shell**，不支持管道与重定向 |
 
 > 写类工具统一是「先建审批 → 等待人工决定 → 批准后带 `approvalId` 再次调用即执行」。
+
+### 工具开关（`/mcp-tools`）
+
+工作台页面 `/mcp-tools` 可以**按分类**（工作台组 / 文档组 / 数据库组 / 通用组）逐个开关 MCP 工具：
+
+- 关掉的工具**不出现在 `tools/list`** 里 —— agent 看不到，也就不会去调
+- 就算客户端缓存了工具清单硬调，服务端也会拒（返回 `isError` 与中文提示）
+- 开关落库（只存「被显式改过的」），重启后仍然生效；以后加新工具不用写迁移脚本
+- 写类工具（`db_execute` / `git_commit` / `git_push` / `shell_run`）标着「需审批」
+
+作用域是**工作台级**，不是项目级：MCP 的 `tools/list` 是会话级的，没有项目参数，
+没法按项目返回不同的工具清单。要按项目管执行范围，用项目配置里的**命令白名单**。
 
 ---
 

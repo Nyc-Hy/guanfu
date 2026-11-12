@@ -129,6 +129,7 @@ Draft → DocsReady → Planned → InDev → Testing → Review → Done
 |---|---|
 | `/projects/{id}/settings` | 仓库路径、git 远端、agent 启动命令、命令白名单、审批通知 webhook |
 | `/metrics` | 各项目度量：状态分布、近 8 周流速、平均周期、测试通过率、平均覆盖率、待审数、阻塞与停滞 |
+| `/mcp-tools` | MCP 工具开关：按分类（工作台组 / 文档组 / 数据库组 / 通用组）逐个开关；关掉的工具从 `tools/list` 隐藏且调用被拒 |
 | 看板页 | 里程碑筛选 + 里程碑增删 |
 | 任务详情页 | 里程碑归属、**「启动 agent」按钮**（拉起外部 CLI，输出落 `WORKBENCH_HOME/runs/{taskId}/`） |
 
@@ -160,3 +161,6 @@ Draft → DocsReady → Planned → InDev → Testing → Review → Done
 | `git push` 只给分支不给远端 | 命令变成 `git push main`，git 去找一个叫 main 的远端 → `does not appear to be a git repository` | 只给分支时补 `origin`（`GitWriter.BuildPushArgs`，已补回归测试） |
 | 边跑边复制 SQLite 文件 | 导出的是撕裂的库，导入后打不开 | 用 SQLite 的 `VACUUM INTO` 做一致性快照 |
 | shell 白名单用字符串前缀匹配 | `dotnet test` 会匹配到 `dotnet test-foo` | 白名单按「完全相等或前缀+空格」匹配，且命令拆成 exec 参数，**不经过 shell** |
+| 手写 MCP 工具清单 | 加了工具忘了同步，清单和代码对不上 | 清单从**实际注册的工具**反射出来（`McpToolCatalog`），加了工具自动出现 |
+| 工具开关存成「每个工具一行」 | 以后加新工具要写迁移脚本把它打开 | 只存「被显式改过的」，没记录的一律按开启处理 |
+| MCP 的 `tools/list` 是会话级 | 没法按项目返回不同工具清单 | 开关做成**工作台级**；按项目管执行范围用项目配置里的命令白名单 |
