@@ -32,7 +32,7 @@ public sealed record DbExecuteToolResult(
 public sealed class DatabaseMcpTools(
     IDbConnectionService connections,
     ISqlCommandRunner runner,
-    IApprovalService approvals,
+    IApprovalGate approvalGate,
     IToolAuditService audit,
     IClock clock)
 {
@@ -88,7 +88,8 @@ public sealed class DatabaseMcpTools(
     [Description(
         "执行写操作（INSERT / UPDATE / DELETE / DDL）。必须人工审批通过后才会真正执行。" +
         "首次调用会生成一条审批请求并等待人工决定（waitSeconds 内没批就返回 pending）。" +
-        "如果审批是在之后才通过的，用 approvalId 再次调用本工具即可直接执行——这就是令牌式续跑。")]
+        "如果审批是在之后才通过的，用 approvalId 再次调用本工具即可直接执行——这就是令牌式续跑。" +
+        "注意：续跑时执行的 SQL 必须和当初审批的那条完全一致，否则会被拒。")]
     public async Task<DbExecuteToolResult> ExecuteAsync(
         Guid projectId,
         string sql,
@@ -100,93 +101,81 @@ public sealed class DatabaseMcpTools(
     {
         var started = clock.UtcNow;
 
-        // ---- 令牌式续跑：拿着已批准的审批直接执行 ----
-        if (approvalId is not null)
-        {
-            var existing = await approvals.GetAsync(approvalId.Value, cancellationToken)
-                           ?? throw new WorkbenchException($"审批 {approvalId} 不存在。");
-
-            if (existing.Status != nameof(ApprovalStatus.Approved))
-            {
-                return new DbExecuteToolResult(
-                    existing.Id, existing.Status, null,
-                    $"审批当前状态为 {existing.Status}，还不能执行。");
-            }
-
-            return await RunApprovedAsync(projectId, sql, callerId, taskId, approvalId.Value, started, cancellationToken);
-        }
-
+        // 先把连接取出来：审批单上要写清楚是哪个库，人批的时候才知道自己在批什么
         var config = await connections.GetAsync(projectId, null, cancellationToken)
                      ?? throw new WorkbenchException("该项目没有配置数据库连接。");
 
-        var summary = $"对 {config.Server}/{config.Database} 执行写操作";
-        var approval = await approvals.RequestAsync(
-            "db_execute", "db.write", sql, summary, callerId, taskId, projectId,
-            ApprovalService.DefaultTtlMinutes, cancellationToken);
+        // 表级规则：连接上配了「这张表免审批写」就不用等人工。
+        // 认不出目标表时按「要审批」处理 —— 宁可多问一次。
+        var targetTable = SqlTargetTable.TryExtract(sql);
+        var requiresApproval = await connections.RequiresApprovalAsync(
+            config.Id, targetTable, cancellationToken);
 
-        var decided = await approvals.AwaitAsync(approval.Id, Math.Clamp(waitSeconds, 1, 300), cancellationToken);
+        if (!requiresApproval)
+        {
+            return await ExecuteWithoutApprovalAsync(
+                config, sql, callerId, taskId, projectId, targetTable, started, cancellationToken);
+        }
 
-        if (decided.Status != nameof(ApprovalStatus.Approved))
+        var gate = await approvalGate.AcquireAsync(
+            "db_execute", "db.write", sql,
+            $"对 {config.Server}/{config.Database} 执行写操作：{sql}",
+            callerId, taskId, projectId, approvalId, waitSeconds, cancellationToken);
+
+        if (!gate.Approved)
         {
             await audit.RecordAsync(new ToolAuditEntry(
                 "db_execute", callerId, projectId, taskId, sql,
-                RequiredApproval: true, ApprovalId: approval.Id,
-                Outcome: decided.Status == nameof(ApprovalStatus.Rejected) ? "denied" : "pending",
-                ResultSummary: decided.DecisionReason ?? decided.Status,
+                RequiredApproval: true, ApprovalId: gate.ApprovalId,
+                Outcome: gate.Status == nameof(ApprovalStatus.Rejected) ? "denied" : "pending",
+                ResultSummary: gate.Message,
                 RowsAffected: null,
                 DurationMs: (long)(clock.UtcNow - started).TotalMilliseconds), cancellationToken);
 
             return new DbExecuteToolResult(
-                approval.Id,
-                decided.Status,
+                gate.ApprovalId,
+                gate.Status,
                 null,
-                decided.Status == nameof(ApprovalStatus.Rejected)
-                    ? $"已被驳回，未执行。原因: {decided.DecisionReason}"
-                    : $"仍在等待人工审批（当前状态 {decided.Status}）。批准后带 approvalId={approval.Id} 再次调用即可执行。");
+                gate.Message);
         }
 
-        return await RunApprovedAsync(projectId, sql, callerId, taskId, approval.Id, started, cancellationToken);
-    }
-
-    private async Task<DbExecuteToolResult> RunApprovedAsync(
-        Guid projectId,
-        string sql,
-        string? callerId,
-        Guid? taskId,
-        Guid approvalId,
-        DateTimeOffset started,
-        CancellationToken cancellationToken)
-    {
         try
         {
-            var config = await connections.GetAsync(projectId, null, cancellationToken)
-                         ?? throw new WorkbenchException("该项目没有配置数据库连接。");
-
             var result = await runner.ExecuteAsync(config, sql, cancellationToken);
-            await approvals.MarkExecutedAsync(
-                approvalId, $"影响 {result.RowsAffected} 行", cancellationToken);
 
             await audit.RecordAsync(new ToolAuditEntry(
                 "db_execute", callerId, projectId, taskId, sql,
-                RequiredApproval: true, ApprovalId: approvalId,
+                RequiredApproval: true, ApprovalId: gate.ApprovalId,
                 Outcome: "success",
                 ResultSummary: $"影响 {result.RowsAffected} 行",
                 RowsAffected: result.RowsAffected,
                 DurationMs: (long)(clock.UtcNow - started).TotalMilliseconds), cancellationToken);
 
-            return new DbExecuteToolResult(approvalId, nameof(ApprovalStatus.Executed), result.RowsAffected, "已审批并执行。");
+            return new DbExecuteToolResult(gate.ApprovalId, nameof(ApprovalStatus.Executed), result.RowsAffected, "已审批并执行。");
         }
         catch (Exception ex)
         {
             await audit.RecordAsync(new ToolAuditEntry(
                 "db_execute", callerId, projectId, taskId, sql,
-                RequiredApproval: true, ApprovalId: approvalId,
+                RequiredApproval: true, ApprovalId: gate.ApprovalId,
                 Outcome: "error",
                 ResultSummary: ex.Message,
                 RowsAffected: null,
                 DurationMs: (long)(clock.UtcNow - started).TotalMilliseconds), cancellationToken);
 
-            return new DbExecuteToolResult(approvalId, nameof(ApprovalStatus.Approved), null, $"执行失败: {ex.Message}");
+            return new DbExecuteToolResult(gate.ApprovalId, nameof(ApprovalStatus.Executing), null, $"执行失败: {ex.Message}");
+        }
+        finally
+        {
+            // 审批已经占住了，收尾一下 —— 不收尾它就卡在 Executing
+            try
+            {
+                await approvalGate.CompleteAsync(gate.ApprovalId, null, cancellationToken);
+            }
+            catch (Exception)
+            {
+                // 收尾失败不能盖掉真正的执行结果
+            }
         }
     }
 
@@ -200,6 +189,54 @@ public sealed class DatabaseMcpTools(
         return configs
             .Select(c => new ConnectionInfoDto(c.Id, c.Name, c.Server, c.Database, c.UserId, c.IsDefault))
             .ToList();
+    }
+
+    /// <summary>
+    /// 免审批直接执行。
+    ///
+    /// 走的还是同一条执行路径与同一套审计 —— 免的只是「等人工点头」这一步，
+    /// 不是免记录。审计里 RequiredApproval=false 标出来，事后能分清。
+    /// </summary>
+    private async Task<DbExecuteToolResult> ExecuteWithoutApprovalAsync(
+        DbConnectionConfig config,
+        string sql,
+        string? callerId,
+        Guid? taskId,
+        Guid projectId,
+        string? targetTable,
+        DateTimeOffset started,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var result = await runner.ExecuteAsync(config, sql, cancellationToken);
+
+            await audit.RecordAsync(new ToolAuditEntry(
+                "db_execute", callerId, projectId, taskId, sql,
+                RequiredApproval: false, ApprovalId: null,
+                Outcome: "success",
+                ResultSummary: $"影响 {result.RowsAffected} 行（表 {targetTable ?? "?"} 免审批）",
+                RowsAffected: result.RowsAffected,
+                DurationMs: (long)(clock.UtcNow - started).TotalMilliseconds), cancellationToken);
+
+            return new DbExecuteToolResult(
+                Guid.Empty,
+                nameof(ApprovalStatus.Executed),
+                result.RowsAffected,
+                $"已执行（表 {targetTable ?? "?"} 配了免审批）。");
+        }
+        catch (Exception ex)
+        {
+            await audit.RecordAsync(new ToolAuditEntry(
+                "db_execute", callerId, projectId, taskId, sql,
+                RequiredApproval: false, ApprovalId: null,
+                Outcome: "error",
+                ResultSummary: ex.Message,
+                RowsAffected: null,
+                DurationMs: (long)(clock.UtcNow - started).TotalMilliseconds), cancellationToken);
+
+            return new DbExecuteToolResult(Guid.Empty, "error", null, $"执行失败: {ex.Message}");
+        }
     }
 
     [McpServerTool(Name = "db_schema")]

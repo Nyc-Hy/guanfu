@@ -54,6 +54,11 @@ public sealed class WorkbenchTestHost : IDisposable
 
     public ApprovalService Approvals => new(_db, Clock);
 
+    /// <summary>写操作闸门 —— 四个写工具共用这一套。</summary>
+    public ApprovalGate Gate => new(Approvals);
+
+    public ToolAuditService Audit => new(_db, Clock);
+
     public ReviewService Reviews { get; }
 
     /// <summary>分支守卫。测试里可以换成假的 git 状态。</summary>

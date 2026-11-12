@@ -13,6 +13,7 @@ public static class ApplicationServiceCollectionExtensions
         services.AddScoped<ITaskService, TaskService>();
         services.AddScoped<IDocumentService, DocumentService>();
         services.AddScoped<IApprovalService, ApprovalService>();
+        services.AddScoped<IApprovalGate, ApprovalGate>();
         services.AddScoped<IToolAuditService, ToolAuditService>();
         services.AddScoped<IDbConnectionService, DbConnectionService>();
         services.AddScoped<IMilestoneService, MilestoneService>();

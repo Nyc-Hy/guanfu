@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Workbench.Application.Contracts;
 using Workbench.Domain;
@@ -39,6 +41,30 @@ public interface IApprovalService
     Task<ApprovalDto> MarkExecutedAsync(Guid id, string? resultSummary, CancellationToken cancellationToken = default);
 
     Task<int> ExpireOverdueAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 原子消费一条审批。
+    ///
+    /// 校验它批的确实是「这个工具 + 这个操作 + 这个项目」，而且没过期；
+    /// 通过后立刻把它占住（Approved → Executing），别的并发请求就抢不到了。
+    /// </summary>
+    Task<ApprovalConsumeResult> TryConsumeAsync(
+        Guid id,
+        string toolName,
+        string kind,
+        string payload,
+        Guid projectId,
+        CancellationToken cancellationToken = default);
+}
+
+/// <summary>消费审批的结果。失败时 <see cref="Error"/> 写明为什么。</summary>
+public sealed record ApprovalConsumeResult(bool Ok, Guid ApprovalId, string Status, string? Error = null)
+{
+    public static ApprovalConsumeResult Success(Guid id) =>
+        new(true, id, nameof(ApprovalStatus.Executing));
+
+    public static ApprovalConsumeResult Rejected(Guid id, string status, string error) =>
+        new(false, id, status, error);
 }
 
 public sealed class ApprovalService(IAppDbContext db, IClock clock, INotifier? notifier = null) : IApprovalService
@@ -64,6 +90,8 @@ public sealed class ApprovalService(IAppDbContext db, IClock clock, INotifier? n
             ToolName = toolName,
             Kind = kind,
             Payload = payload,
+            // 指纹存的是「批的是哪个操作」。没有它，批一次就能用一辈子。
+            PayloadHash = ComputePayloadHash(payload),
             Summary = summary,
             Status = ApprovalStatus.Pending,
             RequestedBy = requestedBy,
@@ -130,11 +158,11 @@ public sealed class ApprovalService(IAppDbContext db, IClock clock, INotifier? n
 
         if (approval.Status == ApprovalStatus.Pending && approval.ExpiresAt <= clock.UtcNow)
         {
+            // 过期必须真的落库。之前这里用 AsNoTracking 取实体再改属性，
+            // 未跟踪的实体 SaveChanges 是不会写回的 —— 库里永远还是 Pending，
+            // 待审列表只会越积越多，人还能批一条早就过期的审批。
+            await ExpireAsync(id, clock.UtcNow, cancellationToken);
             approval.Status = ApprovalStatus.Expired;
-            approval.DecidedAt = clock.UtcNow;
-            approval.DecidedBy = "system";
-            approval.DecisionReason = "超时未处理，自动过期";
-            await db.SaveChangesAsync(cancellationToken);
         }
 
         return ToDto(approval);
@@ -145,6 +173,10 @@ public sealed class ApprovalService(IAppDbContext db, IClock clock, INotifier? n
         Guid? projectId = null,
         CancellationToken cancellationToken = default)
     {
+        // 先把过期的待审落库 —— 不然「待审」列表里全是早就过期的单子，
+        // 人还能点「批准」，而闸门只认状态不认过期时间。
+        await ExpireOverdueAsync(cancellationToken);
+
         var query = db.Approvals.AsNoTracking();
 
         if (status is not null)
@@ -154,7 +186,7 @@ public sealed class ApprovalService(IAppDbContext db, IClock clock, INotifier? n
 
         if (projectId is not null)
         {
-            query = query.Where(a => a.ProjectId == projectId.Value);
+            query = query.Where(a => a.ProjectId == projectId);
         }
 
         var approvals = await query
@@ -171,36 +203,49 @@ public sealed class ApprovalService(IAppDbContext db, IClock clock, INotifier? n
         string? reason = null,
         CancellationToken cancellationToken = default)
     {
-        var approval = await db.Approvals.FirstOrDefaultAsync(a => a.Id == id, cancellationToken)
-                       ?? throw new NotFoundException("审批", id);
-
-        if (approval.Status != ApprovalStatus.Pending)
-        {
-            throw new WorkbenchException($"审批 {id} 已经是 {approval.Status} 状态，不能再决定。");
-        }
-
-        if (approval.ExpiresAt <= clock.UtcNow)
-        {
-            approval.Status = ApprovalStatus.Expired;
-            approval.DecidedAt = clock.UtcNow;
-            approval.DecidedBy = "system";
-            approval.DecisionReason = "超时未处理，自动过期";
-            await db.SaveChangesAsync(cancellationToken);
-            throw new WorkbenchException($"审批 {id} 已过期。");
-        }
-
         if (!approve && string.IsNullOrWhiteSpace(reason))
         {
             throw new WorkbenchException("驳回审批必须填写理由。");
         }
 
-        approval.Status = approve ? ApprovalStatus.Approved : ApprovalStatus.Rejected;
-        approval.DecidedBy = decidedBy ?? "human";
-        approval.DecisionReason = reason;
-        approval.DecidedAt = clock.UtcNow;
+        var now = clock.UtcNow;
 
-        await db.SaveChangesAsync(cancellationToken);
-        return ToDto(approval);
+        // 先把过期的待审落库，别让人批一条已经过期的
+        await ExpireOverdueAsync(cancellationToken);
+
+        var current = await db.Approvals.AsNoTracking().FirstOrDefaultAsync(a => a.Id == id, cancellationToken)
+                      ?? throw new NotFoundException("审批", id);
+
+        if (current.Status != ApprovalStatus.Pending)
+        {
+            throw new WorkbenchException($"审批 {id} 已经是 {current.Status} 状态，不能再决定。");
+        }
+
+        if (current.ExpiresAt <= now)
+        {
+            throw new WorkbenchException($"审批 {id} 已过期。");
+        }
+
+        var target = approve ? ApprovalStatus.Approved : ApprovalStatus.Rejected;
+
+        // 条件更新：两个人同时点，只有一个改得动，另一个明确收到「已被处理」
+        var affected = await db.Approvals
+            .Where(a => a.Id == id && a.Status == ApprovalStatus.Pending && a.ExpiresAt > now)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(a => a.Status, target)
+                .SetProperty(a => a.DecidedBy, decidedBy ?? "human")
+                .SetProperty(a => a.DecisionReason, reason)
+                .SetProperty(a => a.DecidedAt, now), cancellationToken);
+
+        if (affected == 0)
+        {
+            throw new WorkbenchException($"审批 {id} 刚刚已经被处理过了。");
+        }
+
+        SyncTracked(id, target, reason);
+
+        var decided = await db.Approvals.AsNoTracking().FirstAsync(a => a.Id == id, cancellationToken);
+        return ToDto(decided);
     }
 
     public async Task<ApprovalDto> AwaitAsync(
@@ -231,46 +276,169 @@ public sealed class ApprovalService(IAppDbContext db, IClock clock, INotifier? n
         }
     }
 
-    public async Task<ApprovalDto> MarkExecutedAsync(
+    public async Task<ApprovalDto> MarkExecutedAsync(Guid id, string? resultSummary, CancellationToken cancellationToken = default)
+    {
+        // 用条件更新而不是改实体再 Save：审批行可能被别的请求改过，
+        // 拿跟踪态实体改会把别人的状态盖回去。
+        var affected = await db.Approvals
+            .Where(a => a.Id == id && (a.Status == ApprovalStatus.Executing || a.Status == ApprovalStatus.Approved))
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(a => a.Status, ApprovalStatus.Executed)
+                .SetProperty(a => a.ResultSummary, resultSummary), cancellationToken);
+
+        if (affected == 0)
+        {
+            var current = await db.Approvals.AsNoTracking().FirstOrDefaultAsync(a => a.Id == id, cancellationToken);
+            var status = current?.Status.ToString() ?? "不存在";
+            throw new WorkbenchException($"审批 {id} 处于 {status} 状态，不能标记为已执行。");
+        }
+
+        SyncTracked(id, ApprovalStatus.Executed, resultSummary);
+
+        var updated = await db.Approvals.AsNoTracking().FirstAsync(a => a.Id == id, cancellationToken);
+        return ToDto(updated);
+    }
+
+    /// <summary>
+    /// 把变更跟踪里那份审批同步到最新状态。
+    ///
+    /// ExecuteUpdateAsync 绕过变更跟踪 —— 被跟踪的实体还留着旧值，
+    /// 后面任何一次 SaveChanges 都会把它写回去（EF 会写整行），
+    /// 于是「Approved → Executing」被改回 Approved，令牌又能用一次。
+    /// </summary>
+    private void SyncTracked(Guid id, ApprovalStatus status, string? resultSummary)
+    {
+        var tracked = db.Approvals.Local.FirstOrDefault(a => a.Id == id);
+        if (tracked is null)
+        {
+            return;
+        }
+
+        tracked.Status = status;
+
+        if (resultSummary is not null)
+        {
+            tracked.ResultSummary = resultSummary;
+        }
+    }
+
+    public async Task<int> ExpireOverdueAsync(CancellationToken cancellationToken = default)
+    {
+        var now = clock.UtcNow;
+
+        return await db.Approvals
+            .Where(a => a.Status == ApprovalStatus.Pending && a.ExpiresAt <= now)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(a => a.Status, ApprovalStatus.Expired)
+                .SetProperty(a => a.DecidedAt, now)
+                .SetProperty(a => a.DecidedBy, "system")
+                .SetProperty(a => a.DecisionReason, "超时未处理，自动过期"), cancellationToken);
+    }
+
+    public async Task<ApprovalConsumeResult> TryConsumeAsync(
         Guid id,
-        string? resultSummary,
+        string toolName,
+        string kind,
+        string payload,
+        Guid projectId,
         CancellationToken cancellationToken = default)
     {
-        var approval = await db.Approvals.FirstOrDefaultAsync(a => a.Id == id, cancellationToken)
-                       ?? throw new NotFoundException("审批", id);
+        var now = clock.UtcNow;
+        var hash = ComputePayloadHash(payload);
+
+        // 过期的先落库，免得拿一条过期的审批当有效
+        await ExpireAsync(id, now, cancellationToken);
+
+        var approval = await db.Approvals.AsNoTracking().FirstOrDefaultAsync(a => a.Id == id, cancellationToken);
+        if (approval is null)
+        {
+            return ApprovalConsumeResult.Rejected(id, nameof(ApprovalStatus.Pending), $"审批 {id} 不存在。");
+        }
 
         if (approval.Status != ApprovalStatus.Approved)
         {
-            throw new WorkbenchException($"审批 {id} 处于 {approval.Status} 状态，不能标记为已执行。");
+            return ApprovalConsumeResult.Rejected(
+                id, approval.Status.ToString(),
+                $"审批当前状态为 {approval.Status}，还不能执行。");
         }
 
-        approval.Status = ApprovalStatus.Executed;
-        approval.ResultSummary = resultSummary;
-        await db.SaveChangesAsync(cancellationToken);
+        if (!string.Equals(approval.ToolName, toolName, StringComparison.Ordinal))
+        {
+            return ApprovalConsumeResult.Rejected(
+                id, approval.Status.ToString(),
+                $"这条审批批的是「{approval.ToolName}」，不能拿来执行「{toolName}」。");
+        }
 
-        return ToDto(approval);
+        if (!string.Equals(approval.Kind, kind, StringComparison.Ordinal))
+        {
+            return ApprovalConsumeResult.Rejected(
+                id, approval.Status.ToString(),
+                $"审批类别不匹配：审批是 {approval.Kind}，当前操作是 {kind}。");
+        }
+
+        if (approval.ProjectId != projectId)
+        {
+            return ApprovalConsumeResult.Rejected(
+                id, approval.Status.ToString(),
+                "这条审批属于别的项目，不能在这儿用。");
+        }
+
+        if (approval.PayloadHash is null)
+        {
+            return ApprovalConsumeResult.Rejected(
+                id, approval.Status.ToString(),
+                "这条审批创建于旧版本，没有绑定具体操作，不能用来执行写操作。请重新申请一次。");
+        }
+
+        if (!string.Equals(approval.PayloadHash, hash, StringComparison.Ordinal))
+        {
+            return ApprovalConsumeResult.Rejected(
+                id, approval.Status.ToString(),
+                "这次要执行的操作和当初审批的内容不一致，不能用这条审批。请重新申请一次。");
+        }
+
+        if (approval.ExpiresAt <= now)
+        {
+            return ApprovalConsumeResult.Rejected(id, approval.Status.ToString(), "这条审批已经过期了。");
+        }
+
+        // 原子抢占：条件更新，谁先改到谁拿到。并发请求只有一个能过。
+        var affected = await db.Approvals
+            .Where(a => a.Id == id
+                        && a.Status == ApprovalStatus.Approved
+                        && a.ToolName == toolName
+                        && a.Kind == kind
+                        && a.ProjectId == projectId
+                        && a.PayloadHash == hash
+                        && a.ExpiresAt > now)
+            .ExecuteUpdateAsync(s => s.SetProperty(a => a.Status, ApprovalStatus.Executing), cancellationToken);
+
+        if (affected != 1)
+        {
+            return ApprovalConsumeResult.Rejected(id, approval.Status.ToString(), "这条审批已经被别的请求用掉了。");
+        }
+
+        // ExecuteUpdateAsync 绕过变更跟踪 —— 同步跟踪态的那一份，
+        // 不然后续 SaveChanges 会把旧状态写回去，审批就白占住了。
+        SyncTracked(id, ApprovalStatus.Executing, null);
+
+        return ApprovalConsumeResult.Success(id);
     }
 
-    public async Task<int> ExpireOverdueAsync(CancellationToken cancellationToken = default)    {
-        var now = clock.UtcNow;
-        var overdue = await db.Approvals
-            .Where(a => a.Status == ApprovalStatus.Pending && a.ExpiresAt <= now)
-            .ToListAsync(cancellationToken);
+    private Task<int> ExpireAsync(Guid id, DateTimeOffset now, CancellationToken cancellationToken) =>
+        db.Approvals
+            .Where(a => a.Id == id && a.Status == ApprovalStatus.Pending && a.ExpiresAt <= now)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(a => a.Status, ApprovalStatus.Expired)
+                .SetProperty(a => a.DecidedAt, now)
+                .SetProperty(a => a.DecidedBy, "system")
+                .SetProperty(a => a.DecisionReason, "超时未处理，自动过期"), cancellationToken);
 
-        foreach (var approval in overdue)
-        {
-            approval.Status = ApprovalStatus.Expired;
-            approval.DecidedAt = now;
-            approval.DecidedBy = "system";
-            approval.DecisionReason = "超时未处理，自动过期";
-        }
-
-        if (overdue.Count > 0)
-        {
-            await db.SaveChangesAsync(cancellationToken);
-        }
-
-        return overdue.Count;
+    /// <summary>操作指纹。审批与操作必须一一对上，否则批一次就能用一辈子。</summary>
+    internal static string ComputePayloadHash(string? payload)
+    {
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(payload ?? string.Empty));
+        return Convert.ToHexString(bytes);
     }
 
     internal static ApprovalDto ToDto(Approval a) => new(

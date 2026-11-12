@@ -36,6 +36,10 @@ public sealed record WriteToolResult(
 /// 两条硬规矩：
 /// 1. 文件系统只能访问项目仓库目录内，越界直接拒绝；
 /// 2. git 写操作与 shell 执行都必须人工审批通过后才真正执行。
+///
+/// 审批走的是应用层那**一套**闸门（<see cref="IApprovalGate"/>）——
+/// 四个写工具共用，不各写各的。闸门会把审批绑在具体操作上：
+/// 批过「提交 A」的那条审批，拿去提交 B 会被拒。
 /// </summary>
 [McpServerToolType]
 public sealed class GeneralMcpTools(
@@ -43,7 +47,7 @@ public sealed class GeneralMcpTools(
     IProjectService projects,
     IGitWriter git,
     IShellRunner shell,
-    IApprovalService approvals,
+    IApprovalGate approvalGate,
     IToolAuditService audit,
     IClock clock)
 {
@@ -156,7 +160,7 @@ public sealed class GeneralMcpTools(
                 message
             });
 
-            var gate = await GateAsync(
+            var gate = await approvalGate.AcquireAsync(
                 "git_commit", "git.write", payload,
                 $"在 {config.Name} 提交：{message}",
                 callerId, taskId, projectId, approvalId, waitSeconds, cancellationToken);
@@ -164,34 +168,31 @@ public sealed class GeneralMcpTools(
             if (!gate.Approved)
             {
                 await AuditAsync("git_commit", callerId, projectId, taskId, payload,
-                    gate.Approved ? "success" : gate.Status switch
-                    {
-                        nameof(ApprovalStatus.Rejected) => "denied",
-                        _ => "pending"
-                    },
+                    gate.Status == nameof(ApprovalStatus.Rejected) ? "denied" : "pending",
                     gate.Message, started, gate.ApprovalId, cancellationToken);
 
                 return new WriteToolResult(false, gate.ApprovalId, gate.Status, gate.Message);
             }
 
-            var result = await git.CommitAsync(config.RepoPath!, message, cancellationToken);
-
-            if (result.Ok)
-            {
-                await approvals.MarkExecutedAsync(gate.ApprovalId, "已提交", cancellationToken);
-            }
-
-            await AuditAsync("git_commit", callerId, projectId, taskId, payload,
-                result.Ok ? "success" : "error",
-                result.Ok ? result.Output : result.Error,
-                started, gate.ApprovalId, cancellationToken);
-
-            return new WriteToolResult(
-                result.Ok,
+            return await RunApprovedAsync(
                 gate.ApprovalId,
-                result.Ok ? nameof(ApprovalStatus.Executed) : nameof(ApprovalStatus.Approved),
-                result.Ok ? "已审批并提交。" : $"提交失败: {result.Error}",
-                result.Ok ? result.Output : result.Error);
+                async () =>
+                {
+                    var result = await git.CommitAsync(config.RepoPath!, message, cancellationToken);
+
+                    await AuditAsync("git_commit", callerId, projectId, taskId, payload,
+                        result.Ok ? "success" : "error",
+                        result.Ok ? result.Output : result.Error,
+                        started, gate.ApprovalId, cancellationToken);
+
+                    return new WriteToolResult(
+                        result.Ok,
+                        gate.ApprovalId,
+                        result.Ok ? nameof(ApprovalStatus.Executed) : nameof(ApprovalStatus.Approved),
+                        result.Ok ? "已审批并提交。" : $"提交失败: {result.Error}",
+                        result.Ok ? result.Output : result.Error);
+                },
+                cancellationToken);
         }
         catch (Exception ex)
         {
@@ -237,7 +238,7 @@ public sealed class GeneralMcpTools(
                 remote
             });
 
-            var gate = await GateAsync(
+            var gate = await approvalGate.AcquireAsync(
                 "git_push", "git.write", payload,
                 $"在 {config.Name} 推送：{target}",
                 callerId, taskId, projectId, approvalId, waitSeconds, cancellationToken);
@@ -251,24 +252,25 @@ public sealed class GeneralMcpTools(
                 return new WriteToolResult(false, gate.ApprovalId, gate.Status, gate.Message);
             }
 
-            var result = await git.PushAsync(config.RepoPath!, branch, remote, cancellationToken);
-
-            if (result.Ok)
-            {
-                await approvals.MarkExecutedAsync(gate.ApprovalId, "已推送", cancellationToken);
-            }
-
-            await AuditAsync("git_push", callerId, projectId, taskId, payload,
-                result.Ok ? "success" : "error",
-                result.Ok ? result.Output : result.Error,
-                started, gate.ApprovalId, cancellationToken);
-
-            return new WriteToolResult(
-                result.Ok,
+            return await RunApprovedAsync(
                 gate.ApprovalId,
-                result.Ok ? nameof(ApprovalStatus.Executed) : nameof(ApprovalStatus.Approved),
-                result.Ok ? "已审批并推送。" : $"推送失败: {result.Error}",
-                result.Ok ? result.Output : result.Error);
+                async () =>
+                {
+                    var result = await git.PushAsync(config.RepoPath!, branch, remote, cancellationToken);
+
+                    await AuditAsync("git_push", callerId, projectId, taskId, payload,
+                        result.Ok ? "success" : "error",
+                        result.Ok ? result.Output : result.Error,
+                        started, gate.ApprovalId, cancellationToken);
+
+                    return new WriteToolResult(
+                        result.Ok,
+                        gate.ApprovalId,
+                        result.Ok ? nameof(ApprovalStatus.Executed) : nameof(ApprovalStatus.Approved),
+                        result.Ok ? "已审批并推送。" : $"推送失败: {result.Error}",
+                        result.Ok ? result.Output : result.Error);
+                },
+                cancellationToken);
         }
         catch (Exception ex)
         {
@@ -317,7 +319,7 @@ public sealed class GeneralMcpTools(
                 return new WriteToolResult(false, Guid.Empty, "Rejected", "该项目没有配置仓库路径，无法执行命令。");
             }
 
-            var gate = await GateAsync(
+            var gate = await approvalGate.AcquireAsync(
                 "shell_run", "shell.write", command,
                 $"在 {config.Name} 执行：{command}",
                 callerId, taskId, projectId, approvalId, waitSeconds, cancellationToken);
@@ -331,28 +333,29 @@ public sealed class GeneralMcpTools(
                 return new WriteToolResult(false, gate.ApprovalId, gate.Status, gate.Message);
             }
 
-            var result = await shell.RunAsync(config.RepoPath!, command, cancellationToken);
-
-            await approvals.MarkExecutedAsync(
+            return await RunApprovedAsync(
                 gate.ApprovalId,
-                result.Ok ? $"退出码 0" : $"退出码 {result.ExitCode}",
+                async () =>
+                {
+                    var result = await shell.RunAsync(config.RepoPath!, command, cancellationToken);
+
+                    await AuditAsync("shell_run", callerId, projectId, taskId, command,
+                        result.Ok ? "success" : "error",
+                        result.Ok ? result.StandardOutput : result.StandardError,
+                        started, gate.ApprovalId, cancellationToken);
+
+                    var output = string.IsNullOrWhiteSpace(result.StandardError)
+                        ? result.StandardOutput
+                        : $"{result.StandardOutput}\n{result.StandardError}";
+
+                    return new WriteToolResult(
+                        result.Ok,
+                        gate.ApprovalId,
+                        nameof(ApprovalStatus.Executed),
+                        result.Ok ? "已审批并执行。" : $"执行失败，退出码 {result.ExitCode}。",
+                        output);
+                },
                 cancellationToken);
-
-            await AuditAsync("shell_run", callerId, projectId, taskId, command,
-                result.Ok ? "success" : "error",
-                result.Ok ? result.StandardOutput : result.StandardError,
-                started, gate.ApprovalId, cancellationToken);
-
-            var output = string.IsNullOrWhiteSpace(result.StandardError)
-                ? result.StandardOutput
-                : $"{result.StandardOutput}\n{result.StandardError}";
-
-            return new WriteToolResult(
-                result.Ok,
-                gate.ApprovalId,
-                nameof(ApprovalStatus.Executed),
-                result.Ok ? "已审批并执行。" : $"执行失败，退出码 {result.ExitCode}。",
-                output);
         }
         catch (Exception ex)
         {
@@ -362,51 +365,36 @@ public sealed class GeneralMcpTools(
     }
 
     /// <summary>
-    /// 审批闸门。返回 Approved 表示可以执行；否则带上当前状态与下一步提示。
-    /// 已批准的审批可以用 approvalId 直接续跑（令牌式续跑）。
+    /// 拿到许可就跑，跑完（成或败）都要把审批收尾。
+    ///
+    /// 收尾很重要：审批被占住之后状态是 Executing，不收尾它就永远卡在那儿 ——
+    /// 既不能被复用，界面上也看不出到底成没成。
     /// </summary>
-    private async Task<GateDecision> GateAsync(
-        string toolName,
-        string kind,
-        string payload,
-        string summary,
-        string? callerId,
-        Guid? taskId,
-        Guid projectId,
-        Guid? approvalId,
-        int waitSeconds,
+    private async Task<WriteToolResult> RunApprovedAsync(
+        Guid approvalId,
+        Func<Task<WriteToolResult>> action,
         CancellationToken cancellationToken)
     {
-        if (approvalId is not null)
-        {
-            var existing = await approvals.GetAsync(approvalId.Value, cancellationToken)
-                           ?? throw new WorkbenchException($"审批 {approvalId} 不存在。");
+        WriteToolResult result;
+        string? summary = null;
 
-            if (existing.Status != nameof(ApprovalStatus.Approved))
+        try
+        {
+            result = await action();
+            summary = result.Message;
+            return result;
+        }
+        finally
+        {
+            try
             {
-                return new GateDecision(false, existing.Id, existing.Status,
-                    $"审批当前状态为 {existing.Status}，还不能执行。");
+                await approvalGate.CompleteAsync(approvalId, summary, cancellationToken);
             }
-
-            return new GateDecision(true, existing.Id, existing.Status, "审批已通过。");
+            catch (Exception)
+            {
+                // 收尾失败不能盖掉真正的执行结果
+            }
         }
-
-        var approval = await approvals.RequestAsync(
-            toolName, kind, payload, summary, callerId, taskId, projectId,
-            ApprovalService.DefaultTtlMinutes, cancellationToken);
-
-        var decided = await approvals.AwaitAsync(approval.Id, Math.Clamp(waitSeconds, 1, 300), cancellationToken);
-
-        if (decided.Status == nameof(ApprovalStatus.Approved))
-        {
-            return new GateDecision(true, decided.Id, decided.Status, "审批已通过。");
-        }
-
-        var message = decided.Status == nameof(ApprovalStatus.Rejected)
-            ? $"已被驳回，未执行。原因: {decided.DecisionReason}"
-            : $"仍在等待人工审批（当前状态 {decided.Status}）。批准后带 approvalId={decided.Id} 再次调用即可执行。";
-
-        return new GateDecision(false, decided.Id, decided.Status, message);
     }
 
     private Task AuditAsync(
@@ -427,6 +415,4 @@ public sealed class GeneralMcpTools(
             ResultSummary: summary,
             RowsAffected: null,
             DurationMs: (long)(clock.UtcNow - started).TotalMilliseconds), cancellationToken);
-
-    private sealed record GateDecision(bool Approved, Guid ApprovalId, string Status, string Message);
 }
