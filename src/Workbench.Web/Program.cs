@@ -36,6 +36,10 @@ builder.Services.AddWorkbenchApplication();
 builder.Services.AddWorkbenchMcp();
 builder.Services.AddScoped<WorkbenchInitializer>();
 
+// 定时备份 SQLite 库。放在 Web 层是因为 BackgroundService 属于 Hosting ——
+// 应用层刻意不依赖 Hosting（它只该有业务用例）。
+builder.Services.AddHostedService<DatabaseBackupService>();
+
 // 人工凭证：token 落在 WORKBENCH_HOME/.human-token（0600），重启不变。
 // 用工厂延迟到第一次解析时才读 —— 那时 IOptions<WorkbenchOptions> 已经有值了，
 // 免得在这里另造一套 WORKBENCH_HOME 的路径规则。
