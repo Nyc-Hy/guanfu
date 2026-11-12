@@ -66,15 +66,45 @@ Draft → DocsReady → Planned → InDev → Testing → Review → Done
 - **评审门禁**：`Review → Done` 时，若该任务开过评审，当前轮 7 个维度必须全部通过。
   没开过评审的老流程照旧能结项（向后兼容）。拦下来时点名「还差哪几个维度」。
 
-### 3.1 任务编号与版本归组
+### 3.1 结构：项目 → 迭代版本 → 需求/缺陷/优化
 
-- 任务有**可读编号**：项目内自动分配 `REQ-001` / `REQ-002`…，可手工指定，项目内不重号。
-  人说「看下 req001」，agent 就靠它落到具体任务上。
-- 编号匹配**认得人嘴里的写法**：`req001` / `REQ-001` / `Req-001` 归一化后是同一个。
+```
+项目
+└── 迭代版本（如「12月版本」）
+    └── 任务项 —— 类型：需求 / 缺陷 / 优化
+        ├── 编号：REQ-001 / BUG-001 / OPT-001（各类型独立计数）
+        ├── 绑定分支（可选）
+        └── 计划 / 产物 / 文档 / 测试结果 / 评审结论
+```
+
+- **任务项就是开发任务**：针对单条工作项进行，不跨项。
+- **编号按类型分前缀**，各类型独立计数 —— 需求 `REQ-001`、缺陷 `BUG-001`、优化 `OPT-001`。
+  人说「看下 bug001」，编号本身就把类型说清楚了。
+- **编号匹配认得人嘴里的写法**：`req001` / `REQ-001` / `Req-001` 归一化后是同一个。
   查不到时返回项目里现有的编号清单，agent 能自己纠正。
-- **版本用里程碑承载**：「12月版本」就是一个里程碑，看板上可筛、可看进度、可算完成率。
+- **改类型不改编号** —— 编号已经被 PR 和 agent 引用了，说变就变会让人找不到。
+- **迭代版本用里程碑承载**：「12月版本」就是一个里程碑，看板上可筛、可看进度、可算完成率。
 
-### 4. 评审工作流（7 维度专家团）
+### 3.2 分支绑定：不在绑定分支上就不会运行
+
+任务项可以绑一个开发分支（如 `feature/login`）。**绑了分支的任务，只有仓库当前分支
+与之一致时才会运行**：
+
+| 什么时候拦 | 说明 |
+|---|---|
+| agent 领取任务 | 领取 = 准备开跑 |
+| 状态推进到「开发中」 | 真正动手的那一刻 |
+| 「启动 agent」按钮 | 拉起外部进程之前 |
+
+拒绝时错误信息会说明「绑定的是 X，当前在 Y」，agent 能自己纠正。
+读不到当前分支（项目没配仓库路径 / git 不可用）时**也拒绝** ——
+「不知道当前在哪个分支」不等于「在对的分支上」。
+没绑分支的任务不受限制。
+
+`workbench_get_context` 会把 `currentBranch` 和 `branchReady` 一起带出来，
+agent 拿到上下文就知道现在能不能开跑。
+
+### 3.3 评审工作流（7 维度专家团）
 
 开发完成后，agent 调评审工具开一轮评审，**工作台给骨架，判断由 agent 做**：
 
@@ -102,7 +132,7 @@ workbench_update_status(Done)  才放行结项
 每个维度带一份**检查清单**，agent 照着清单查而不是自由发挥。多轮评审全部留 history。
 工作台**不判断代码好不好** —— 它只负责「不评完不许结项」和「每轮结论都留痕」。
 
-### 5. 文档解读工具
+### 4. 文档解读工具
 
 完整解析 Markdown / DOCX / PDF / diff，**保留语义**而不是拍平成纯文本：
 
@@ -113,7 +143,7 @@ workbench_update_status(Done)  才放行结项
 
 删除线内容语义是「已废弃」，agent 读时不会当需求；修订清单给出「谁在何时改了什么」。
 
-### 6. 审批与审计
+### 5. 审批与审计
 
 - **读**：默认放心读，直接执行，只记审计日志
 - **写 / 改 / DDL / git 写 / shell**：必须人工审批通过后才真正执行
@@ -175,7 +205,7 @@ wb mcp --url http://127.0.0.1:5177
 wb serve                              # 启动 Web
 wb project list                       # 列出项目
 wb project add "AIChat" --desc "桌面端重构"
-wb task create <项目ID> "写登录接口"
+wb task create <项目ID> "写登录接口" --type requirement --branch feature/login
 wb task claim <任务ID> --agent claude
 wb task show REQ-001 --project <项目ID>       # 按编号看任务
 wb status set <任务ID> Planned --note "计划已出"
@@ -217,7 +247,7 @@ agent 连上 MCP 之后自己走完：
 | 步 | agent 调什么 | 拿到什么 |
 |---|---|---|
 | 1 | `workbench_get_task_by_key(projectId, "req001")` | 落到具体任务（编号匹配不认连字符写法） |
-| 2 | `workbench_claim_task` | 领到租约，多 agent 不抢同一个任务 |
+| 2 | `workbench_claim_task` | 领到租约，多 agent 不抢同一个任务。**任务绑了分支而当前分支不对时，这里就会被拒** |
 | 3 | `workbench_get_context` | 任务、文档、计划、产物、事件、允许的状态迁移、git 分支 —— 一次取全 |
 | 4 | `workbench_set_plan` | 回写需求理解与开发计划（工作台只存不生成） |
 | 5 | 干活 → `workbench_report_test_result` / `workbench_add_artifact` | 测试结果与产物入库 |
@@ -239,8 +269,8 @@ agent 连上 MCP 之后自己走完：
 |---|---|
 | `workbench_list_projects` | 项目列表（进度、停滞标记、git 分支） |
 | `workbench_get_project` | 项目详情 |
-| `workbench_create_task` | 建任务 |
-| `workbench_list_tasks` | 按项目 / 状态 / 关键字列任务 |
+| `workbench_create_task` | 建任务（可带 `type` 类型与 `branch` 绑定分支） |
+| `workbench_list_tasks` | 按项目 / 状态 / 关键字 / 编号 / 类型列任务 |
 | `workbench_get_task` | 任务详情 |
 | **`workbench_get_task_by_key`** | **按编号找任务**（`req001` / `REQ-001` 都认） |
 | `workbench_claim_task` | 领取任务（带租约，防止多 agent 抢同一任务） |

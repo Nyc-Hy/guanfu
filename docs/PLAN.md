@@ -1,7 +1,9 @@
-# 开发工作台 — 实施计划（v0.5，P0~P5 全部落地）
+# 开发工作台 — 实施计划（v0.6，P0~P6 全部落地）
 
 > v0.1 征求意见 → v0.2 锁定六项决策 → v0.3 同步实现现状 → v0.4 P3/P4 收尾 →
-> **v0.5 评审工作流**（7 维度专家团 + 结项门禁 + 任务编号 + 版本归组）。
+> **v0.5 评审工作流**（7 维度专家团 + 结项门禁 + 任务编号 + 版本归组）→
+> **v0.6 结构与分支**（项目→迭代版本→需求/缺陷/优化、编号按类型分前缀、
+> 分支守卫、页面内联看文档、schema 补丁）。
 > 计划文档随代码走，放在仓库 `docs/PLAN.md`。
 
 ---
@@ -41,7 +43,7 @@ Workbench.sln
 │  ├─ Workbench.Mcp             MCP 工具集（41 个工具）+ 注册
 │  ├─ Workbench.Web             Blazor UI + REST API + /mcp 端点（宿主进程）
 │  └─ Workbench.Cli             wb 命令行 + stdio↔HTTP MCP 桥接
-└─ tests/Workbench.Tests        136 项测试
+└─ tests/Workbench.Tests        162 项测试
 ```
 
 **唯一数据通路**：Web 独占 SQLite（唯一写者）。MCP 与 CLI 都是 Web 的 HTTP 客户端，不直连数据库。
@@ -84,16 +86,61 @@ Draft → DocsReady → Planned → InDev → Testing → Review → Done
 
 ---
 
-## 3.1 任务编号与版本归组
+## 3.1 结构：项目 → 迭代版本 → 需求/缺陷/优化
+
+```
+Project
+└── 迭代版本（Milestone，如「12月版本」）
+    └── 任务项（TaskItem）—— 类型：需求 / 缺陷 / 优化
+        ├── 编号：REQ-001 / BUG-001 / OPT-001（各类型独立计数）
+        ├── 绑定分支（可选）：绑了就只有当前分支对得上才运行
+        ├── 计划 / 产物 / 文档 / 测试结果 / 评审结论
+        └── 状态机：Draft → DocsReady → Planned → InDev → Testing → Review → Done
+```
+
+**任务项就是开发任务**——针对单条工作项进行，不跨项。一个任务项绑一个分支。
 
 | 概念 | 落地 | 理由 |
 |---|---|---|
-| **任务编号（Key）** | 项目内自动分配 `REQ-001` / `REQ-002`…，可手工指定，项目内不重号 | 人说话是「看下 req001」，agent 得能落到具体任务上 |
+| **任务类型** | `Requirement`（需求）/ `Bug`（缺陷）/ `Optimization`（优化） | 一眼能看出条目性质，也决定编号前缀 |
+| **任务编号（Key）** | 按类型分前缀、各类型独立计数（`REQ-001` / `BUG-001` / `OPT-001`），可手工指定，项目内不重号 | 人说话是「看下 req001」「看下 bug001」，编号本身就把类型说清楚了 |
 | **编号匹配** | 归一化（只留字母数字、转小写）后精确匹配 | 人嘴里的 `req001` 和库里的 `REQ-001` 差一个连字符，不该让人去猜写法 |
-| **版本** | 用**里程碑**承载（「12月版本」就是里程碑） | 里程碑已有筛选 / 进度 / 度量全套 UI；真要版本发布语义（版本号、发布状态、时间范围）再加 Release 实体 |
+| **迭代版本** | 用**里程碑**承载（「12月版本」就是里程碑） | 里程碑已有筛选 / 进度 / 度量全套 UI；真要版本发布语义（版本号、发布状态、时间范围）再加 Release 实体 |
+| **改类型不改编号** | `SetTypeAsync` 只改类型，编号保持原样 | 编号已经被引用了（PR 里写着、agent 记着），说变就变会让人找不到 |
 
 `workbench_get_task_by_key` 查不到时不抛异常，而是返回 `ok=false` + **项目里现有的编号清单**，
 让 agent 能自己纠正，而不是卡在这。
+
+### 分支绑定与分支守卫
+
+任务项可以绑一个开发分支（如 `feature/login`）。**绑了分支的任务，只有仓库当前分支
+与之一致时才会运行** —— 这是服务层的业务前置条件，和评审门禁一样是「叠加在状态机之上」。
+
+| 守卫点 | 触发时机 |
+|---|---|
+| `TaskService.ClaimAsync` | agent 领取任务（= 准备开跑） |
+| `TaskService.ChangeStatusAsync` → `InDev` | 进入开发中 |
+| `AgentLauncher.LaunchAsync` | 「启动 agent」按钮拉起外部进程 |
+
+判定规则：
+
+- **没绑分支** → 放行（不设约束）
+- **绑了分支，当前分支一致** → 放行（比较时忽略 `refs/heads/` 前缀与大小写）
+- **绑了分支，当前分支不一致** → 拒绝，错误信息带上「绑定的是 X，当前在 Y」
+- **绑了分支但读不到当前分支**（项目没配仓库路径 / git 不可用）→ 拒绝
+  「不知道当前在哪个分支」不等于「在对的分支上」，这种含糊不能放行
+
+`workbench_get_context` 也会把 `currentBranch` / `branchReady` 一起带出去，
+agent 拿到上下文就知道现在能不能开跑。
+
+### schema 补丁（不是 EF Migrations）
+
+这个项目用 `EnsureCreated` 建表，不走 EF Migrations。但 SQLite 的 `EnsureCreated`
+**不会给已存在的表补列** —— 不补的话升级后老数据库一查就报 `no such column: Type`。
+
+所以加了一个幂等的补列步骤（`SchemaUpgrader`）：查 `PRAGMA table_info(tasks)`，
+缺哪个列补哪个（`ALTER TABLE ... ADD COLUMN`），补过就跳过。只处理「加可空 /
+有默认值的列」这类 SQLite 支持且不丢数据的改动。
 
 ---
 
@@ -191,8 +238,9 @@ Draft → DocsReady → Planned → InDev → Testing → Review → Done
 | **P3 Git + 通用工具** | ✅ 完成 | `git_commit`/`git_push`（走审批）、`fs_list`/`fs_read`（越界拒绝）、`db_schema`、`shell_run`（白名单+强制审批，不走 shell 解析） |
 | **P4 开源就绪** | ✅ 完成 | LICENSE / README / AGENTS.md / CI；`wb workspace export/import`（整目录搬迁，含库+文档+密钥）、「启动 agent」按钮、里程碑（实体+服务+看板筛选）、度量看板（流速/周期/通过率/阻塞/停滞） |
 | **P5 评审工作流** | ✅ 完成 | 评审实体（轮次 + 逐维度结论）、7 维度定义与检查清单、`ReviewService`、**结项门禁**、5 个评审 MCP 工具、任务编号 Key、按编号找任务、任务详情页评审面板、`wb review` 子命令 |
+| **P6 结构与分支** | ✅ 完成 | 任务类型（需求/缺陷/优化）、编号按类型分前缀独立计数、**绑定分支 + 分支守卫**（claim / 进 InDev / 启动 agent 三处）、类型与分支的 MCP/REST/CLI 面、页面内联查看生成的文档、schema 补丁（老库补列） |
 
-### P3/P4/P5 新增界面
+### P3~P6 新增界面
 
 | 页面 | 作用 |
 |---|---|
@@ -201,7 +249,8 @@ Draft → DocsReady → Planned → InDev → Testing → Review → Done
 | `/mcp-tools` | MCP 工具开关：按分类（工作台组 / 文档组 / 数据库组 / 通用组）逐个开关；关掉的工具从 `tools/list` 隐藏且调用被拒 |
 | `/connect` | 接入 agent：HTTP 与 stdio 两份可直接粘贴的配置（地址按实际访问地址算）、当前暴露工具数、典型流程 |
 | 看板页 | 里程碑筛选 + 里程碑增删 + 任务编号显示 |
-| 任务详情页 | 里程碑归属、**「启动 agent」按钮**（拉起外部 CLI，输出落 `WORKBENCH_HOME/runs/{taskId}/`）、**评审面板**（7 维度表格 + 轮次判定 + 历史轮次 + 开始评审） |
+| 任务详情页 | 迭代版本归属、**「启动 agent」按钮**（拉起外部 CLI，输出落 `WORKBENCH_HOME/runs/{taskId}/`）、**评审面板**（7 维度表格 + 轮次判定 + 历史轮次 + 开始评审）、**任务属性面板**（改类型 / 绑分支 / 显示仓库当前分支与就绪状态）、**文档就地查看**（产物按 Markdown 渲染、上传文档显示大纲与正文） |
+| 看板页 | 任务卡显示类型徽章（需求蓝 / 缺陷红 / 优化绿）与绑定分支；新建任务可选类型与分支 |
 
 ---
 
@@ -244,4 +293,7 @@ Draft → DocsReady → Planned → InDev → Testing → Review → Done
 | `git status --porcelain` 输出整段 `Trim()` | 第一行常以空格开头（`" M src/x.cs"`），前导空格被吃掉 → 第一条路径变成 `rc/x.cs` | 只 `TrimEnd()`；补了真实仓库的回归测试 |
 | 工具抛异常被 SDK 吞成英文 | agent 只看到 `An error occurred invoking 'workbench_create_task'.`，不知道是编号重了还是里程碑错了 | 最外层加 `CallToolFilters` 兜底，统一转成 `{"ok":false,"error":"..."}` |
 | JSON 默认转义非 ASCII | 中文全变 `\uXXXX`，日志和 agent 都要自己解码 | `WorkbenchJson` 统一用 `UnsafeRelaxedJsonEscaping` |
+| SQLite 的 `EnsureCreated` 不给已存在的表补列 | 升级后老库一查就报 `no such column: Type` | 加幂等的 `SchemaUpgrader`：查 `PRAGMA table_info` 缺哪个补哪个 |
+| 「不知道当前在哪个分支」当成「在对的分支上」 | 任务绑了分支但项目没配仓库路径，守卫放行 → agent 在错的分支上改代码 | 读不到当前分支时**拒绝**，错误信息说明原因 |
+| 类型改成需求却改了编号前缀 | 编号已经被 PR 和 agent 引用，改了就找不到 | `SetTypeAsync` 只改类型，编号保持不变 |
 | CLI 自己抄了一份 JSON 选项 | 读的时候能读枚举、打印的时候写成 `0` | JSON 选项收敛到应用层的 `WorkbenchJson`，CLI 直接用 |

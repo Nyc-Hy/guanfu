@@ -47,12 +47,22 @@
 9. **评审门禁是服务层的业务前置条件，叠加在状态机之上**：
    `TaskService.ChangeStatusAsync` 在 `Review → Done` 时校验当前轮 7 个维度全过
    （`IReviewGate`）。**没开过评审的老流程不受影响**，别把这个兼容性去掉。
-10. **编号匹配要归一化**：人嘴里的 `req001` 和库里的 `REQ-001` 是同一个编号。
+10. **分支守卫同理，拦在三处**：领取任务（`ClaimAsync`）、推进到 `InDev`、
+    「启动 agent」（`AgentLauncher`）。**读不到当前分支时也要拒绝** ——
+    「不知道当前在哪个分支」不等于「在对的分支上」。
+11. **编号匹配要归一化**：人嘴里的 `req001` 和库里的 `REQ-001` 是同一个编号。
     归一化（只留字母数字、转小写）是 C# 逻辑，**不能放进 SQL 的 Where** ——
     EF 翻译不了会直接抛异常，过滤放内存里做。
-11. **读 git 输出别整段 `Trim()`**：`git status --porcelain` 第一行常以空格开头
+12. **编号按类型分前缀**（`REQ-` / `BUG-` / `OPT-`），各类型独立计数；
+    **改类型不改编号** —— 编号已被 PR 和 agent 引用，改了就找不到。
+13. **读 git 输出别整段 `Trim()`**：`git status --porcelain` 第一行常以空格开头
     （`" M src/x.cs"`），`Trim()` 会把前导空格吃掉，第一条路径就变成 `rc/x.cs`。
     只 `TrimEnd()`。
+14. **这个项目不用 EF Migrations，用 `EnsureCreated` 建表**。但 SQLite 的
+    `EnsureCreated` **不会给已存在的表补列** —— 加字段时必须同步改
+    `SchemaUpgrader` 的补列清单，否则老库一查就报 `no such column`。
+15. **渲染 agent 产出的 Markdown 要关掉原始 HTML**：`MarkdownRenderer` 用了
+    `DisableHtml()`，内容来自外部输入，这是 XSS 口子，别去掉。
 
 ## 常用命令
 
