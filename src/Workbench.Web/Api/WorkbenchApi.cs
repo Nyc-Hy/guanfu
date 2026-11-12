@@ -61,7 +61,7 @@ public static class WorkbenchApi
         });
 
         // ---- 任务 ----
-        api.MapGet("/tasks", async (ITaskService tasks, Guid? projectId, string? status, string? keyword, Guid? milestoneId, string? key, CancellationToken ct) =>
+        api.MapGet("/tasks", async (ITaskService tasks, Guid? projectId, string? status, string? keyword, Guid? milestoneId, string? key, string? type, CancellationToken ct) =>
         {
             TaskStatus? parsed = null;
             if (!string.IsNullOrWhiteSpace(status))
@@ -74,15 +74,61 @@ public static class WorkbenchApi
                 parsed = value;
             }
 
-            return Results.Ok(await tasks.ListAsync(projectId, parsed, keyword, milestoneId, key, ct));
+            TaskType? parsedType = null;
+            if (!string.IsNullOrWhiteSpace(type))
+            {
+                if (!TaskTypes.TryParse(type, out var value))
+                {
+                    return Results.BadRequest($"未知任务类型: {type}。合法值: {string.Join("、", TaskTypes.Names)}");
+                }
+
+                parsedType = value;
+            }
+
+            return Results.Ok(await tasks.ListAsync(projectId, parsed, keyword, milestoneId, key, parsedType, ct));
         });
 
         api.MapPost("/projects/{projectId:guid}/tasks", async (
             Guid projectId, CreateTaskRequest request, ITaskService tasks, CancellationToken ct) =>
         {
+            TaskType type = TaskType.Requirement;
+            if (!string.IsNullOrWhiteSpace(request.Type) && !TaskTypes.TryParse(request.Type, out type))
+            {
+                return Results.BadRequest($"未知任务类型: {request.Type}。合法值: {string.Join("、", TaskTypes.Names)}");
+            }
+
             var task = await tasks.CreateAsync(
-                projectId, request.Title, request.Description, request.ParentTaskId, request.MilestoneId, request.Key, ct);
+                projectId, request.Title, request.Description, request.ParentTaskId, request.MilestoneId,
+                type, request.Branch, request.Key, ct);
             return Results.Created($"/api/tasks/{task.Id}", task);
+        });
+
+        // 改类型 / 绑分支。编号不变 —— 编号已经被引用了，不能说变就变。
+        api.MapPatch("/tasks/{taskId:guid}", async (
+            Guid taskId, UpdateTaskRequest request, ITaskService tasks, CancellationToken ct) =>
+        {
+            if (!string.IsNullOrWhiteSpace(request.Type) && !TaskTypes.TryParse(request.Type, out _))
+            {
+                return Results.BadRequest($"未知任务类型: {request.Type}。合法值: {string.Join("、", TaskTypes.Names)}");
+            }
+
+            var updated = await tasks.GetAsync(taskId, ct);
+            if (updated is null)
+            {
+                return Results.NotFound();
+            }
+
+            if (!string.IsNullOrWhiteSpace(request.Type) && TaskTypes.TryParse(request.Type, out var type))
+            {
+                updated = await tasks.SetTypeAsync(taskId, type, ct);
+            }
+
+            if (request.Branch is not null)
+            {
+                updated = await tasks.BindBranchAsync(taskId, request.Branch, ct);
+            }
+
+            return Results.Ok(updated);
         });
 
         api.MapGet("/tasks/{taskId:guid}", async (Guid taskId, ITaskService tasks, CancellationToken ct) =>
@@ -368,7 +414,11 @@ public static class WorkbenchApi
 
 public sealed record CreateProjectRequest(string Name, string? Description);
 public sealed record CreateTaskRequest(
-    string Title, string? Description, Guid? ParentTaskId, Guid? MilestoneId = null, string? Key = null);
+    string Title, string? Description, Guid? ParentTaskId, Guid? MilestoneId = null,
+    string? Type = null, string? Branch = null, string? Key = null);
+
+/// <summary>改任务。Type / Branch 传了才改；Branch 传空串表示解绑。</summary>
+public sealed record UpdateTaskRequest(string? Type = null, string? Branch = null);
 public sealed record ChangeStatusRequest(string Status, string? Note, string? Actor, string? Source);
 public sealed record ClaimTaskRequest(string AgentId, int? LeaseMinutes);
 public sealed record SetPlanRequest(
