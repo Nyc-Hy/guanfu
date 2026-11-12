@@ -32,26 +32,45 @@ public sealed class WorkbenchMcpTools(
 
     [McpServerTool(Name = "workbench_create_task")]
     [Description(
-        "在项目下创建一个需求任务，初始状态为 Draft。key 是项目内可读编号（如 REQ-001），" +
-        "不给就自动分配下一个。milestoneId 可以把任务挂到某个版本/里程碑（如「12月版本」）下")]
+        "在项目下创建一个任务项，初始状态为 Draft。type 是类型：" +
+        "requirement(需求，默认) / bug(缺陷) / optimization(优化)，" +
+        "编号按类型分开分配（REQ-001 / BUG-001 / OPT-001，各类型独立计数）。" +
+        "key 不给就自动分配下一个。milestoneId 把任务挂到某个迭代版本（如「12月版本」）下。" +
+        "branch 是绑定的开发分支 —— 绑了分支的任务，只有仓库当前就在那个分支上才会运行")]
     public async Task<TaskSummaryDto> CreateTaskAsync(
         Guid projectId,
         string title,
         string? description = null,
         Guid? parentTaskId = null,
         Guid? milestoneId = null,
+        string? type = null,
+        string? branch = null,
         string? key = null,
         CancellationToken cancellationToken = default)
-        => await tasks.CreateAsync(projectId, title, description, parentTaskId, milestoneId, key, cancellationToken);
+    {
+        // 不给类型就是需求；给了但认不出来要报错，不能默默当需求处理
+        var parsedType = TaskType.Requirement;
+        if (!string.IsNullOrWhiteSpace(type) && !TaskTypes.TryParse(type, out parsedType))
+        {
+            throw new WorkbenchException(
+                $"未知任务类型: {type}。合法值: {string.Join("、", TaskTypes.Names)}");
+        }
+
+        return await tasks.CreateAsync(
+            projectId, title, description, parentTaskId, milestoneId, parsedType, branch, key, cancellationToken);
+    }
 
     [McpServerTool(Name = "workbench_list_tasks")]
-    [Description("按项目 / 状态 / 关键字 / 里程碑 / 编号列出任务。key 传了就是精确匹配编号")]
+    [Description(
+        "按项目 / 状态 / 关键字 / 迭代版本 / 编号 / 类型列出任务。" +
+        "key 传了就是精确匹配编号，type 传了只出该类型（requirement / bug / optimization）")]
     public async Task<IReadOnlyList<TaskSummaryDto>> ListTasksAsync(
         Guid? projectId = null,
         string? status = null,
         string? keyword = null,
         Guid? milestoneId = null,
         string? key = null,
+        string? type = null,
         CancellationToken cancellationToken = default)
     {
         TaskStatus? parsed = null;
@@ -65,7 +84,19 @@ public sealed class WorkbenchMcpTools(
             parsed = value;
         }
 
-        return await tasks.ListAsync(projectId, parsed, keyword, milestoneId, key, cancellationToken);
+        TaskType? parsedType = null;
+        if (!string.IsNullOrWhiteSpace(type))
+        {
+            if (!TaskTypes.TryParse(type, out var value))
+            {
+                throw new WorkbenchException(
+                    $"未知任务类型: {type}。合法值: {string.Join("、", TaskTypes.Names)}");
+            }
+
+            parsedType = value;
+        }
+
+        return await tasks.ListAsync(projectId, parsed, keyword, milestoneId, key, parsedType, cancellationToken);
     }
 
     [McpServerTool(Name = "workbench_get_task")]
@@ -82,12 +113,12 @@ public sealed class WorkbenchMcpTools(
         string key,
         CancellationToken cancellationToken = default)
     {
-        var found = await tasks.ListAsync(projectId, null, null, null, key, cancellationToken);
+        var found = await tasks.ListAsync(projectId, null, null, null, key, null, cancellationToken);
 
         if (found.Count == 0)
         {
             // 把项目里现有的编号列出来，agent 能自己改对，而不是卡在这
-            var available = await tasks.ListAsync(projectId, null, null, null, null, cancellationToken);
+            var available = await tasks.ListAsync(projectId, null, null, null, null, null, cancellationToken);
             var keys = available
                 .Select(t => t.Key)
                 .Where(k => !string.IsNullOrWhiteSpace(k))
