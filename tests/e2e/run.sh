@@ -82,6 +82,11 @@ echo
 echo "### 链路 F：agent 会话 ↔ 项目 / 任务绑定"
 python3 "$ROOT/tests/e2e/session_e2e.py" --url "http://127.0.0.1:$PORT" || status=1
 
+# 链路 G 自己起服务（要真崩一次再起一次），所以端口由它自己挑。
+echo
+echo "### 链路 G：重启对账（执行中断 → 结果未知）"
+python3 "$ROOT/tests/e2e/restart_e2e.py" --dotnet "$DOTNET" --root "$ROOT" || status=1
+
 if [[ -n "${CLI_DLL:-}" ]]; then
   echo
   echo "### 链路 E：CLI（wb）冒烟"

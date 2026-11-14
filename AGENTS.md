@@ -215,7 +215,7 @@ CI（`.github/workflows/verify.yml`）每次推送与 PR 都跑 `verify.sh`。
 仓库里没有 `.dotnet/` 时脚本会退回用 PATH 上的 dotnet（CI 里版本固定在 8.0.x）——
 **别把 SDK 重新塞回仓库**。
 
-端到端有**六条链路**，都在 `tests/e2e/` 下，`run.sh` 一次跑完：
+端到端有**七条链路**，都在 `tests/e2e/` 下，`run.sh` 一次跑完：
 
 | 链路 | 脚本 | 验什么 |
 |---|---|---|
@@ -223,6 +223,7 @@ CI（`.github/workflows/verify.yml`）每次推送与 PR 都跑 `verify.sh`。
 | D | `approval_e2e.py` | **写操作的人工审批门禁**：白名单外的直接拒 / 没批准不执行 / 批准后续跑 / 一条审批只能执行一次 / 换命令换项目都用不了 / 撤销是后悔药 / 只读通道不许写 / db_execute 也要审批 / 全程审计留痕 |
 | E | `cli_smoke.py` | CLI 常用命令、敏感命令没凭证是 401、`wb mcp` 的 stdio 桥接真能转发 JSON-RPC |
 | F | `session_e2e.py` | **会话绑定链路**：项目绑仓库 → 不传 projectId 也能干活 → 跨项目被拒 → 按编号认领 → 审计自动带任务 → 提交后产出文件自动落库 |
+| G | `restart_e2e.py` | **重启对账**：真起服务 → 执行途中杀进程 → 同一个 WORKBENCH_HOME 再起一次 → 那次写操作标成「结果未知」交人工确认 |
 
 改完 MCP 工具、状态机**或审批闸门**后跑一遍，比只看单测靠谱。
 新增写工具时，`approval_e2e.py` 里要跟着加一条「不批就不执行」的断言。
