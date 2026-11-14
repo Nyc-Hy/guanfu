@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using ModelContextProtocol.AspNetCore;
 using ModelContextProtocol.Protocol;
 using Microsoft.Extensions.DependencyInjection;
 using Workbench.Application;
@@ -138,7 +139,12 @@ public static class McpServiceCollectionExtensions
                 });
             })
             .WithToolsFromAssembly(typeof(WorkbenchMcpTools).Assembly, WorkbenchJson.Options)
-            .WithHttpTransport();
+            // 有状态会话：Claude Code / Codex 这类老协议客户端在 initialize 时
+            // 会拿到 Mcp-Session-Id，之后每次请求都带着它 —— 工作台靠它认出
+            // 「还是那次干活」，agent 才不用每次都自己传 projectId。
+            // 新协议（2026-07-28 及以后）的客户端仍然按请求无状态服务。
+            .WithHttpTransport(options =>
+                options.SessionMode = HttpServerSessionMode.StatefulForInitializeClients);
 
         return services;
     }

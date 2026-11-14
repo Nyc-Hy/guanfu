@@ -37,6 +37,22 @@ public sealed class AgentSessionAccessor(
     internal const string RepoHeader = "X-Workbench-Repo";
     internal const string AgentHeader = "X-Workbench-Agent";
 
+    /// <summary>当前请求的 MCP 协议会话 id。客户端后续请求只带它，不带工作台自己的头。</summary>
+    public string? CurrentMcpSessionId
+    {
+        get
+        {
+            var context = http?.HttpContext;
+            if (context is null)
+            {
+                return null;
+            }
+
+            var value = context.Request.Headers["Mcp-Session-Id"].ToString();
+            return string.IsNullOrWhiteSpace(value) ? null : value;
+        }
+    }
+
     public async Task<AgentSessionDto?> CurrentAsync(CancellationToken cancellationToken = default)
     {
         var context = http?.HttpContext;
@@ -117,7 +133,13 @@ public sealed class SessionMcpTools(
         Guid? projectId = null,
         CancellationToken cancellationToken = default)
     {
-        var bound = await sessions.BindRepoAsync(repoPath, agentId, projectId: projectId, cancellationToken: cancellationToken);
+        // 协议会话 id 一起记上：Claude Code 这类客户端后续请求只带
+        // Mcp-Session-Id，不带工作台自己的头 —— 不记上，下次调用就认不出这条会话，
+        // agent 会收到「当前调用没有绑定项目」，明明刚绑过。
+        var mcpSessionId = sessionAccessor?.CurrentMcpSessionId;
+
+        var bound = await sessions.BindRepoAsync(
+            repoPath, agentId, mcpSessionId, projectId, cancellationToken);
 
         if (!bound.Ok || bound.Session is null)
         {

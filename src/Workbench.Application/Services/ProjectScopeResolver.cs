@@ -21,6 +21,15 @@ public sealed record ProjectScope(
 public interface IAgentSessionAccessor
 {
     Task<AgentSessionDto?> CurrentAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 当前请求的 MCP 协议会话 id（<c>Mcp-Session-Id</c> 头）。
+    ///
+    /// 绑会话时要把它一起记上 —— 客户端（Claude Code 等）只会在后续请求里
+    /// 带这个协议会话 id，不带工作台自己的头。记上了，下次调用才认得出是同一条会话。
+    /// 无状态模式下没有这个 id，返回 null。
+    /// </summary>
+    string? CurrentMcpSessionId { get; }
 }
 
 /// <summary>

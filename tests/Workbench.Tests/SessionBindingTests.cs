@@ -217,5 +217,7 @@ public sealed class SessionBindingTests
     {
         public Task<AgentSessionDto?> CurrentAsync(CancellationToken cancellationToken = default)
             => Task.FromResult<AgentSessionDto?>(session);
+
+        public string? CurrentMcpSessionId => null;
     }
 }

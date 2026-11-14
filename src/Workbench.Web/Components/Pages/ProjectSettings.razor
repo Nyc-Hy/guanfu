@@ -88,9 +88,9 @@ else
                 </p>
                 @* 同一个仓库被两个项目绑上时，agent 按目录认项目会分不出来 ——
                    这条提醒要在绑定的那一刻就摆出来，别等 agent 撞墙才发现。 *@
-                @if (!string.IsNullOrWhiteSpace(Config.RepoBindingWarning))
+                @if (!string.IsNullOrWhiteSpace(Config.RepoWarning))
                 {
-                    <p class="wb-alert wb-alert-warn">@Config.RepoBindingWarning</p>
+                    <p class="wb-alert wb-alert-warn">@Config.RepoWarning</p>
                 }
             </section>
 

@@ -49,7 +49,8 @@ public sealed class AgentLauncher(
         if (string.IsNullOrWhiteSpace(project.AgentCommand))
         {
             return new AgentLaunchResult(false, null, string.Empty, string.Empty,
-                "该项目没有配置启动命令（AgentCommand）。");
+                "这个项目还没配启动命令。到项目的「设置 → 启动 agent」里填一条" +
+                "（比如 claude -p \"{title}\"），再回来启动。");
         }
 
         var workingDirectory = string.IsNullOrWhiteSpace(project.RepoPath)
@@ -59,7 +60,7 @@ public sealed class AgentLauncher(
         if (!Directory.Exists(workingDirectory))
         {
             return new AgentLaunchResult(false, null, string.Empty, workingDirectory,
-                $"工作目录不存在: {workingDirectory}");
+                $"工作目录不存在：{workingDirectory} —— 检查一下项目设置里的仓库路径。");
         }
 
         var values = new Dictionary<string, string>

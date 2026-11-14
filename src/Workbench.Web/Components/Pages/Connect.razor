@@ -2,6 +2,7 @@
 @rendermode InteractiveServer
 @inject NavigationManager Nav
 @inject IMcpToolService Tools
+@inject IAgentSessionService Sessions
 @inject IJSRuntime JS
 
 <PageTitle>接入 agent · 开发工作台</PageTitle>
@@ -29,6 +30,43 @@
                 <button class="wb-btn" @onclick="() => CopyAsync(HttpConfig)">复制</button>
                 <span class="wb-muted">端点：<code>@McpEndpoint</code></span>
             </div>
+        </section>
+
+        @* 人复制完配置，接下来一定是问「接上了没有」——
+           这里给个心跳：最近一次 agent 有动静是什么时候。 *@
+        <section class="wb-panel">
+            <div class="wb-card-head">
+                <h3>接上了吗</h3>
+                @if (RecentSessions.Count > 0)
+                {
+                    <span class="wb-chip wb-chip-ok">有 agent 活动</span>
+                }
+            </div>
+            @if (RecentSessions.Count == 0)
+            {
+                <p class="wb-muted">
+                    还没有 agent 连上来过。把上面的配置复制到客户端，在那边问一句
+                    「工作台里有哪些项目？」试试 —— 有没有连上，看这里的动静和
+                    <a href="/audit">审计</a>页就清楚了。
+                </p>
+            }
+            else
+            {
+                <ul class="wb-doc-list">
+                    @foreach (var session in RecentSessions)
+                    {
+                        <li>
+                            <span class="wb-chip">@session.AgentId</span>
+                            在 @session.ProjectName@(session.TaskKey is null ? "" : $" · {session.TaskKey}")
+                            · 最后有动静 @Ago(session.LastSeenAt)
+                        </li>
+                    }
+                </ul>
+                <p class="wb-hint">
+                    这里只显示最近 @RecentSessions.Count 条。完整的调用记录在
+                    <a href="/audit">审计</a>页。
+                </p>
+            }
         </section>
 
         <section class="wb-panel">
@@ -112,6 +150,7 @@
 
 @code {
     private IReadOnlyList<McpToolInfo> Items { get; set; } = [];
+    private IReadOnlyList<AgentSessionDto> RecentSessions { get; set; } = [];
     private string? Copied { get; set; }
 
     private int ToolCount => Items.Count;
@@ -129,7 +168,43 @@
 
     private string StdioConfig => McpConnectInfo.StdioConfig(BaseUrl);
 
-    protected override async Task OnInitializedAsync() => Items = await Tools.ListAsync();
+    protected override async Task OnInitializedAsync()
+    {
+        Items = await Tools.ListAsync();
+
+        // 心跳拿不到不算失败 —— 这一段只是给人看「连上没有」。
+        try
+        {
+            RecentSessions = await Sessions.ListRecentAsync();
+        }
+        catch (Exception)
+        {
+            RecentSessions = [];
+        }
+    }
+
+    /// <summary>相对时间，后面带绝对时间（悬停能看）。</summary>
+    private static string Ago(DateTimeOffset time)
+    {
+        var delta = DateTimeOffset.UtcNow - time;
+
+        if (delta.TotalMinutes < 1)
+        {
+            return "刚刚";
+        }
+
+        if (delta.TotalMinutes < 60)
+        {
+            return $"{(int)delta.TotalMinutes} 分钟前";
+        }
+
+        if (delta.TotalHours < 24)
+        {
+            return $"{(int)delta.TotalHours} 小时前";
+        }
+
+        return $"{(int)delta.TotalDays} 天前";
+    }
 
     private async Task CopyAsync(string text)
     {

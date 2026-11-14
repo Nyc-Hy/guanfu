@@ -16,9 +16,9 @@ public class ProjectConfigTests
         // 这件事在绑定的那一刻讲清楚，别等 agent 撞墙才发现。
         var config = await host.Projects.GetConfigAsync(second.Id);
 
-        Assert.NotNull(config.RepoBindingWarning);
-        Assert.Contains("甲项目", config.RepoBindingWarning);
-        Assert.Contains("分不出来", config.RepoBindingWarning);
+        Assert.NotNull(config.RepoWarning);
+        Assert.Contains("甲项目", config.RepoWarning);
+        Assert.Contains("分不出来", config.RepoWarning);
     }
 
     [Fact]
@@ -31,8 +31,8 @@ public class ProjectConfigTests
 
         var updated = await host.Projects.UpdateConfigAsync(second.Id, repoPath: "/tmp/wb-唯一仓库二");
 
-        Assert.NotNull(updated.RepoBindingWarning);
-        Assert.Contains("甲项目", updated.RepoBindingWarning);
+        Assert.NotNull(updated.RepoWarning);
+        Assert.Contains("甲项目", updated.RepoWarning);
     }
 
     [Fact]
@@ -40,12 +40,48 @@ public class ProjectConfigTests
     {
         using var host = new WorkbenchTestHost();
 
-        var project = await host.Projects.CreateAsync("甲项目", repoPath: "/tmp/wb-唯一仓库三");
+        // 用一个真存在的目录：目录不存在会另外给一条提醒，这里只关心「重复绑定」那件事。
+        var repo = Directory.CreateTempSubdirectory("wb-唯一仓库三").FullName;
+        try
+        {
+            var project = await host.Projects.CreateAsync("甲项目", repoPath: repo);
 
-        var updated = await host.Projects.UpdateConfigAsync(project.Id, repoPath: "/tmp/wb-唯一仓库三");
+            var updated = await host.Projects.UpdateConfigAsync(project.Id, repoPath: repo);
 
-        Assert.Equal("/tmp/wb-唯一仓库三", updated.RepoPath);
-        Assert.Null(updated.RepoBindingWarning);
+            Assert.Equal(repo, updated.RepoPath);
+            Assert.Null(updated.RepoWarning);
+        }
+        finally
+        {
+            Directory.Delete(repo, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task 相对路径要被拒掉()
+    {
+        using var host = new WorkbenchTestHost();
+
+        // 相对路径会被拿服务端的工作目录去补全 —— 绑出来的是另一个地方，
+        // 界面还标着「已绑仓库」。这种错比报错难查，直接拒。
+        var error = await Assert.ThrowsAsync<WorkbenchException>(
+            () => host.Projects.CreateAsync("甲项目", repoPath: "myrepo"));
+
+        Assert.Contains("绝对路径", error.Message);
+    }
+
+    [Fact]
+    public async Task 目录还不存在时要提醒()
+    {
+        using var host = new WorkbenchTestHost();
+
+        var project = await host.Projects.CreateAsync(
+            "甲项目", repoPath: "/tmp/wb-还不存在的仓库目录");
+
+        var config = await host.Projects.GetConfigAsync(project.Id);
+
+        Assert.NotNull(config.RepoWarning);
+        Assert.Contains("还不存在", config.RepoWarning);
     }
 
     [Fact]
@@ -57,7 +93,7 @@ public class ProjectConfigTests
 
         var config = await host.Projects.GetConfigAsync(project.Id);
 
-        Assert.Null(config.RepoBindingWarning);
+        Assert.Null(config.RepoWarning);
     }
 
     [Fact]

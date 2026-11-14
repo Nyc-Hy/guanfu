@@ -73,6 +73,16 @@ public interface IAgentSessionService
     Task TouchAsync(Guid sessionId, CancellationToken cancellationToken = default);
 
     /// <summary>列出干过这个任务的会话（谁在什么时候接的活）。</summary>
+    /// <summary>
+    /// 最近还活着的 agent 会话（按最后有动静的时间倒序）。
+    ///
+    /// 「接入 agent」页拿它当心跳：人复制完配置，得能一眼看出
+    /// 客户端到底连上没有、连上之后还在不在调工具。
+    /// </summary>
+    Task<IReadOnlyList<AgentSessionDto>> ListRecentAsync(
+        int limit = 5,
+        CancellationToken cancellationToken = default);
+
     Task<IReadOnlyList<AgentSessionDto>> ListByTaskAsync(
         Guid taskId,
         CancellationToken cancellationToken = default);
@@ -386,6 +396,25 @@ public sealed class AgentSessionService(IAppDbContext db, IClock clock) : IAgent
     }
 
     /// <summary>列出干过这个任务的会话（谁在什么时候接的活）。</summary>
+    public async Task<IReadOnlyList<AgentSessionDto>> ListRecentAsync(
+        int limit = 5,
+        CancellationToken cancellationToken = default)
+    {
+        var sessions = await db.AgentSessions
+            .AsNoTracking()
+            .OrderByDescending(s => s.LastSeenAt)
+            .Take(Math.Clamp(limit, 1, 50))
+            .ToListAsync(cancellationToken);
+
+        var result = new List<AgentSessionDto>(sessions.Count);
+        foreach (var session in sessions)
+        {
+            result.Add(await BuildDtoAsync(session, cancellationToken));
+        }
+
+        return result;
+    }
+
     public async Task<IReadOnlyList<AgentSessionDto>> ListByTaskAsync(
         Guid taskId,
         CancellationToken cancellationToken = default)

@@ -115,6 +115,18 @@ public sealed class ProjectService(IAppDbContext db, IClock clock) : IProjectSer
             return;
         }
 
+        // 相对路径直接拒：人填「myrepo」时心里想的是自己 shell 里的那个目录，
+        // 而 Path.GetFullPath 会拿**服务端的当前目录**去补全 ——
+        // 结果绑到一个八竿子打不着的路径上，界面还标着「已绑仓库」。
+        // 这种「看起来成功、其实绑错」比报错难查得多。
+        if (!Path.IsPathRooted(trimmed))
+        {
+            throw new WorkbenchException(
+                $"仓库路径要填绝对路径（例如 /Users/you/code/your-repo）。" +
+                $"现在填的「{trimmed}」是相对路径 —— 相对哪个目录说不清，" +
+                "系统只能拿服务端的工作目录去补，绑出来的多半不是你想要的。");
+        }
+
         // 两套路径，分工明确：
         //   RepoPath —— 人填的（绝对化，但不解软链），界面上显示的就是它；
         //   RepoRoot —— 规范化后的绑定键（解软链），反查仓库→项目只用它。
@@ -137,13 +149,22 @@ public sealed class ProjectService(IAppDbContext db, IClock clock) : IProjectSer
     /// 所以这里不拦，只把这件事在绑定的那一刻讲清楚，
     /// 免得等到 agent 绑会话失败才发现。
     /// </summary>
-    private async Task<string?> BuildRepoBindingWarningAsync(
+    private async Task<string?> BuildRepoWarningAsync(
         Project project,
         CancellationToken cancellationToken)
     {
+        var notes = new List<string>();
+
+        // 目录还不存在 —— 不拦（可能先建项目再 clone），但要说一声。
+        if (!string.IsNullOrEmpty(project.RepoPath) && !Directory.Exists(project.RepoPath))
+        {
+            notes.Add($"这个目录现在还不存在（{project.RepoPath}）—— " +
+                "agent 在这里干活前，要先把它建出来或把仓库 clone 进来。");
+        }
+
         if (string.IsNullOrEmpty(project.RepoRoot))
         {
-            return null;
+            return notes.Count == 0 ? null : string.Join(" ", notes);
         }
 
         // 精确比较放内存里：路径大小写的口径跟 PathBoundary 一致（Windows 不敏感）。
@@ -162,14 +183,14 @@ public sealed class ProjectService(IAppDbContext db, IClock clock) : IProjectSer
             .Distinct()
             .ToList();
 
-        if (owners.Count == 0)
+        if (owners.Count > 0)
         {
-            return null;
+            notes.Add($"这个仓库也绑在项目「{string.Join("、", owners)}」上。" +
+                "agent 按工作目录自动认项目时会分不出来（得显式指定项目），" +
+                "前后端同仓的话，各绑各的子目录就行。");
         }
 
-        return $"这个仓库也绑在项目「{string.Join("、", owners)}」上。" +
-            "agent 按工作目录自动认项目时会分不出来（得显式指定项目），" +
-            "前后端同仓的话，各绑各的子目录就行。";
+        return notes.Count == 0 ? null : string.Join(" ", notes);
     }
 
     private async Task<Workspace> CreateDefaultWorkspaceAsync(CancellationToken cancellationToken)
@@ -268,7 +289,7 @@ public sealed class ProjectService(IAppDbContext db, IClock clock) : IProjectSer
         var project = await db.Projects.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id, cancellationToken)
                       ?? throw new NotFoundException("项目", id);
 
-        return BuildConfig(project, await BuildRepoBindingWarningAsync(project, cancellationToken));
+        return BuildConfig(project, await BuildRepoWarningAsync(project, cancellationToken));
     }
 
     public async Task<ProjectConfigDto> UpdateConfigAsync(
@@ -350,7 +371,7 @@ public sealed class ProjectService(IAppDbContext db, IClock clock) : IProjectSer
         project.UpdatedAt = clock.UtcNow;
         await db.SaveChangesAsync(cancellationToken);
 
-        return BuildConfig(project, await BuildRepoBindingWarningAsync(project, cancellationToken));
+        return BuildConfig(project, await BuildRepoWarningAsync(project, cancellationToken));
     }
 
     /// <summary>空字符串清空字段；仓库路径统一存绝对路径。</summary>
@@ -365,7 +386,7 @@ public sealed class ProjectService(IAppDbContext db, IClock clock) : IProjectSer
         return trimmed;
     }
 
-    private static ProjectConfigDto BuildConfig(Project project, string? repoBindingWarning = null) => new(
+    private static ProjectConfigDto BuildConfig(Project project, string? repoWarning = null) => new(
         project.Id,
         project.Name,
         project.Description,
@@ -377,7 +398,7 @@ public sealed class ProjectService(IAppDbContext db, IClock clock) : IProjectSer
         project.NotificationWebhookUrl,
         project.NotificationFormat,
         project.RepoRoot,
-        repoBindingWarning);
+        repoWarning);
 
     private ProjectSummaryDto BuildSummary(
         Project project,

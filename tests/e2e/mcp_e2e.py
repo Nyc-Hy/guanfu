@@ -48,6 +48,9 @@ class Mcp:
         self._id = 0
         # 额外请求头。链路 F 用它模拟「桥接把 agent 的工作目录告诉工作台」。
         self.headers = headers or {}
+        # MCP 协议会话 id：initialize 时服务端会发，之后每次请求都要带上，
+        # 否则服务端按「新建会话」处理并拒掉（400）。
+        self._session_id: str = ""
 
     def _rpc(self, method: str, params=None, notify: bool = False):
         payload = {"jsonrpc": "2.0", "method": method}
@@ -62,6 +65,8 @@ class Mcp:
             "Accept": "application/json, text/event-stream",
         }
         headers.update(self.headers)
+        if self._session_id:
+            headers["Mcp-Session-Id"] = self._session_id
 
         request = urllib.request.Request(
             self.base,
@@ -71,6 +76,9 @@ class Mcp:
         )
         with urllib.request.urlopen(request, timeout=60) as response:
             raw = response.read().decode()
+            issued = response.headers.get("Mcp-Session-Id")
+            if issued:
+                self._session_id = issued
 
         if notify:
             return None
