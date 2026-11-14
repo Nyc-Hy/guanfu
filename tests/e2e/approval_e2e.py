@@ -14,6 +14,7 @@
   D8 只读通道不许写（db_query 走 AST 判定，不碰真库）
   D9 db_execute 也要审批，不批就不执行
   D10 全程有审计留痕
+  D11 只读调用也留痕
 
 不需要 SQL Server：只读判定发生在真正连库之前，写操作在审批前根本不会下发。
 
@@ -67,7 +68,9 @@ def main() -> int:
     args = parser.parse_args()
 
     rest = args.rest or args.url
-    mcp = Mcp(args.url)
+    # 客户端在连接头上表明自己是谁 —— 真实客户端（Claude Code 等）不会给
+    # 工具显式传 callerId，审计要能从连接头认出「谁调的」。
+    mcp = Mcp(args.url, headers={"X-Workbench-Agent": "e2e-agent"})
     mcp.initialize()
 
     suffix = str(int(time.time()))[-6:]
@@ -354,6 +357,24 @@ def main() -> int:
         expect(
             any(a.get("outcome") == "denied" for a in query_audit),
             "被策略拦下的只读尝试也应留痕（denied）",
+        )
+
+        # ── D11 只读调用也留痕 ───────────────────────────────────────────
+        print("\n-- D11 只读调用也留痕 --")
+        mcp.call("workbench_list_tasks", {"projectId": project_id})
+        audit = mcp.call(
+            "workbench_list_audit", {"projectId": project_id, "limit": 200}
+        )
+        read_audit = [
+            a for a in (audit or []) if a.get("toolName") == "workbench_list_tasks"
+        ]
+        expect(
+            len(read_audit) > 0,
+            "只读调用也应留审计 —— 「谁访问了什么资源」要查得出来",
+        )
+        expect(
+            any(a.get("callerId") == "e2e-agent" for a in read_audit),
+            "只读调用也要记下是谁调的",
         )
 
         section("结果")

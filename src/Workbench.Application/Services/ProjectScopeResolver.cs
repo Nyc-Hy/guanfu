@@ -23,6 +23,14 @@ public interface IAgentSessionAccessor
     Task<AgentSessionDto?> CurrentAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// 当前调用方的标识：请求头里的 <c>X-Workbench-Agent</c>。
+    ///
+    /// 客户端不一定会给工具显式传 callerId（Claude Code 就不会），
+    /// 但审计要能说出「是谁调的」—— 这个头就是那条线索。
+    /// </summary>
+    string? CurrentAgentId { get; }
+
+    /// <summary>
     /// 当前请求的 MCP 协议会话 id（<c>Mcp-Session-Id</c> 头）。
     ///
     /// 绑会话时要把它一起记上 —— 客户端（Claude Code 等）只会在后续请求里

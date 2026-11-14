@@ -219,5 +219,7 @@ public sealed class SessionBindingTests
             => Task.FromResult<AgentSessionDto?>(session);
 
         public string? CurrentMcpSessionId => null;
+
+        public string? CurrentAgentId => null;
     }
 }

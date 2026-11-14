@@ -37,6 +37,22 @@ public sealed class AgentSessionAccessor(
     internal const string RepoHeader = "X-Workbench-Repo";
     internal const string AgentHeader = "X-Workbench-Agent";
 
+    /// <summary>请求头里带的调用方标识。客户端不一定给工具显式传 callerId，得有这条线索。</summary>
+    public string? CurrentAgentId
+    {
+        get
+        {
+            var context = http?.HttpContext;
+            if (context is null)
+            {
+                return null;
+            }
+
+            var value = context.Request.Headers[AgentHeader].ToString();
+            return string.IsNullOrWhiteSpace(value) ? null : value;
+        }
+    }
+
     /// <summary>当前请求的 MCP 协议会话 id。客户端后续请求只带它，不带工作台自己的头。</summary>
     public string? CurrentMcpSessionId
     {

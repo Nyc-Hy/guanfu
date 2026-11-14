@@ -13,11 +13,9 @@
     <div>
         <h1>工具审计</h1>
         <p class="wb-muted">
-            agent 的<strong>写操作</strong>（改数据库、提交代码、推送、执行命令）和<strong>数据库访问</strong>
-            都会记一笔：谁调的、要不要审批、结果如何、花了多久。
+            agent 的<strong>每次工具调用</strong>都会记一笔：谁调的、哪个项目、哪个任务、
+            用的哪条审批、结果如何、花了多久。写操作与数据库访问还会记下 SQL 原文与结果摘要。
             审计只追加不修改，出了事从这里复盘。
-            （列任务、看文件这类只读调用不留痕 —— 要看它们，
-            去「任务详情」里的事件流水。）
         </p>
     </div>
     <button class="wb-btn" disabled="@Loading" @onclick="() => ReloadAsync(resetPage: false)">刷新</button>
@@ -125,7 +123,7 @@ else if (VisibleRows.Count == 0)
 }
 else
 {
-    <div class="wb-table-scroll">
+    <div class="wb-table-scroll wb-table-wide">
         <table class="wb-table">
             <thead>
             <tr>

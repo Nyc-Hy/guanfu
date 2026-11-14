@@ -318,7 +318,7 @@ body {
    表格的最小宽度会被撑得比视口还宽，整页横向滚动。 */
 .wb-tool-desc { overflow-wrap: anywhere; }
 .wb-table th, .wb-table td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--wb-border); }
-.wb-table th { color: var(--wb-muted); font-weight: 500; font-size: 12px; }
+.wb-table th { color: var(--wb-muted); font-weight: 500; font-size: 12px; white-space: nowrap; }
 
 .wb-pre {
     white-space: pre-wrap;
@@ -497,6 +497,10 @@ input[type="checkbox"] { accent-color: var(--wb-accent); }
 /* 表格横向滚动容器：窄屏下表格不挤爆布局 */
 .wb-table-scroll { overflow-x: auto; }
 .wb-table-scroll > .wb-table { min-width: 640px; }
+
+/* 列多的表：给它更大的最小宽度，窄屏下横向滚动，
+   而不是把每个格子压成「一个字一行」的竖条。 */
+.wb-table-scroll.wb-table-wide > .wb-table { min-width: 900px; }
 
 /* 免审批写的规则行：整行染上警示底色 */
 .wb-rule-open td { background: rgba(224, 85, 97, 0.10); }

@@ -16,6 +16,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="Workbench.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\Workbench.Domain\Workbench.Domain.csproj" />
     <ProjectReference Include="..\Workbench.Application\Workbench.Application.csproj" />
     <ProjectReference Include="..\Workbench.Documents\Workbench.Documents.csproj" />

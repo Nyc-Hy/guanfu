@@ -26,6 +26,7 @@ public static class McpServiceCollectionExtensions
         // 当前会话：从 HTTP 头认出「这次调用属于哪个 agent / 项目 / 任务」。
         // 绑上之后工具调用不用再自己背项目 GUID。
         services.AddScoped<IAgentSessionAccessor, AgentSessionAccessor>();
+        services.AddScoped<ToolCallRecorder>();
 
         services.AddMcpServer(options =>
             {
@@ -61,6 +62,64 @@ public static class McpServiceCollectionExtensions
                     }
 
                     return result;
+                });
+
+                // 最外层：所有工具调用都留痕。
+                //
+                // 注册在最前面 = 洋葱模型的最外层 = 能看到最终结果
+                // （包括被关掉的工具、被兜底过滤器转成结构化错误的调用）。
+                //
+                // 以前只有写工具留痕，只读调用不留 —— 「谁访问了什么资源」查不出来，
+                // 而这正是企业合规最关心的那一问。
+                options.Filters.Request.CallToolFilters.Add(next => async (context, cancellationToken) =>
+                {
+                    var name = context.Params.Name;
+                    var started = DateTimeOffset.UtcNow;
+
+                    try
+                    {
+                        var result = await next(context, cancellationToken);
+
+                        // 工具自己留痕的那几个跳过：它们记得更细（审批号、影响行数、
+                        // 结果摘要、SQL 原文），中央这份补不回来，两边都写就成了一行两条。
+                        if (!ToolCallRecorder.SelfAuditedTools.Contains(name))
+                        {
+                            var recorder = context.Services?.GetService<ToolCallRecorder>();
+                            var state = context.Services?.GetService<McpToolState>();
+
+                            var outcome = result.IsError == true
+                                ? (state is not null && !state.IsEnabled(name) ? "denied" : "error")
+                                : "success";
+
+                            if (recorder is not null)
+                            {
+                                await recorder.RecordAsync(
+                                    name, context.Params.Arguments, outcome,
+                                    (long)(DateTimeOffset.UtcNow - started).TotalMilliseconds,
+                                    cancellationToken);
+                            }
+                        }
+
+                        return result;
+                    }
+                    catch (Exception)
+                    {
+                        // 工具抛异常时（内层的兜底过滤器会把它转成结构化错误），
+                        // 这里也留一条「出错」，然后照原样抛出去。
+                        if (!ToolCallRecorder.SelfAuditedTools.Contains(name))
+                        {
+                            var recorder = context.Services?.GetService<ToolCallRecorder>();
+                            if (recorder is not null)
+                            {
+                                await recorder.RecordAsync(
+                                    name, context.Params.Arguments, "error",
+                                    (long)(DateTimeOffset.UtcNow - started).TotalMilliseconds,
+                                    cancellationToken);
+                            }
+                        }
+
+                        throw;
+                    }
                 });
 
                 // 最外层兜底。MCP SDK 会把工具抛出的异常吞成一句
