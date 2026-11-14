@@ -13,6 +13,14 @@ public static class DiffTextParser
     public const string Removed = "removed";
     public const string Header = "header";
 
+    /// <summary>
+    /// 逐行分类。
+    ///
+    /// 文件头（--- / +++）必须结合上下文判断：hunk 内部以 "--- " 开头的删除行
+    /// （例如删掉一行 Markdown 分隔线或 YAML 文档起始符）不是文件头，
+    /// 把它当头部会丢掉一条删除修订，还会把后面的行号全算错。
+    /// 判据：文件头出现在任何 hunk 之前，或者 "--- " 后面紧跟 "+++ "。
+    /// </summary>
     public static IReadOnlyList<ParsedDiffLineDto> ParseLines(string diffText)
     {
         var lines = new List<ParsedDiffLineDto>();
@@ -24,20 +32,49 @@ public static class DiffTextParser
         int? oldLine = null;
         int? newLine = null;
 
-        foreach (var raw in diffText.Replace("\r\n", "\n").Split('\n'))
+        var rawLines = diffText.Replace("\r\n", "\n").Split('\n');
+        var inHunk = false;
+
+        for (var i = 0; i < rawLines.Length; i++)
         {
+            var raw = rawLines[i];
+
             if (raw.StartsWith("@@", StringComparison.Ordinal))
             {
                 lines.Add(new ParsedDiffLineDto(Header, raw));
                 (oldLine, newLine) = ParseHunkHeader(raw);
+                inHunk = true;
                 continue;
             }
 
-            if (raw.StartsWith("--- ", StringComparison.Ordinal) ||
-                raw.StartsWith("+++ ", StringComparison.Ordinal) ||
-                raw.StartsWith("diff ", StringComparison.Ordinal) ||
+            // diff --git / index 行开启一个新文件段落，后面可能跟着真正的文件头
+            if (raw.StartsWith("diff ", StringComparison.Ordinal) ||
                 raw.StartsWith("index ", StringComparison.Ordinal))
             {
+                lines.Add(new ParsedDiffLineDto(Header, raw));
+                inHunk = false;
+                continue;
+            }
+
+            if (raw.StartsWith("--- ", StringComparison.Ordinal))
+            {
+                var nextIsNewFileHeader = i + 1 < rawLines.Length &&
+                    rawLines[i + 1].StartsWith("+++ ", StringComparison.Ordinal);
+
+                if (!inHunk || nextIsNewFileHeader)
+                {
+                    lines.Add(new ParsedDiffLineDto(Header, raw));
+                    inHunk = false;
+                    continue;
+                }
+
+                // hunk 里的删除行，落到下面的 '-' 分支
+            }
+            else if (raw.StartsWith("+++ ", StringComparison.Ordinal) &&
+                (!inHunk || IsOldFileHeader(lines)))
+            {
+                // "+++ " 只有在 hunk 之前、或紧跟在 "--- " 文件头后面时才是文件头，
+                // 否则它是内容以 "++ " 开头的新增行
                 lines.Add(new ParsedDiffLineDto(Header, raw));
                 continue;
             }
@@ -85,6 +122,12 @@ public static class DiffTextParser
 
         return lines;
     }
+
+    /// <summary>上一行是不是刚被判定成文件头的 "--- "。</summary>
+    private static bool IsOldFileHeader(List<ParsedDiffLineDto> lines) =>
+        lines.Count > 0 &&
+        lines[^1].Kind == Header &&
+        lines[^1].Text.StartsWith("--- ", StringComparison.Ordinal);
 
     /// <summary>
     /// 解析 hunk 头 <c>@@ -a,b +c,d @@</c>，同时取出旧文件与新文件的起始行号。
@@ -232,8 +275,8 @@ public sealed class DiffDocumentParser : IDocumentParser
 {
     public DocFormat Format => DocFormat.UnifiedDiff;
 
-    /// <summary>v2：hunk 头带出新文件行号；修订带作者与时间。</summary>
-    public int ParserVersion => 2;
+    /// <summary>v3：hunk 内以 "--- " / "+++ " 开头的增删行不再被误判成文件头。</summary>
+    public int ParserVersion => 3;
 
     public bool CanParse(string fileName)
     {

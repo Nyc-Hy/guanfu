@@ -51,4 +51,67 @@ public class ParsedDocumentSerializationTests
         Assert.DoesNotContain("level", json);
         Assert.Contains("\"kind\":\"paragraph\"", json);
     }
+
+    // ------------------------------------------------------------------
+    // 批注块新增的 Author / Date 是可选字段：老缓存里没有它们也要能读
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public void 批注块的作者与时间可以序列化并还原()
+    {
+        var block = new ParsedBlockDto(
+            BlockKind.Comment,
+            Inlines: [new ParsedInlineDto("这里要改")],
+            Author: "评审人",
+            Date: new DateTimeOffset(2026, 11, 12, 15, 4, 0, TimeSpan.FromHours(8)));
+
+        var json = JsonSerializer.Serialize(block, WorkbenchJson.Options);
+        var restored = JsonSerializer.Deserialize<ParsedBlockDto>(json, WorkbenchJson.Options);
+
+        Assert.NotNull(restored);
+        Assert.Equal("评审人", restored!.Author);
+        Assert.Equal(block.Date, restored.Date);
+        Assert.Equal("这里要改", restored.Inlines![0].Text);
+    }
+
+    [Fact]
+    public void 老缓存JSON没有新字段也能读()
+    {
+        // 修复前写进库的缓存长这样：没有 author / date
+        const string json = """{"kind":"paragraph","inlines":[{"text":"旧内容","strike":true}]}""";
+
+        var restored = JsonSerializer.Deserialize<ParsedBlockDto>(json, WorkbenchJson.Options);
+
+        Assert.NotNull(restored);
+        Assert.Null(restored!.Author);
+        Assert.Null(restored.Date);
+        Assert.True(restored.Inlines![0].Strike);
+    }
+
+    [Fact]
+    public void 新字段为空时不写进JSON()
+    {
+        var json = JsonSerializer.Serialize(new ParsedBlockDto(BlockKind.Paragraph), WorkbenchJson.Options);
+
+        Assert.DoesNotContain("author", json);
+        Assert.DoesNotContain("date", json);
+    }
+
+    [Fact]
+    public void 表格与修订一起序列化不会丢结构()
+    {
+        var parsed = new MarkdownDocumentParser().Parse("""
+            | 字段 | 说明 |
+            | --- | --- |
+            | id | ~~旧字段~~ 新字段 |
+            """);
+
+        var json = JsonSerializer.Serialize(parsed, WorkbenchJson.Options);
+        var restored = JsonSerializer.Deserialize<ParsedDocDto>(json, WorkbenchJson.Options);
+
+        var table = restored!.Blocks.Single(b => b.Kind == BlockKind.Table);
+        Assert.Equal(2, table.Rows!.Count);
+        Assert.Contains(table.Rows[1][1], i => i is { Text: "旧字段", Strike: true });
+        Assert.Contains("id\t~~旧字段~~ 新字段", restored.PlainText);
+    }
 }

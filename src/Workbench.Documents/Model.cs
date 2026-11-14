@@ -48,7 +48,11 @@ public sealed record ParsedBlockDto(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<string>? Headers = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     IReadOnlyList<IReadOnlyList<IReadOnlyList<ParsedInlineDto>>>? Rows = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<ParsedDiffLineDto>? Lines = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<ParsedDiffLineDto>? Lines = null,
+    // Author / Date 供批注块使用（Kind = comment）。都是新增可选字段，
+    // 老缓存 JSON 里没有它们就是 null，序列化往返不受影响。
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Author = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] DateTimeOffset? Date = null);
 
 /// <summary>修订（补丁）。Kind ∈ insert / delete / moveFrom / moveTo。</summary>
 public sealed record ParsedRevisionDto(
@@ -77,6 +81,13 @@ public static class BlockKind
     public const string Code = "code";
     public const string Quote = "quote";
     public const string Diff = "diff";
+
+    // 文档正文之外的附属内容（DOCX 才有）。它们照样进 PlainText ——
+    // agent 读的是纯文本通道，页眉里的版本号、脚注里的约束、批注里的评审意见都不能丢。
+    public const string Header = "header";
+    public const string Footer = "footer";
+    public const string Footnote = "footnote";
+    public const string Comment = "comment";
 }
 
 /// <summary>修订类型常量。</summary>

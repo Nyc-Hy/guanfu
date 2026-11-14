@@ -292,6 +292,85 @@ public class DocumentSemanticsTests
         Assert.Contains("正常内容", parsed.PlainText);
     }
 
+    // ------------------------------------------------------------------
+    // 无 BOM 的 UTF-16：NUL 在 UTF-8 里是合法字节，严格 UTF-8 检查抓不到它，
+    // 以前会解成「a\0b\0c\0」这种夹着 NUL 的乱码
+    // ------------------------------------------------------------------
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task 无BOM的UTF16中英混排文本被正确解码(bool littleEndian)
+    {
+        const string text = "需求说明：用户登录后要能导出报表。\nSecond line.";
+        var bytes = (littleEndian ? Encoding.Unicode : Encoding.BigEndianUnicode).GetBytes(text);
+
+        using var stream = new MemoryStream(bytes);
+        var parsed = await new PlainTextDocumentParser().ParseAsync(stream, "note.txt", CancellationToken.None);
+
+        Assert.Contains("需求说明：用户登录后要能导出报表。", parsed.PlainText);
+        Assert.Contains("Second line.", parsed.PlainText);
+        // 必须用 Ordinal：文化敏感比较会把 U+0000 当成可忽略字符，IndexOf 恒返回 0
+        Assert.DoesNotContain("\0", parsed.PlainText, StringComparison.Ordinal);
+        Assert.DoesNotContain("\uFFFD", parsed.PlainText);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task 无BOM的UTF16纯英文文本被正确解码(bool littleEndian)
+    {
+        const string text = "Requirement: the user shall export the report after login.\nSecond line.";
+        var bytes = (littleEndian ? Encoding.Unicode : Encoding.BigEndianUnicode).GetBytes(text);
+
+        using var stream = new MemoryStream(bytes);
+        var parsed = await new PlainTextDocumentParser().ParseAsync(stream, "note.txt", CancellationToken.None);
+
+        Assert.Contains("Requirement: the user shall export the report after login.", parsed.PlainText);
+        Assert.DoesNotContain("\0", parsed.PlainText, StringComparison.Ordinal);
+        Assert.DoesNotContain("\uFFFD", parsed.PlainText);
+    }
+
+    [Fact]
+    public void 无BOM的UTF16纯中文也能识别()
+    {
+        const string text = "需求说明用户登录后要能导出报表";
+
+        // 纯中文时 NUL 证据很弱（只有「需」U+9700 这种低位为 0 的码点会贡献 NUL），
+        // 靠「解出来不像文本就换另一端序再试」兜住
+        Assert.Equal(text, TextEncodingDetector.Decode(Encoding.Unicode.GetBytes(text)));
+        Assert.Equal(text, TextEncodingDetector.Decode(Encoding.BigEndianUnicode.GetBytes(text)));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task 带BOM的UTF16文本正常解码(bool littleEndian)
+    {
+        const string text = "正常内容";
+        var payload = littleEndian ? Encoding.Unicode.GetBytes(text) : Encoding.BigEndianUnicode.GetBytes(text);
+        byte[] bom = littleEndian ? [0xFF, 0xFE] : [0xFE, 0xFF];
+        byte[] bytes = [.. bom, .. payload];
+
+        using var stream = new MemoryStream(bytes);
+        var parsed = await new PlainTextDocumentParser().ParseAsync(stream, "note.txt", CancellationToken.None);
+
+        Assert.Contains("正常内容", parsed.PlainText);
+        Assert.DoesNotContain("\uFFFD", parsed.PlainText);
+    }
+
+    [Fact]
+    public async Task UTF8文本不会被误判成UTF16()
+    {
+        const string text = "需求说明：用户登录后要能导出报表。\nSecond line.";
+
+        using var stream = new MemoryStream(Encoding.UTF8.GetBytes(text));
+        var parsed = await new PlainTextDocumentParser().ParseAsync(stream, "note.txt", CancellationToken.None);
+
+        Assert.Contains("需求说明：用户登录后要能导出报表。", parsed.PlainText);
+        Assert.Contains("Second line.", parsed.PlainText);
+    }
+
     [Fact]
     public void HTML里的脚本不进正文()
     {

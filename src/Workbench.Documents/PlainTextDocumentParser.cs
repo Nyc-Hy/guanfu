@@ -9,8 +9,8 @@ public sealed class PlainTextDocumentParser : IDocumentParser
 {
     public DocFormat Format => DocFormat.PlainText;
 
-    /// <summary>v2：按内容探测编码（UTF-8 / GB18030），不再一律按 UTF-8 解码。</summary>
-    public int ParserVersion => 2;
+    /// <summary>v3：无 BOM 的 UTF-16LE/BE 也能正确识别（此前被当成夹着 NUL 的 UTF-8）。</summary>
+    public int ParserVersion => 3;
 
     public bool CanParse(string fileName) => true;
 

@@ -26,6 +26,17 @@ public class Project
     public string? DefaultBranch { get; set; } = "main";
     public bool ManagedByWorkbench { get; set; }
 
+    /// <summary>
+    /// 仓库根（git toplevel，已解符号链接的绝对路径）。这是**绑定键**：
+    /// agent 的工作目录落在哪个仓库，工作台就靠它反查项目。
+    ///
+    /// 与 <see cref="RepoPath"/> 的分工：RepoPath 是人配的路径（工具的作用范围根），
+    /// RepoRoot 是它所属的 git 仓库根。反查要用仓库根 —— agent 在仓库子目录里
+    /// 干活时也该落到同一个项目上，用子目录去匹配就匹配不上了。
+    /// 为空表示项目还没绑仓库。
+    /// </summary>
+    public string? RepoRoot { get; set; }
+
     /// <summary>允许 shell.run 执行的命令前缀（JSON 数组）。不在白名单里的一律拒绝。</summary>
     public string? AllowedCommandsJson { get; set; }
 
@@ -141,6 +152,7 @@ public class TaskItem
     public List<StatusEvent> StatusEvents { get; set; } = [];
     public List<Document> Documents { get; set; } = [];
     public List<Artifact> Artifacts { get; set; } = [];
+    public List<TaskFileChange> FileChanges { get; set; } = [];
     public List<Plan> Plans { get; set; } = [];
     public List<TestRun> TestRuns { get; set; } = [];
     public List<ReviewRound> ReviewRounds { get; set; } = [];
@@ -315,11 +327,27 @@ public class Approval
     public string? RequestedBy { get; set; }
     public string? DecidedBy { get; set; }
     public string? DecisionReason { get; set; }
+
+    /// <summary>
+    /// 裁决人所用人工凭证的指纹（哈希前 12 位，不存明文）。
+    ///
+    /// 共享 token 的现状下，「谁批的」只能靠 decidedBy 这个名字 —— 填错了系统不知道。
+    /// 记下凭证指纹，好歹能区分「同一个操作员」和「换了个人操作」，
+    /// 不用把 token 本身写进审计。
+    /// </summary>
+    public string? DecidedByCredential { get; set; }
     public string? ResultSummary { get; set; }
 
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset ExpiresAt { get; set; }
     public DateTimeOffset? DecidedAt { get; set; }
+
+    /// <summary>
+    /// 进入 Executing 的时刻。执行方崩了/被杀了，审批会永远卡在 Executing，
+    /// 既不能再批也不能再用。有了这个时间戳才能把「执行中断」的单子回收掉。
+    /// 为空表示老数据，回收时退回 <see cref="DecidedAt"/> 判定。
+    /// </summary>
+    public DateTimeOffset? ExecutingStartedAt { get; set; }
 }
 
 /// <summary>工具调用审计（append-only）。</summary>
@@ -340,6 +368,175 @@ public class ToolCallAudit
     public string? ResultSummary { get; set; }
     public int? RowsAffected { get; set; }
     public long DurationMs { get; set; }
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>
+    /// 审计记录的序号（从 1 开始，单调递增）。
+    ///
+    /// 哈希链靠它定序，不能靠时间戳 —— 同一时钟刻里写的两条记录时间戳一样，
+    /// 按时间排序它们的先后就是不确定的，链会误报断裂。
+    /// </summary>
+    public long Sequence { get; set; }
+
+    /// <summary>
+    /// 上一条审计的哈希。空表示这是哈希链的起点（或者本条是链启用前的老数据）。
+    /// </summary>
+    public string? PrevHash { get; set; }
+
+    /// <summary>
+    /// 本条审计内容的哈希（内容 + 上一条的哈希）。
+    ///
+    /// 有了它，「有人直接改了数据库文件」这件事能验出来：
+    /// 改动一改，链上的哈希就对不上了。应用层不提供改审计的入口，
+    /// 但拿到库文件的人能直接改 —— 这条链就是为了让那种改动**可发现**。
+    /// </summary>
+    public string? Hash { get; set; }
+}
+
+/// <summary>
+/// agent 会话 —— 一次「agent 干活」的过程。
+///
+/// 存在的理由：agent 的对话跟工作台之间本来没有任何关联。
+/// agent 自己记着「我在干哪个项目」，工作台只知道「某个 callerId 调了某个工具」——
+/// 两边对不上，审计里的项目/任务归属就只能靠 agent 自觉填。
+///
+/// 会话把两边接上：这次干活在哪个仓库、属于哪个项目、认领了哪个任务。
+/// 桥接启动时按工作目录自动绑定，agent 之后所有工具调用都自动归属到这里，
+/// 不用每次自己背项目 GUID。
+/// </summary>
+public class AgentSession
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+
+    public Guid ProjectId { get; set; }
+    public Project? Project { get; set; }
+
+    /// <summary>
+    /// 认领任务后回填。认领之前为空 —— 会话可以先于任务存在
+    /// （agent 先进来看看有什么活，再领）。
+    /// </summary>
+    public Guid? TaskId { get; set; }
+    public TaskItem? Task { get; set; }
+
+    /// <summary>外部 agent 的标识（agentId）。审计里用它区分是谁在干活。</summary>
+    public string AgentId { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 会话所在仓库的根（已解符号链接的绝对路径）。
+    /// 项目绑了仓库后，agent 在这个仓库里干活 → 会话绑定到该项目。
+    /// </summary>
+    public string RepoPath { get; set; } = string.Empty;
+
+    /// <summary>
+    /// MCP 协议会话 id。同一个协议会话复用同一条 agent 会话，
+    /// 免得每次工具调用都新开一条（审计里会碎成一堆）。
+    /// </summary>
+    public string? McpSessionId { get; set; }
+
+    public DateTimeOffset StartedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>最后一次有动静的时间。用来判断会话是不是还活着。</summary>
+    public DateTimeOffset LastSeenAt { get; set; } = DateTimeOffset.UtcNow;
+
+    public DateTimeOffset? EndedAt { get; set; }
+}
+
+/// <summary>
+/// 任务的产出文件 —— 开发过程中实际改了哪些文件。
+///
+/// 这是「产出可追溯」的落地：不是 agent 说它改了什么，而是工作台自己去
+/// git 里数出来。采集点在提交之后（闸门执行完）与进入评审之前，
+/// agent 绕不过去。
+/// </summary>
+public class TaskFileChange
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+
+    public Guid TaskId { get; set; }
+    public TaskItem? Task { get; set; }
+
+    public Guid ProjectId { get; set; }
+    public Project? Project { get; set; }
+
+    /// <summary>哪次 agent 会话干的。审计里能顺着会话查到人。</summary>
+    public Guid? SessionId { get; set; }
+    public AgentSession? Session { get; set; }
+
+    /// <summary>仓库相对路径。</summary>
+    public string Path { get; set; } = string.Empty;
+
+    /// <summary>变更类型：Added / Modified / Deleted / Renamed。</summary>
+    public string ChangeKind { get; set; } = "Modified";
+
+    /// <summary>重命名前的路径。只有 Renamed 才有值。</summary>
+    public string? OldPath { get; set; }
+
+    public int LinesAdded { get; set; }
+    public int LinesDeleted { get; set; }
+
+    /// <summary>
+    /// 对应的 commit。空表示「工作区里改了但还没提交」——
+    /// 那种改动照样要能追到。
+    /// </summary>
+    public string? CommitSha { get; set; }
+
+    public string? Branch { get; set; }
+    public string? Author { get; set; }
+
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
+/// <summary>
+/// 一次数据库调用的结构化记录。
+///
+/// 工具审计表是通用的（所有工具都往里写），SQL 原文、目标库、目标表
+/// 埋在那儿的 JSON 里，查不动。这里单独一张表，把「谁在什么时候对哪个库的
+/// 哪张表跑了什么 SQL、影响几行、谁批的」摊成列。
+/// </summary>
+public class DbCallRecord
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+
+    /// <summary>对应的工具审计记录 id。</summary>
+    public Guid? AuditId { get; set; }
+
+    public Guid ProjectId { get; set; }
+    public Project? Project { get; set; }
+
+    public Guid? TaskId { get; set; }
+    public TaskItem? Task { get; set; }
+
+    public Guid? SessionId { get; set; }
+
+    public Guid? ConnectionId { get; set; }
+
+    /// <summary>工具名：db_query / db_execute / db_schema 等。</summary>
+    public string ToolName { get; set; } = string.Empty;
+
+    public string? Server { get; set; }
+    public string? Database { get; set; }
+
+    /// <summary>SQL 原文。</summary>
+    public string? Sql { get; set; }
+
+    /// <summary>只读 / 写 / 认不出来（Read / Write / Unknown）。</summary>
+    public string? Kind { get; set; }
+
+    /// <summary>目标表，多个用逗号分隔。</summary>
+    public string? TargetTables { get; set; }
+
+    public int? RowsAffected { get; set; }
+
+    /// <summary>success / denied / error / pending。</summary>
+    public string? Outcome { get; set; }
+
+    public Guid? ApprovalId { get; set; }
+
+    /// <summary>谁调的（agent 标识）。</summary>
+    public string? CallerId { get; set; }
+
+    public long DurationMs { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
 
@@ -399,6 +596,13 @@ public class ReviewRound
     public string? Reviewer { get; set; }
     public DateTimeOffset StartedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset? FinishedAt { get; set; }
+
+    /// <summary>
+    /// 开轮时的仓库 HEAD。评审评的是「这一版代码」——
+    /// 评完之后代码又变了，这轮的结论就不再对应当前要结项的东西。
+    /// 为空表示老轮次（或项目没配仓库），结项门禁跳过这项校验以保持兼容。
+    /// </summary>
+    public string? CommitHash { get; set; }
 
     public List<ReviewItem> Items { get; set; } = [];
 }

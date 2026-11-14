@@ -17,8 +17,12 @@ namespace Workbench.Documents;
 /// </summary>
 public static class MarkdownRenderer
 {
-    private static readonly MarkdownPipeline Pipeline = new MarkdownPipelineBuilder()
-        .UseAdvancedExtensions()
+    /// <summary>
+    /// 扩展链见 <see cref="MarkdownPipelineFactory"/>：**不含 GenericAttributes**，
+    /// 否则 <c>{onerror=...}</c> 会绕过 DisableHtml 直接挂到标签上。
+    /// </summary>
+    private static readonly MarkdownPipeline Pipeline = MarkdownPipelineFactory
+        .CreateBuilder()
         .DisableHtml()
         .Build();
 

@@ -51,8 +51,15 @@ internal static class MarkdownLinkSanitizer
                     var url = link.GetDynamicUrl is not null ? link.GetDynamicUrl() ?? link.Url : link.Url;
                     if (!LinkUrlPolicy.IsSafe(url))
                     {
-                        // 降级：留文字不留链接。换成空壳容器，子节点（文字与内嵌格式）原样搬过去
-                        link.ReplaceBy(new ContainerInline(), copyChildren: true);
+                        // 降级：留文字不留链接。换成空壳容器，子节点（文字与内嵌格式）原样搬过去。
+                        //
+                        // **搬完必须再消毒一遍**：子节点里可能还藏着危险链接
+                        // （`[<javascript:alert(1)>](javascript:void(0))` 的子节点就是一个
+                        // AutolinkInline）。只换壳不递归，等于把毒从壳里放出来 ——
+                        // 实测会渲染出 <a href="javascript:alert(1)">。
+                        var replacement = new ContainerInline();
+                        link.ReplaceBy(replacement, copyChildren: true);
+                        SanitizeInlines(replacement);
                         continue;
                     }
 
@@ -65,6 +72,7 @@ internal static class MarkdownLinkSanitizer
                     var url = autolink.IsEmail ? "mailto:" + autolink.Url : autolink.Url;
                     if (!LinkUrlPolicy.IsSafe(url))
                     {
+                        // 自动链接没有子节点，直接换成字面文字即可
                         autolink.ReplaceBy(
                             new LiteralInline { Content = new Markdig.Helpers.StringSlice(autolink.Url) },
                             copyChildren: false);
