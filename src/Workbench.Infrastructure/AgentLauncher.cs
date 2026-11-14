@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using System.Threading.Channels;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -111,8 +112,19 @@ public sealed class AgentLauncher(
         Directory.CreateDirectory(runDir);
         var logPath = Path.Combine(runDir, $"{clock.UtcNow:yyyyMMdd-HHmmss-fff}.log");
 
-        var stdoutTask = PumpAsync(process.StandardOutput, logPath, "stdout");
-        var stderrTask = PumpAsync(process.StandardError, logPath, "stderr");
+        // 单 writer：两个 reader 泵入 Channel，由一个消费循环写盘。
+        // 以前是两路各开一个 StreamWriter(append) 写同一文件 —— Windows 上
+        // 第二个 StreamWriter 直接抛 IOException 被吞掉，该路输出全丢；
+        // 管道没人读，写满后子进程阻塞在 write 上，整个 agent 死锁。
+        var logChannel = Channel.CreateUnbounded<string>(new UnboundedChannelOptions
+        {
+            SingleReader = true,
+            SingleWriter = false
+        });
+
+        var stdoutTask = PumpAsync(process.StandardOutput, "stdout", logChannel.Writer);
+        var stderrTask = PumpAsync(process.StandardError, "stderr", logChannel.Writer);
+        var logTask = WriteLogAsync(logChannel.Reader, logPath);
 
         db.StatusEvents.Add(new StatusEvent
         {
@@ -123,6 +135,12 @@ public sealed class AgentLauncher(
             Source = TaskEventSource.Human,
             Actor = "launcher",
             Note = $"已拉起外部 agent（PID {process.Id}）：{command}",
+            EventType = TaskEventTypes.AgentLaunched,
+            Payload = WorkbenchJson.Serialize(new
+            {
+                pid = process.Id,
+                command = Truncate(command, 4000)
+            }),
             CreatedAt = clock.UtcNow
         });
 
@@ -130,20 +148,19 @@ public sealed class AgentLauncher(
         task.LastActivityAt = clock.UtcNow;
         await db.SaveChangesAsync(cancellationToken);
 
-        _ = WatchAsync(process, taskId, logPath, stdoutTask, stderrTask, scopeFactory);
+        _ = WatchAsync(process, taskId, logPath, stdoutTask, stderrTask, logChannel.Writer, logTask, scopeFactory);
 
         return new AgentLaunchResult(true, process.Id, command, workingDirectory, null);
     }
 
-    private static async Task PumpAsync(StreamReader reader, string logPath, string tag)
+    /// <summary>把一路输出泵入 channel（不直接写盘 —— 写盘只有 WriteLogAsync 一个 writer）。</summary>
+    private static async Task PumpAsync(StreamReader reader, string tag, ChannelWriter<string> writer)
     {
         try
         {
-            await using var writer = new StreamWriter(logPath, append: true, Encoding.UTF8);
             while (await reader.ReadLineAsync() is { } line)
             {
-                await writer.WriteLineAsync($"[{tag}] {line}");
-                await writer.FlushAsync();
+                await writer.WriteAsync($"[{tag}] {line}");
             }
         }
         catch (Exception)
@@ -152,6 +169,31 @@ public sealed class AgentLauncher(
         }
     }
 
+    /// <summary>
+    /// 唯一的日志 writer。进程退出、两路 reader 都收尾后，channel 被 Complete，
+    /// 这里把剩余内容 drain 完才关文件 —— 保证退出事件里读到的日志尾部是完整的。
+    /// </summary>
+    private static async Task WriteLogAsync(ChannelReader<string> reader, string logPath)
+    {
+        try
+        {
+            await using var writer = new StreamWriter(logPath, append: true, Encoding.UTF8);
+            await foreach (var line in reader.ReadAllAsync())
+            {
+                await writer.WriteLineAsync(line);
+                await writer.FlushAsync();
+            }
+        }
+        catch (Exception)
+        {
+            // 日志写失败（磁盘满等）不能影响 agent 本身
+        }
+    }
+
+    /// <summary>Payload 有列宽上限（16000），命令可能很长 —— 截断到安全长度。</summary>
+    private static string Truncate(string value, int maxChars) =>
+        value.Length <= maxChars ? value : value[..maxChars];
+
     /// <summary>进程结束后补一条事件。用独立 scope，因为发起请求的 scope 早就结束了。</summary>
     private static async Task WatchAsync(
         Process process,
@@ -159,9 +201,12 @@ public sealed class AgentLauncher(
         string logPath,
         Task stdoutTask,
         Task stderrTask,
+        ChannelWriter<string> logWriter,
+        Task logTask,
         IServiceScopeFactory scopeFactory)
     {
         var processId = process.Id;
+        int? exitCode = null;
 
         try
         {
@@ -178,12 +223,23 @@ public sealed class AgentLauncher(
                     if (!process.HasExited)
                     {
                         process.Kill(entireProcessTree: true);
+                        // 等它真的退出，下面才拿得到 ExitCode
+                        await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
                     }
                 }
                 catch (Exception)
                 {
                     // 进程可能已经退出
                 }
+            }
+
+            try
+            {
+                exitCode = process.ExitCode;
+            }
+            catch (Exception)
+            {
+                // 进程句柄失效等极端情况：退出码拿不到就留空
             }
         }
         catch (Exception)
@@ -202,6 +258,18 @@ public sealed class AgentLauncher(
         }
         finally
         {
+            // 两路 reader 都收尾了才关 channel；等唯一 writer 把剩余日志 drain 完，
+            // 之后 ReadTail 读到的才是完整日志。
+            logWriter.TryComplete();
+            try
+            {
+                await logTask;
+            }
+            catch (Exception)
+            {
+                // 忽略
+            }
+
             // 进程句柄用完就放掉
             process.Dispose();
         }
@@ -228,6 +296,8 @@ public sealed class AgentLauncher(
                 Source = TaskEventSource.System,
                 Actor = "launcher",
                 Note = $"外部 agent 进程 {processId} 已退出。日志: {logPath}",
+                EventType = TaskEventTypes.AgentExited,
+                Payload = WorkbenchJson.Serialize(new { exitCode }),
                 CreatedAt = DateTimeOffset.UtcNow
             });
 

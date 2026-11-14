@@ -83,6 +83,21 @@ public static class ShellCommandPolicy
 
 public sealed class ShellRunner : IShellRunner
 {
+    /// <summary>
+    /// stdout / stderr 各自最多保留的字节数（1 MB）。
+    ///
+    /// 以前是 ReadToEndAsync：一条 `yes` 或刷屏的构建日志就能把宿主内存吃光。
+    /// 现在超过上限的部分**照样读、但丢弃** —— 不读的话管道缓冲会被写满，
+    /// 子进程阻塞在 write 上永远退不出来，最后只能等 10 分钟超时。
+    /// </summary>
+    internal const int OutputCapBytes = 1024 * 1024;
+
+    /// <summary>截断标记。调用方（和看审计的人）必须能看出输出不全。</summary>
+    internal const string TruncationMarker = "\n…[输出超过 1 MB，已截断，后续内容丢弃]…\n";
+
+    /// <summary>命令执行上限。</summary>
+    internal static readonly TimeSpan RunTimeout = TimeSpan.FromMinutes(10);
+
     public bool IsAllowed(string? allowedCommandsJson, string command) =>
         IsAllowed(ParseAllowed(allowedCommandsJson), command);
 
@@ -136,25 +151,30 @@ public sealed class ShellRunner : IShellRunner
         using var process = System.Diagnostics.Process.Start(startInfo)
                            ?? throw new WorkbenchException($"无法启动进程: {tokens[0]}");
 
-        var stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-        var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
+        // 两个流必须**并发**读，而且各自带上限：顺序读会互等死锁，无上限读会吃光内存。
+        var stdoutTask = ReadCappedAsync(process.StandardOutput, cancellationToken);
+        var stderrTask = ReadCappedAsync(process.StandardError, cancellationToken);
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromMinutes(10));
+        timeout.CancelAfter(RunTimeout);
 
         try
         {
             await process.WaitForExitAsync(timeout.Token);
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            // 调用方主动取消 —— 不是超时，别把取消说成超时
-            KillQuietly(process);
-            throw;
-        }
         catch (OperationCanceledException)
         {
-            KillQuietly(process);
+            // 超时或调用方取消：都得杀进程树，并把两个读任务收尾。
+            // 不收尾的话，被掐断的管道会让读任务以异常结束，留下没人观察的 Task 异常。
+            await KillQuietlyAsync(process);
+            await DrainAsync(stdoutTask, stderrTask);
+
+            if (cancellationToken.IsCancellationRequested)
+            {
+                // 调用方主动取消 —— 不是超时，别把取消说成超时
+                throw;
+            }
+
             throw new WorkbenchException("命令执行超时（10 分钟），已终止。");
         }
 
@@ -164,8 +184,68 @@ public sealed class ShellRunner : IShellRunner
         return new ShellResult(process.ExitCode == 0, process.ExitCode, stdout, stderr);
     }
 
-    /// <summary>杀掉进程树。进程可能已经退出，失败就算了。</summary>
-    private static void KillQuietly(Process process)
+    /// <summary>
+    /// 读一个流，最多保留 <see cref="OutputCapBytes"/> 字节，超出部分丢弃并打上截断标记。
+    /// 用 BaseStream 按字节读，解码沿用进程自己的输出编码，避免把多字节字符切成乱码。
+    /// </summary>
+    private static async Task<string> ReadCappedAsync(StreamReader reader, CancellationToken cancellationToken)
+    {
+        var stream = reader.BaseStream;
+        var encoding = reader.CurrentEncoding;
+        var buffer = new byte[8192];
+        using var kept = new MemoryStream();
+        var truncated = false;
+
+        while (true)
+        {
+            int read;
+            try
+            {
+                read = await stream.ReadAsync(buffer.AsMemory(), cancellationToken);
+            }
+            catch (IOException)
+            {
+                // 进程被杀 / 管道被掐断：拿到多少算多少
+                break;
+            }
+
+            if (read == 0)
+            {
+                break;
+            }
+
+            if (kept.Length < OutputCapBytes)
+            {
+                var take = (int)Math.Min(read, OutputCapBytes - kept.Length);
+                kept.Write(buffer, 0, take);
+                truncated |= take < read;
+            }
+            else
+            {
+                // 已经满了：继续读并丢弃，只为让子进程能写完退出
+                truncated = true;
+            }
+        }
+
+        var text = encoding.GetString(kept.ToArray());
+        return truncated ? text + TruncationMarker : text;
+    }
+
+    /// <summary>把读任务收尾（最多等一会儿），免得留下没人看的任务异常。</summary>
+    private static async Task DrainAsync(params Task[] tasks)
+    {
+        try
+        {
+            await Task.WhenAll(tasks).WaitAsync(TimeSpan.FromSeconds(2));
+        }
+        catch
+        {
+            // 读任务可能以异常收尾（管道被掐断）：这里忽略，真正该报的问题在别处。
+        }
+    }
+
+    /// <summary>杀掉进程树并回收。进程可能已经退出，失败就算了。</summary>
+    private static async Task KillQuietlyAsync(Process process)
     {
         try
         {
@@ -177,6 +257,16 @@ public sealed class ShellRunner : IShellRunner
         catch (Exception)
         {
             // 进程可能已经退出
+        }
+
+        try
+        {
+            // 不回收的话 Unix 下会留下僵尸进程
+            await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        catch (Exception)
+        {
+            // 收不回来就算了
         }
     }
 }

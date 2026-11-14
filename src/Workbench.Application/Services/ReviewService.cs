@@ -28,6 +28,10 @@ public interface IReviewService : IReviewGate
     /// <paramref name="skipped"/> 为 true 表示这个维度**不适用**（跳过）——
     /// 枚举里一直有 Skipped，但以前没有任何入口能写出来，
     /// 于是「本次改动不涉及安全维度」这类情况只能硬编一个通过。
+    ///
+    /// 跳过有两条硬约束：必须在 <paramref name="findings"/> 里写明理由，
+    /// 且每轮最多跳 <see cref="ReviewService.MaxSkippedPerRound"/> 个 ——
+    /// 否则七个维度全标「不适用」就能结项。
     /// </summary>
     Task<ReviewItemDto> SubmitAsync(
         Guid taskId,
@@ -74,6 +78,11 @@ public class ReviewGateException(ReviewGateDto gate)
             parts.Add($"不通过: {string.Join("、", gate.FailedDimensions)}");
         }
 
+        if (gate.BlockReason is not null)
+        {
+            parts.Add(gate.BlockReason);
+        }
+
         return $"评审还没过（{string.Join("；", parts)}）。" +
                "用 workbench_submit_review 回写每个维度的结论，全部通过后才能结项。";
     }
@@ -81,6 +90,14 @@ public class ReviewGateException(ReviewGateDto gate)
 
 public sealed class ReviewService(IAppDbContext db, IClock clock, IGitInspector git) : IReviewService, IReviewGate
 {
+    /// <summary>
+    /// 每轮最多允许跳过几个维度。
+    ///
+    /// Skipped 是「这个维度不适用」，不是「这个维度懒得评」。
+    /// 不设上限的话，七个维度全标 Skipped 就能结项，门禁形同虚设。
+    /// </summary>
+    public const int MaxSkippedPerRound = 2;
+
     public async Task<ReviewRoundDto> StartAsync(
         Guid taskId,
         string? reviewer = null,
@@ -88,6 +105,13 @@ public sealed class ReviewService(IAppDbContext db, IClock clock, IGitInspector 
     {
         var task = await db.Tasks.FirstOrDefaultAsync(t => t.Id == taskId, cancellationToken)
                    ?? throw new NotFoundException("任务", taskId);
+
+        var project = await db.Projects.AsNoTracking()
+            .FirstOrDefaultAsync(p => p.Id == task.ProjectId, cancellationToken);
+
+        // 轮次绑 commit：评的是「这一版代码」。开轮时把 HEAD 记下来，
+        // 结项门禁才能判断「评完之后代码是不是又变了」。
+        var commitHash = ReadHeadSha(project);
 
         // 轮次号可能撞车：并发开轮时两个请求会算出同一个号。
         // 唯一索引挡得住，撞了就重算一个再来。
@@ -106,6 +130,7 @@ public sealed class ReviewService(IAppDbContext db, IClock clock, IGitInspector 
                 Round = nextRound + 1,
                 Verdict = ReviewVerdict.Pending,
                 Reviewer = reviewer,
+                CommitHash = commitHash,
                 StartedAt = clock.UtcNow
             };
 
@@ -133,6 +158,14 @@ public sealed class ReviewService(IAppDbContext db, IClock clock, IGitInspector 
                 Source = TaskEventSource.Agent,
                 Actor = reviewer,
                 Note = $"开始第 {round.Round} 轮评审（{round.Items.Count} 个维度）",
+                EventType = TaskEventTypes.ReviewRoundOpened,
+                Payload = WorkbenchJson.Serialize(new
+                {
+                    round = round.Round,
+                    dimensions = round.Items.Count,
+                    commitHash,
+                    reviewer
+                }),
                 CreatedAt = clock.UtcNow
             });
 
@@ -185,12 +218,16 @@ public sealed class ReviewService(IAppDbContext db, IClock clock, IGitInspector 
             ? []
             : git.Inspect(project!.RepoPath!).ChangedFilePaths;
 
+        // 任务摘要复用 TaskService 的映射 —— 别在这儿抄第二份，
+        // 抄的那份漏了 IsArchived/Assignee/Priority/DueAt/Weight/PendingDependencies/Stale。
+        var pending = await PendingDependencyCounts.CountAsync(db, [taskId], cancellationToken);
+
         return new ReviewPackDto(
             ToDto(current),
-            ToTaskDto(task, project),
-            plan is null ? null : ToPlanDto(plan),
-            artifacts.Select(ToArtifactDto).ToList(),
-            documents.Select(ToDocumentDto).ToList(),
+            TaskService.ToSummary(task, project, clock.UtcNow, pending.GetValueOrDefault(taskId)),
+            plan is null ? null : TaskService.ToPlanDto(plan),
+            artifacts.Select(TaskService.ToArtifactDto).ToList(),
+            documents.Select(TaskService.ToDocumentDto).ToList(),
             changedFiles,
             ReviewDimensions.All
                 .Select(d => new ReviewDimensionDto(d.Key, d.Name, d.Question, d.Checklist))
@@ -218,6 +255,26 @@ public sealed class ReviewService(IAppDbContext db, IClock clock, IGitInspector 
 
         var item = current.Items.FirstOrDefault(i => string.Equals(i.Dimension, definition.Key, StringComparison.OrdinalIgnoreCase))
                    ?? throw new WorkbenchException($"本轮没有「{definition.Name}」这个维度。");
+
+        // Skipped 的两条约束（只约束**新写入**，老数据不动 —— 历史轮次不能被新规则判成违规）：
+        // 1. 必须写明为什么不适用，不能空着一个「跳过」就混过去；
+        // 2. 每轮最多跳 2 个，否则七个维度全标 Skipped 就能结项。
+        if (skipped)
+        {
+            if (string.IsNullOrWhiteSpace(findings))
+            {
+                throw new WorkbenchException(
+                    $"跳过「{definition.Name}」必须在 findings 里写明理由（为什么不适用）。");
+            }
+
+            var alreadySkipped = current.Items.Count(i => i.Status == ReviewStatus.Skipped && i.Id != item.Id);
+            if (alreadySkipped >= MaxSkippedPerRound)
+            {
+                throw new WorkbenchException(
+                    $"每轮最多跳过 {MaxSkippedPerRound} 个维度，本轮已经跳了 {alreadySkipped} 个。" +
+                    $"「{definition.Name}」必须给出通过/不通过的结论。");
+            }
+        }
 
         item.Status = skipped ? ReviewStatus.Skipped : (passed ? ReviewStatus.Passed : ReviewStatus.Failed);
         item.Findings = findings;
@@ -249,8 +306,39 @@ public sealed class ReviewService(IAppDbContext db, IClock clock, IGitInspector 
             Actor = item.Reviewer,
             Note = $"评审[{definition.Name}] {(skipped ? "不适用" : (passed ? "通过" : "不通过"))}" +
                    (string.IsNullOrWhiteSpace(findings) ? "" : $"：{findings}"),
+            EventType = TaskEventTypes.ReviewDimensionResult,
+            Payload = WorkbenchJson.Serialize(new
+            {
+                round = current.Round,
+                dimension = definition.Key,
+                result = item.Status.ToString(),
+                reviewer = item.Reviewer
+            }),
             CreatedAt = clock.UtcNow
         });
+
+        if (decided)
+        {
+            // 轮次收尾也要留痕：消费方按 EventType 就能 replay 出「第几轮什么时候定的什么结论」
+            db.StatusEvents.Add(new StatusEvent
+            {
+                TaskId = taskId,
+                FromStatus = null,
+                ToStatus = null,
+                Source = TaskEventSource.Agent,
+                Actor = item.Reviewer,
+                Note = $"第 {current.Round} 轮评审结束：{current.Verdict}",
+                EventType = TaskEventTypes.ReviewRoundClosed,
+                Payload = WorkbenchJson.Serialize(new
+                {
+                    round = current.Round,
+                    verdict = current.Verdict.ToString(),
+                    skipped = current.Items.Count(i => i.Status == ReviewStatus.Skipped),
+                    commitHash = current.CommitHash
+                }),
+                CreatedAt = clock.UtcNow
+            });
+        }
 
         await db.SaveChangesAsync(cancellationToken);
 
@@ -288,7 +376,10 @@ public sealed class ReviewService(IAppDbContext db, IClock clock, IGitInspector 
 
     public async Task<ReviewGateDto> GetGateAsync(Guid taskId, CancellationToken cancellationToken = default)
     {
-        var current = await LoadRoundAsync(taskId, null, cancellationToken);
+        // 门禁是**只读判定**，必须看库里的真实结论：跟踪查询会优先返回内存里的旧实例，
+        // 绕过 SaveChanges 的写入（批量 ExecuteUpdate / 升级脚本 / 另一个进程）它看不见，
+        // 老数据里已经写好的 Skipped 会被当成「待评审」，任务就永远结不了项。
+        var current = await LoadRoundAsync(taskId, null, cancellationToken, asNoTracking: true);
 
         if (current is null)
         {
@@ -339,8 +430,65 @@ public sealed class ReviewService(IAppDbContext db, IClock clock, IGitInspector 
             }
         }
 
-        return new ReviewGateDto(true, current.Verdict.ToString(), failed, pending);
+        // Skipped 既不算待评审也不算不通过 —— 「不适用」是一种结论。
+        // 上限（每轮 2 个）与「必须写理由」在**写入时**拦（见 SubmitAsync），
+        // 这里不再重复校验：老数据里可能有超限/无理由的 Skipped，
+        // 拿新规则去判历史轮次会把本来能结项的任务卡死。
+
+        return new ReviewGateDto(
+            true,
+            current.Verdict.ToString(),
+            failed,
+            pending,
+            await CheckCommitAsync(taskId, current, cancellationToken));
     }
+
+    /// <summary>
+    /// 轮次绑 commit 的门禁：评的是那一版代码，评完之后代码变了就得重评。
+    ///
+    /// 三种情况：
+    /// - 老轮次（没有 CommitHash）→ 跳过校验，保持兼容；
+    /// - 有 CommitHash 且读得到 HEAD → 不一致就拒；
+    /// - 有 CommitHash 但**读不到 HEAD** → 也拒。
+    ///   「不知道现在是什么代码」不等于「代码没变」（规矩 10 的同一条精神）。
+    /// </summary>
+    private async Task<string?> CheckCommitAsync(
+        Guid taskId,
+        ReviewRound current,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(current.CommitHash))
+        {
+            return null;
+        }
+
+        var projectId = await db.Tasks.AsNoTracking()
+            .Where(t => t.Id == taskId)
+            .Select(t => (Guid?)t.ProjectId)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        var project = projectId is null
+            ? null
+            : await db.Projects.AsNoTracking().FirstOrDefaultAsync(p => p.Id == projectId.Value, cancellationToken);
+
+        var head = ReadHeadSha(project);
+
+        if (head is null)
+        {
+            return $"第 {current.Round} 轮评审绑定的是 commit {Short(current.CommitHash)}，" +
+                   "但现在读不到仓库 HEAD，无法确认代码是否变更。请开新轮评审。";
+        }
+
+        if (!string.Equals(head, current.CommitHash, StringComparison.OrdinalIgnoreCase))
+        {
+            return $"评审后代码已变更（评审时 {Short(current.CommitHash)} → 当前 {Short(head)}），请开新轮评审。";
+        }
+
+        return null;
+    }
+
+    private static string Short(string? sha) =>
+        string.IsNullOrEmpty(sha) ? "(未知)" : sha[..Math.Min(8, sha.Length)];
 
     /// <summary>
     /// 这一轮的维度是不是都有结论了。
@@ -397,13 +545,27 @@ public sealed class ReviewService(IAppDbContext db, IClock clock, IGitInspector 
         return (decided, allPassed);
     }
 
-    private async Task<ReviewRound?> LoadRoundAsync(Guid taskId, int? round, CancellationToken cancellationToken)
+    /// <summary>
+    /// 取一轮评审（含维度项）。
+    /// <paramref name="asNoTracking"/> 供只读判定用：跳过变更跟踪，直接读库里的当前值；
+    /// 写入路径（SubmitAsync）必须保持跟踪，否则改不动实体。
+    /// </summary>
+    private async Task<ReviewRound?> LoadRoundAsync(
+        Guid taskId,
+        int? round,
+        CancellationToken cancellationToken,
+        bool asNoTracking = false)
     {
         var query = db.ReviewRounds.Where(r => r.TaskId == taskId);
 
         if (round is not null)
         {
             query = query.Where(r => r.Round == round.Value);
+        }
+
+        if (asNoTracking)
+        {
+            query = query.AsNoTracking();
         }
 
         var entity = await query
@@ -415,8 +577,14 @@ public sealed class ReviewService(IAppDbContext db, IClock clock, IGitInspector 
             return null;
         }
 
-        var items = await db.ReviewItems
-            .Where(i => i.ReviewRoundId == entity.Id)
+        var itemsQuery = db.ReviewItems.Where(i => i.ReviewRoundId == entity.Id);
+
+        if (asNoTracking)
+        {
+            itemsQuery = itemsQuery.AsNoTracking();
+        }
+
+        var items = await itemsQuery
             .OrderBy(i => i.Order)
             .ToListAsync(cancellationToken);
 
@@ -435,7 +603,8 @@ public sealed class ReviewService(IAppDbContext db, IClock clock, IGitInspector 
             round.Reviewer,
             round.StartedAt,
             round.FinishedAt,
-            (items ?? round.Items).OrderBy(i => i.Order).Select(ToItemDto).ToList());
+            (items ?? round.Items).OrderBy(i => i.Order).Select(ToItemDto).ToList(),
+            round.CommitHash);
 
     private static ReviewItemDto ToItemDto(ReviewItem item) =>
         new(
@@ -450,29 +619,25 @@ public sealed class ReviewService(IAppDbContext db, IClock clock, IGitInspector 
             item.Reviewer,
             item.DecidedAt);
 
-    private static TaskSummaryDto ToTaskDto(TaskItem task, Project? project) =>
-        new(
-            task.Id,
-            task.ProjectId,
-            project?.Name ?? string.Empty,
-            task.Title,
-            task.Status,
-            task.ClaimedByAgentId,
-            task.LeaseExpiresAt,
-            task.UpdatedAt,
-            task.LastActivityAt,
-            false,
-            task.MilestoneId,
-            task.Key,
-            task.Type,
-            task.Branch);
+    /// <summary>
+    /// 读仓库当前 HEAD。项目没配仓库、git 读不出来（不是仓库、git 不可用、HEAD 为空）
+    /// 一律返回 null —— 调用方必须按「读不到」处理，不能当成「没变化」。
+    /// </summary>
+    private string? ReadHeadSha(Project? project)
+    {
+        if (string.IsNullOrWhiteSpace(project?.RepoPath))
+        {
+            return null;
+        }
 
-    private static PlanDto ToPlanDto(Plan p) =>
-        new(p.Id, p.Version, p.Background, p.Understanding, p.Breakdown, p.AcceptanceCriteria, p.Risks, p.Author, p.CreatedAt);
-
-    private static ArtifactDto ToArtifactDto(Artifact a) =>
-        new(a.Id, a.Type.ToString(), a.Title, a.Content, a.ExternalPath, a.CommitSha, a.Branch, a.Author, a.CreatedAt);
-
-    private static DocumentDto ToDocumentDto(Document d) =>
-        new(d.Id, d.FileName, d.SizeBytes, d.Format.ToString(), d.Kind, d.Parsed, d.UploadedAt, d.ParseError, d.StoredPath);
+        try
+        {
+            var state = git.Inspect(project!.RepoPath!);
+            return string.IsNullOrWhiteSpace(state.HeadSha) ? null : state.HeadSha;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
 }

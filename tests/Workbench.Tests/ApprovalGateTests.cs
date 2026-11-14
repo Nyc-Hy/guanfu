@@ -84,7 +84,7 @@ public class ApprovalGateTests
         Assert.False(first.Ok);
         Assert.NotEqual(Guid.Empty, first.ApprovalId);
 
-        await host.Approvals.DecideAsync(first.ApprovalId, approve: true);
+        await host.Approvals.DecideAsync(first.ApprovalId, approve: true, decidedBy: "tester");
 
         // 同一条审批，换一条命令 —— 必须被拒
         var second = await tools.RunShellAsync(project.Id, "echo pwned", approvalId: first.ApprovalId);
@@ -103,7 +103,7 @@ public class ApprovalGateTests
         await projects.UpdateConfigAsync(project.Id, repoPath: "/tmp", allowedCommands: ["echo", "git"]);
 
         var first = await tools.RunShellAsync(project.Id, "echo hello", waitSeconds: 1);
-        await host.Approvals.DecideAsync(first.ApprovalId, approve: true);
+        await host.Approvals.DecideAsync(first.ApprovalId, approve: true, decidedBy: "tester");
 
         // 批的是 shell_run，拿去调 git_commit —— 审批类型都不一样
         var second = await tools.CommitAsync(project.Id, "偷偷提交", approvalId: first.ApprovalId);
@@ -122,7 +122,7 @@ public class ApprovalGateTests
         await projects.UpdateConfigAsync(project.Id, repoPath: "/tmp", allowedCommands: ["echo", "git"]);
 
         var first = await tools.CommitAsync(project.Id, "提交 A", waitSeconds: 1);
-        await host.Approvals.DecideAsync(first.ApprovalId, approve: true);
+        await host.Approvals.DecideAsync(first.ApprovalId, approve: true, decidedBy: "tester");
 
         // 审批的是「提交 A」，这里提交「提交 B」
         var second = await tools.CommitAsync(project.Id, "提交 B", approvalId: first.ApprovalId);
@@ -141,7 +141,7 @@ public class ApprovalGateTests
         await projects.UpdateConfigAsync(project.Id, repoPath: "/tmp", allowedCommands: ["echo", "git"]);
 
         var first = await tools.CommitAsync(project.Id, "提交 A", waitSeconds: 1);
-        await host.Approvals.DecideAsync(first.ApprovalId, approve: true);
+        await host.Approvals.DecideAsync(first.ApprovalId, approve: true, decidedBy: "tester");
 
         var ok = await tools.CommitAsync(project.Id, "提交 A", approvalId: first.ApprovalId);
         Assert.True(ok.Ok, "第一次执行应该成功");
@@ -163,7 +163,7 @@ public class ApprovalGateTests
         await projects.UpdateConfigAsync(project.Id, repoPath: "/tmp", allowedCommands: ["echo", "git"]);
 
         var first = await tools.CommitAsync(project.Id, "提交 A", waitSeconds: 1);
-        await host.Approvals.DecideAsync(first.ApprovalId, approve: true);
+        await host.Approvals.DecideAsync(first.ApprovalId, approve: true, decidedBy: "tester");
 
         var results = await Task.WhenAll(
             tools.CommitAsync(project.Id, "提交 A", approvalId: first.ApprovalId),
@@ -183,7 +183,7 @@ public class ApprovalGateTests
         await projects.UpdateConfigAsync(project.Id, repoPath: "/tmp", allowedCommands: ["echo", "git"]);
 
         var first = await tools.CommitAsync(project.Id, "提交 A", waitSeconds: 1);
-        await host.Approvals.DecideAsync(first.ApprovalId, approve: true);
+        await host.Approvals.DecideAsync(first.ApprovalId, approve: true, decidedBy: "tester");
 
         host.Clock.Advance(TimeSpan.FromHours(2));
 
@@ -251,7 +251,7 @@ public class ApprovalGateTests
         await projects.UpdateConfigAsync(project.Id, repoPath: "/tmp", allowedCommands: ["echo", "git"]);
 
         var first = await tools.CommitAsync(project.Id, "提交 A", waitSeconds: 1);
-        await host.Approvals.DecideAsync(first.ApprovalId, approve: true);
+        await host.Approvals.DecideAsync(first.ApprovalId, approve: true, decidedBy: "tester");
 
         var second = await tools.CommitAsync(project.Id, "提交 A", approvalId: first.ApprovalId);
 

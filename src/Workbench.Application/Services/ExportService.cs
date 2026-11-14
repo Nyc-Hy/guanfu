@@ -219,19 +219,34 @@ public sealed class ExportService(IAppDbContext db, IReviewService reviews) : IE
             .Replace("\n", " ", StringComparison.Ordinal);
     }
 
-    private static string Csv(string? value)
+    /// <summary>
+    /// CSV 单元格转义 + **公式注入防护**。
+    ///
+    /// Excel / LibreOffice 会把 =、+、-、@（以及制表符、回车）开头的单元格当公式执行：
+    /// 任务备注这种用户可控文本写成 `=HYPERLINK("http://evil","点我")` 甚至 DDE 命令，
+    /// 导出的人一打开就中招。加引号只解决分隔符，解决不了这个 ——
+    /// 必须在前面补一个单引号，让表格软件按纯文本处理（单引号本身不显示）。
+    /// 代价是负数（-5）也会带上单引号变成文本，这是 OWASP 推荐的取舍。
+    /// </summary>
+    internal static string Csv(string? value)
     {
         if (string.IsNullOrEmpty(value))
         {
             return "";
         }
 
+        var safe = IsFormulaStart(value) ? "'" + value : value;
+
         // 含逗号/引号/换行就得加引号；引号本身翻倍
-        if (value.Contains(',') || value.Contains('"') || value.Contains('\n') || value.Contains('\r'))
+        if (safe.Contains(',') || safe.Contains('"') || safe.Contains('\n') || safe.Contains('\r'))
         {
-            return $"\"{value.Replace("\"", "\"\"", StringComparison.Ordinal)}\"";
+            return $"\"{safe.Replace("\"", "\"\"", StringComparison.Ordinal)}\"";
         }
 
-        return value;
+        return safe;
     }
+
+    /// <summary>首字符是否会触发表格软件的公式解释。</summary>
+    private static bool IsFormulaStart(string value) =>
+        value[0] is '=' or '+' or '-' or '@' or '\t' or '\r';
 }

@@ -27,6 +27,23 @@ public static class ApplicationServiceCollectionExtensions
         services.AddScoped<ITaskDependencyService, TaskDependencyService>();
         services.AddScoped<IExportService, ExportService>();
 
+        // agent 会话：把「agent 这次干活」跟「项目 / 任务」接上。
+        services.AddScoped<IAgentSessionService, AgentSessionService>();
+
+        // 作用域解析：一次工具调用算在谁头上。宿主（HTTP 层）提供当前会话，
+        // 这里只管解析规则。
+        services.AddScoped<IProjectScopeResolver, ProjectScopeResolver>();
+
+        // 产出文件：工作台自己去 git 里数出「这个任务改了哪些文件」，
+        // 不靠 agent 自报。
+        services.AddScoped<IFileChangeService, FileChangeService>();
+
+        // 数据库调用记录：把 SQL 原文、目标库、目标表摊成列，查得动。
+        services.AddScoped<IDbCallService, DbCallService>();
+
+        // 首页总览：现在什么在动、等我批什么、最近产出了什么、最近碰了什么库。
+        services.AddScoped<IOverviewService, OverviewService>();
+
         // 通知：单例 HttpClient（HttpClient 复用是对的，每次 new 才会耗尽端口）
         // 超时压短，通知失败不能拖住审批请求。
         services.AddSingleton<INotifier>(_ => new WebhookNotifier(new HttpClient

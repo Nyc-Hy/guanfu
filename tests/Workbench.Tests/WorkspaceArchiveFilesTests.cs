@@ -1,5 +1,8 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Workbench.Application.Services;
 using Workbench.Domain;
+using Workbench.Infrastructure;
 
 namespace Workbench.Tests;
 
@@ -56,6 +59,107 @@ public class WorkspaceArchiveFilesTests : IDisposable
         finally
         {
             Directory.Delete(notAnExport, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void 导入按清单里的keyMode恢复密钥权限()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;  // Unix 权限只在非 Windows 上有意义
+        }
+
+        // 导出物经 zip / 不保留权限的文件系统中转：文件本身已经是 0644，
+        // 只有 manifest 里的 keyMode 还记得它原本是 0600
+        File.SetUnixFileMode(
+            Path.Combine(_source, "secret.key"),
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+        File.WriteAllText(
+            Path.Combine(_source, "manifest.json"),
+            """{"format":"workbench-workspace","version":1,"key":"secret.key","keyMode":"0600"}""");
+
+        WorkspaceArchiveFiles.Import(_source, _target);
+
+        Assert.Equal(
+            UnixFileMode.UserRead | UnixFileMode.UserWrite,
+            File.GetUnixFileMode(Path.Combine(_target, "secret.key")));
+    }
+
+    [Fact]
+    public void 老导出包没有keyMode时密钥按0600落地()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        File.SetUnixFileMode(
+            Path.Combine(_source, "secret.key"),
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+
+        // 老导出包：清单里压根没有 keyMode 这个字段
+        File.WriteAllText(
+            Path.Combine(_source, "manifest.json"),
+            """{"format":"workbench-workspace","version":1,"key":"secret.key"}""");
+
+        WorkspaceArchiveFiles.Import(_source, _target);
+
+        Assert.Equal(
+            UnixFileMode.UserRead | UnixFileMode.UserWrite,
+            File.GetUnixFileMode(Path.Combine(_target, "secret.key")));
+    }
+
+    [Fact]
+    public async Task 导出再导入会恢复密钥的Unix权限()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var home = Path.Combine(Path.GetTempPath(), "wb-key-home-" + Guid.NewGuid().ToString("N"));
+        var export = Path.Combine(Path.GetTempPath(), "wb-key-export-" + Guid.NewGuid().ToString("N"));
+        var imported = Path.Combine(Path.GetTempPath(), "wb-key-import-" + Guid.NewGuid().ToString("N"));
+
+        try
+        {
+            Directory.CreateDirectory(home);
+            var dbOptions = new DbContextOptionsBuilder<WorkbenchDbContext>()
+                .UseSqlite($"Data Source={Path.Combine(home, "workbench.db")}")
+                .Options;
+
+            await using var db = new WorkbenchDbContext(dbOptions);
+            await db.Database.EnsureCreatedAsync();
+
+            var keyPath = Path.Combine(home, "secret.key");
+            await File.WriteAllBytesAsync(keyPath, new byte[] { 1, 2, 3 });
+            File.SetUnixFileMode(keyPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+
+            var archiver = new WorkspaceArchiver(db, Options.Create(new WorkbenchOptions { HomeDirectory = home }));
+            await archiver.ExportAsync(export);
+
+            // 模拟中转把权限位抹平（zip / FAT / 网络盘）：导入侧只能靠 manifest 恢复
+            File.SetUnixFileMode(
+                Path.Combine(export, "secret.key"),
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+
+            var result = await archiver.ImportAsync(export, imported);
+
+            Assert.True(result.Ok);
+            Assert.Equal(
+                UnixFileMode.UserRead | UnixFileMode.UserWrite,
+                File.GetUnixFileMode(Path.Combine(imported, "secret.key")));
+        }
+        finally
+        {
+            foreach (var dir in new[] { home, export, imported })
+            {
+                if (Directory.Exists(dir))
+                {
+                    Directory.Delete(dir, recursive: true);
+                }
+            }
         }
     }
 

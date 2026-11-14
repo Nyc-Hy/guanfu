@@ -140,6 +140,38 @@ public class SqlStatementClassifierTests
     }
 
     [Fact]
+    public void OPENDATASOURCE与OPENROWSET同口径归到未知()
+    {
+        // OPENDATASOURCE 也是 ad-hoc 远端通道，外层同样是 SELECT ——
+        // 以前漏判成 Read，等于放行了远端任意执行
+        const string sql =
+            "SELECT * FROM OPENDATASOURCE('SQLNCLI', 'Data Source=srv;Integrated Security=SSPI').db.dbo.t";
+
+        var analysis = SqlStatementClassifier.Classify(sql);
+
+        Assert.Equal(SqlStatementKind.Unknown, analysis.Kind);
+        Assert.Equal("OPENDATASOURCE", analysis.StatementType);
+    }
+
+    [Fact]
+    public void OPENXML归到未知()
+    {
+        // OPENXML 把动态构造的 XML 当行集，常配合 sp_xml_preparedocument，
+        // 与远端/动态通道同口径
+        Assert.Equal(SqlStatementKind.Unknown,
+            Kind("SELECT * FROM OPENXML(@h, '/root', 1) WITH (x int)"));
+    }
+
+    [Theory]
+    [InlineData("EXECUTE AS USER = 'dbo'")]
+    [InlineData("EXECUTE AS LOGIN = 'sa'")]
+    public void EXECUTE_AS切换执行上下文归到未知(string sql)
+    {
+        // 切换身份之后能干什么，静态判定不了
+        Assert.Equal(SqlStatementKind.Unknown, Kind(sql));
+    }
+
+    [Fact]
     public void 解析失败归到未知而不是报错()
     {
         var analysis = SqlStatementClassifier.Classify("SELECT FROM WHERE ((");

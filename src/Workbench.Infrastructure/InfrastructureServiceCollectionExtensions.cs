@@ -29,7 +29,21 @@ public static class InfrastructureServiceCollectionExtensions
             Directory.CreateDirectory(settings.HomeDirectory);
 
             options.UseSqlite($"Data Source={settings.DatabasePath}");
-            options.EnableDetailedErrors();
+
+            // 每条连接打开时开 WAL + busy_timeout（连接级设置，必须逐连接执行）
+            options.AddInterceptors(new SqliteWalInterceptor());
+
+            // 详细错误会把参数值等敏感内容带进异常消息 —— 只在 Development 开。
+            // 不引 IHostEnvironment（Infrastructure 不必依赖 Hosting 抽象），
+            // 直接读 ASP.NET Core / .NET 通用的环境变量，口径与宿主一致。
+            var environment =
+                Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT")
+                ?? Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT");
+
+            if (string.Equals(environment, "Development", StringComparison.OrdinalIgnoreCase))
+            {
+                options.EnableDetailedErrors();
+            }
         });
 
         services.AddScoped<IAppDbContext>(provider => provider.GetRequiredService<WorkbenchDbContext>());

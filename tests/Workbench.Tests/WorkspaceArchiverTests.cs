@@ -212,6 +212,37 @@ public class WorkspaceArchiverTests : IDisposable
         Assert.True(File.Exists(Path.Combine(_imported, "runs", "task-1", "agent.log")));
     }
 
+    [Fact]
+    public async Task 导出保留密钥文件的Unix权限()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;  // Unix 权限只在非 Windows 上有意义
+        }
+
+        await using var db = CreateDb(_home);
+
+        // secret.key 源文件是 0600 —— File.Copy 默认不保留权限，会变 0644
+        var keyPath = Path.Combine(_home, "secret.key");
+        await File.WriteAllBytesAsync(keyPath, new byte[] { 1, 2, 3 });
+        File.SetUnixFileMode(keyPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+
+        var archiver = new WorkspaceArchiver(db, Options.Create(new WorkbenchOptions { HomeDirectory = _home }));
+        await archiver.ExportAsync(_export);
+
+        var exportedKey = Path.Combine(_export, "secret.key");
+        Assert.True(File.Exists(exportedKey));
+        Assert.Equal(
+            UnixFileMode.UserRead | UnixFileMode.UserWrite,
+            File.GetUnixFileMode(exportedKey));
+
+        // 权限信息也要进 manifest —— 导出物经 zip / 不保留权限的文件系统中转后，
+        // 导入侧靠它恢复（导入落地权限由 Application 侧负责）
+        var manifest = System.Text.Json.JsonDocument.Parse(
+            await File.ReadAllTextAsync(Path.Combine(_export, "manifest.json")));
+        Assert.Equal("0600", manifest.RootElement.GetProperty("keyMode").GetString());
+    }
+
     private WorkbenchDbContext CreateDb(string home)
     {
         Directory.CreateDirectory(home);

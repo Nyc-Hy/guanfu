@@ -258,6 +258,264 @@ public class SchemaUpgraderTests : IDisposable
         Assert.Equal(expected, actual);
     }
 
+    // ---------- 补列默认值（按 CLR 类型，不毒化老数据） ----------
+
+    /// <summary>
+    /// 在老库基础上造「缺列」的 milestones / plans：
+    /// 都缺 NOT NULL 的 CreatedAt（DateTimeOffset）。以前按 SQL 文本补 DEFAULT ''，
+    /// 老行一读就抛 FormatException。
+    /// </summary>
+    private void CreateLegacyPlansAndMilestones(bool duplicatePlanVersions = false)
+    {
+        using var connection = new SqliteConnection($"Data Source={_dbPath}");
+        connection.Open();
+
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            CREATE TABLE milestones (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_milestones" PRIMARY KEY,
+                "ProjectId" TEXT NOT NULL,
+                "Name" TEXT NOT NULL,
+                "Kind" TEXT NOT NULL,
+                "Order" INTEGER NOT NULL
+            );
+
+            CREATE TABLE plans (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_plans" PRIMARY KEY,
+                "TaskId" TEXT NOT NULL,
+                "Version" INTEGER NOT NULL
+            );
+
+            INSERT INTO milestones (Id, ProjectId, Name, Kind, "Order")
+                VALUES ('44444444-4444-4444-4444-444444444444', '22222222-2222-2222-2222-222222222222', '老里程碑', 'Release', 1);
+
+            INSERT INTO plans (Id, TaskId, Version)
+                VALUES ('55555555-5555-5555-5555-555555555555', '33333333-3333-3333-3333-333333333333', 1);
+            """;
+        command.ExecuteNonQuery();
+
+        if (duplicatePlanVersions)
+        {
+            using var dup = connection.CreateCommand();
+            dup.CommandText = """
+                INSERT INTO plans (Id, TaskId, Version)
+                    VALUES ('66666666-6666-6666-6666-666666666666', '33333333-3333-3333-3333-333333333333', 1);
+                CREATE INDEX "IX_plans_TaskId_Version" ON "plans" ("TaskId", "Version");
+                """;
+            dup.ExecuteNonQuery();
+        }
+    }
+
+    [Fact]
+    public async Task 补列默认值按CLR类型_老行读得回来()
+    {
+        CreateLegacyDatabase();
+        CreateLegacyPlansAndMilestones();
+
+        await using (var db = new WorkbenchDbContext(Options()))
+        {
+            await SchemaUpgrader.UpgradeAsync(db);
+        }
+
+        await using var check = new WorkbenchDbContext(Options());
+
+        // DateTimeOffset 列补的默认值必须是合法时间文本（'0001-01-01 00:00:00'），
+        // 不能是 '' —— 否则这里直接抛 FormatException
+        var milestone = await check.Milestones.FirstAsync(m => m.Id == Guid.Parse("44444444-4444-4444-4444-444444444444"));
+        Assert.Equal(default(DateTimeOffset), milestone.CreatedAt);
+        Assert.Equal("老里程碑", milestone.Name);
+
+        var plan = await check.Plans.FirstAsync(p => p.Id == Guid.Parse("55555555-5555-5555-5555-555555555555"));
+        Assert.Equal(default(DateTimeOffset), plan.CreatedAt);
+        Assert.Equal(1, plan.Version);
+    }
+
+    [Fact]
+    public async Task 各类型补列默认值都合法()
+    {
+        await using var connection = new SqliteConnection("Filename=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<WorkbenchDbContext>().UseSqlite(connection).Options;
+        await using var db = new WorkbenchDbContext(options);
+
+        var model = db.Model;
+        Microsoft.EntityFrameworkCore.Metadata.IProperty Prop<T>(string name) =>
+            model.FindEntityType(typeof(T))!.FindProperty(name)!;
+
+        // DateTimeOffset → EF SQLite 的 DateTime 存储格式（与 UtcDateTimeOffsetConverter 一致）
+        Assert.Equal(
+            "\"CreatedAt\" TEXT NOT NULL DEFAULT '0001-01-01 00:00:00'",
+            SchemaUpgrader.SchemaModel.BuildAlterDefinition("CreatedAt", "TEXT NOT NULL", Prop<Domain.TaskItem>("CreatedAt")));
+
+        // Guid → 全零
+        Assert.Equal(
+            "\"Id\" TEXT NOT NULL DEFAULT '00000000-0000-0000-0000-000000000000'",
+            SchemaUpgrader.SchemaModel.BuildAlterDefinition("Id", "TEXT NOT NULL", Prop<Domain.TaskItem>("Id")));
+
+        // 枚举配了字符串转换器 → 转换后的默认值（不是数字 0）
+        Assert.Equal(
+            "\"Status\" TEXT NOT NULL DEFAULT 'Draft'",
+            SchemaUpgrader.SchemaModel.BuildAlterDefinition("Status", "TEXT NOT NULL", Prop<Domain.TaskItem>("Status")));
+
+        // 枚举没配转换器 → 0
+        Assert.Equal(
+            "\"Type\" INTEGER NOT NULL DEFAULT 0",
+            SchemaUpgrader.SchemaModel.BuildAlterDefinition("Type", "INTEGER NOT NULL", Prop<Domain.TaskItem>("Type")));
+
+        // bool → 0
+        Assert.Equal(
+            "\"IsArchived\" INTEGER NOT NULL DEFAULT 0",
+            SchemaUpgrader.SchemaModel.BuildAlterDefinition("IsArchived", "INTEGER NOT NULL", Prop<Domain.TaskItem>("IsArchived")));
+
+        // 数值 → 0
+        Assert.Equal(
+            "\"Weight\" REAL NOT NULL DEFAULT 0",
+            SchemaUpgrader.SchemaModel.BuildAlterDefinition("Weight", "REAL NOT NULL", Prop<Domain.TaskItem>("Weight")));
+
+        // 字符串 → ''
+        Assert.Equal(
+            "\"Title\" TEXT NOT NULL DEFAULT ''",
+            SchemaUpgrader.SchemaModel.BuildAlterDefinition("Title", "TEXT NOT NULL", Prop<Domain.TaskItem>("Title")));
+    }
+
+    [Theory]
+    [InlineData("TEXT NOT NULL DEFAULT 'hello world'", "'hello world'")]
+    [InlineData("TEXT NOT NULL DEFAULT 'it''s ok'", "'it''s ok'")]
+    [InlineData("TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)", "(CURRENT_TIMESTAMP)")]
+    [InlineData("INTEGER NOT NULL DEFAULT 0", "0")]
+    [InlineData("TEXT NOT NULL DEFAULT 'a b' ", "'a b'")]
+    public void 多词默认值不被首个空格截断(string rest, string expected)
+    {
+        Assert.Equal(expected, SchemaUpgrader.SchemaModel.ExtractDefault(rest));
+    }
+
+    // ---------- Plans 唯一索引 ----------
+
+    [Fact]
+    public async Task 新库的Plans版本索引是唯一的()
+    {
+        await using var connection = new SqliteConnection("Filename=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<WorkbenchDbContext>().UseSqlite(connection).Options;
+        await using var db = new WorkbenchDbContext(options);
+        await db.Database.EnsureCreatedAsync();
+
+        var workspace = new Domain.Workspace { Name = "w" };
+        var project = new Domain.Project { Workspace = workspace, Name = "p" };
+        var task = new Domain.TaskItem { Project = project, Title = "t" };
+        db.Tasks.Add(task);
+        await db.SaveChangesAsync();
+
+        db.Plans.Add(new Domain.Plan { TaskId = task.Id, Version = 1 });
+        await db.SaveChangesAsync();
+
+        // 同一任务同一版本再来一条 → 唯一索引必须拦下（版本重试的兜底）
+        db.Plans.Add(new Domain.Plan { TaskId = task.Id, Version = 1 });
+        await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
+    }
+
+    [Fact]
+    public async Task 唯一索引撞上老库重复数据_跳过并记警告不改数据()
+    {
+        CreateLegacyDatabase();
+        CreateLegacyPlansAndMilestones(duplicatePlanVersions: true);
+
+        await using var db = new WorkbenchDbContext(Options());
+        var report = await SchemaUpgrader.UpgradeAsync(db);
+
+        // 警告要点名这条索引
+        Assert.Contains(report.Warnings, w => w.Contains("IX_plans_TaskId_Version"));
+
+        // 不崩启动、不静默改数据：两条重复计划都还在
+        await using var check = new WorkbenchDbContext(Options());
+        Assert.Equal(2, await check.Plans.CountAsync());
+
+        // 旧（非唯一）索引原样保留 —— savepoint 回滚了重建
+        await using var conn = new SqliteConnection($"Data Source={_dbPath}");
+        await conn.OpenAsync();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT sql FROM sqlite_master WHERE type='index' AND name='IX_plans_TaskId_Version';";
+        var sql = (string?)await cmd.ExecuteScalarAsync();
+        Assert.NotNull(sql);
+        Assert.DoesNotContain("UNIQUE", sql);
+    }
+
+    [Fact]
+    public async Task 无重复数据时老索引升级成唯一()
+    {
+        CreateLegacyDatabase();
+        CreateLegacyPlansAndMilestones();  // 只有一条计划，但先建非唯一索引模拟老库
+
+        await using (var conn = new SqliteConnection($"Data Source={_dbPath}"))
+        {
+            await conn.OpenAsync();
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = "CREATE INDEX \"IX_plans_TaskId_Version\" ON \"plans\" (\"TaskId\", \"Version\");";
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        await using var db = new WorkbenchDbContext(Options());
+        var report = await SchemaUpgrader.UpgradeAsync(db);
+
+        Assert.Contains("IX_plans_TaskId_Version", report.CreatedIndexes);
+        Assert.Empty(report.Warnings);
+
+        await using var check = new SqliteConnection($"Data Source={_dbPath}");
+        await check.OpenAsync();
+        await using var verify = check.CreateCommand();
+        verify.CommandText = "SELECT sql FROM sqlite_master WHERE type='index' AND name='IX_plans_TaskId_Version';";
+        var sql = (string?)await verify.ExecuteScalarAsync();
+        Assert.NotNull(sql);
+        Assert.Contains("UNIQUE", sql);
+    }
+
+    // ---------- 索引定义漂移 ----------
+
+    [Fact]
+    public async Task 同名索引定义不同会重建()
+    {
+        CreateLegacyDatabase();
+
+        // 老库里 IX_tasks_Branch 建在了错误的列上（模拟定义漂移）
+        await using (var conn = new SqliteConnection($"Data Source={_dbPath}"))
+        {
+            await conn.OpenAsync();
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = "CREATE INDEX \"IX_tasks_Branch\" ON \"tasks\" (\"Title\");";
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        await using var db = new WorkbenchDbContext(Options());
+        await SchemaUpgrader.UpgradeAsync(db);
+
+        await using var check = new SqliteConnection($"Data Source={_dbPath}");
+        await check.OpenAsync();
+        await using var verify = check.CreateCommand();
+        verify.CommandText = "SELECT sql FROM sqlite_master WHERE type='index' AND name='IX_tasks_Branch';";
+        var sql = (string?)await verify.ExecuteScalarAsync();
+
+        Assert.NotNull(sql);
+        Assert.Contains("Branch", sql);
+        Assert.DoesNotContain("Title", sql);
+    }
+
+    // ---------- WAL ----------
+
+    [Fact]
+    public async Task 升级会开启WAL()
+    {
+        CreateLegacyDatabase();
+
+        await using var db = new WorkbenchDbContext(Options());
+        await SchemaUpgrader.UpgradeAsync(db);
+
+        await using var check = new SqliteConnection($"Data Source={_dbPath}");
+        await check.OpenAsync();
+        await using var cmd = check.CreateCommand();
+        cmd.CommandText = "PRAGMA journal_mode;";
+        Assert.Equal("wal", (string?)await cmd.ExecuteScalarAsync());
+    }
+
     private async Task<HashSet<string>> ReadColumnsAsync(string table)
     {
         var columns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);

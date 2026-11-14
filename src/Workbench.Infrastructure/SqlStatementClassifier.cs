@@ -66,14 +66,15 @@ public static class SqlStatementClassifier
             return new SqlStatementAnalysis(SqlStatementKind.Unknown, "SQL 里没有可执行的语句。", "Empty");
         }
 
-        // OPENROWSET / OPENQUERY 能把语句甩到别的服务器上执行 ——
-        // 外层看着是 SELECT，实质能跑任意 SQL，静态判定不了它到底干什么。
+        // OPENROWSET / OPENQUERY / OPENDATASOURCE / OPENXML 这类通道能把语句甩到
+        // 别的服务器（或动态上下文）里执行 —— 外层看着是 SELECT，实质能跑任意 SQL，
+        // 静态判定不了它到底干什么。
         var remote = FindRemoteExecution(script);
         if (remote is not null)
         {
             return new SqlStatementAnalysis(
                 SqlStatementKind.Unknown,
-                $"{remote} 能在远端执行任意语句，无法确认是否只读。",
+                $"{remote} 属于远端/动态执行通道，无法确认是否只读。",
                 remote);
         }
 
@@ -176,6 +177,12 @@ public static class SqlStatementClassifier
             case ExecuteStatement:
                 // 存储过程做什么，静态分析答不了 —— 一律归「认不出来」
                 findings.Add(new Finding(SqlStatementKind.Unknown, "EXEC"));
+                return;
+
+            case ExecuteAsStatement:
+                // EXECUTE AS 切换执行上下文（模拟别的登录/用户），之后的语句以谁的
+                // 身份跑、能干什么，静态判定不了 —— 归「认不出来」，交人工审批。
+                findings.Add(new Finding(SqlStatementKind.Unknown, "EXECUTE AS"));
                 return;
 
             case BeginEndBlockStatement block:
@@ -287,7 +294,12 @@ public static class SqlStatementClassifier
         return builder.ToString().ToUpperInvariant();
     }
 
-    /// <summary>找出会把语句甩到远端执行的表引用（OPENROWSET / OPENQUERY）。</summary>
+    /// <summary>
+    /// 找出会把语句甩到远端 / 动态上下文执行的表引用：
+    /// OPENROWSET / OPENQUERY / OPENDATASOURCE（AdHocTableReference）/ OPENXML。
+    /// 它们外层看着是 SELECT 的数据源，实质能连到别的服务器或动态执行任意 SQL，
+    /// 静态判定不了到底干什么 —— 一律归 Unknown。
+    /// </summary>
     private static string? FindRemoteExecution(TSqlScript script)
     {
         var visitor = new RemoteExecutionVisitor();
@@ -304,5 +316,13 @@ public static class SqlStatementClassifier
 
         public override void ExplicitVisit(OpenQueryTableReference node) =>
             Found ??= "OPENQUERY";
+
+        // OPENDATASOURCE：ad-hoc 远端数据源，与 OPENROWSET/OPENQUERY 同口径
+        public override void ExplicitVisit(AdHocTableReference node) =>
+            Found ??= "OPENDATASOURCE";
+
+        // OPENXML：把 XML 文档当行集，常配合 sp_xml_preparedocument 动态构造，归 Unknown
+        public override void ExplicitVisit(OpenXmlTableReference node) =>
+            Found ??= "OPENXML";
     }
 }

@@ -28,6 +28,9 @@ public interface IAppDbContext
     DbSet<ReviewItem> ReviewItems { get; }
     DbSet<TaskDependency> TaskDependencies { get; }
     DbSet<SchemaVersion> SchemaVersions { get; }
+    DbSet<AgentSession> AgentSessions { get; }
+    DbSet<TaskFileChange> TaskFileChanges { get; }
+    DbSet<DbCallRecord> DbCallRecords { get; }
 
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
 

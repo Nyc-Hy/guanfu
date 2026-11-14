@@ -219,6 +219,12 @@ public sealed class TaskService(
                 Source = TaskEventSource.System,
                 Note = "任务创建",
                 EventType = TaskEventTypes.StatusChanged,
+                Payload = WorkbenchJson.Serialize(new
+                {
+                    from = (string?)null,
+                    to = TaskStatus.Draft.ToString(),
+                    key = task.Key
+                }),
                 CreatedAt = clock.UtcNow
             });
 
@@ -346,55 +352,23 @@ public sealed class TaskService(
             .ToList();
     }
 
-    /// <summary>批量算「还没完成的前置任务数」。</summary>
-    private async Task<Dictionary<Guid, int>> PendingDependencyCountsAsync(
+    /// <summary>批量算「还没完成的前置任务数」。口径见 <see cref="PendingDependencyCounts"/>。</summary>
+    private Task<Dictionary<Guid, int>> PendingDependencyCountsAsync(
         IReadOnlyList<Guid> taskIds,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken) =>
+        PendingDependencyCounts.CountAsync(db, taskIds, cancellationToken);
+
+    /// <summary>
+    /// 「返回任务摘要」的统一出口：带上项目名与真实的前置欠账。
+    /// 别在各处各写一遍 —— 漏掉 pending 就等于告诉 agent「没人挡着你」。
+    /// </summary>
+    private async Task<TaskSummaryDto> SummaryWithPendingAsync(TaskItem task, CancellationToken cancellationToken)
     {
-        if (taskIds.Count == 0)
-        {
-            return [];
-        }
+        var project = await db.Projects.AsNoTracking()
+            .FirstOrDefaultAsync(p => p.Id == task.ProjectId, cancellationToken);
 
-        var dependencies = await db.TaskDependencies
-            .AsNoTracking()
-            .Where(d => taskIds.Contains(d.TaskId))
-            .Select(d => new { d.TaskId, d.DependsOnTaskId })
-            .ToListAsync(cancellationToken);
-
-        if (dependencies.Count == 0)
-        {
-            return [];
-        }
-
-        // 前置任务的状态一次查完 —— 别在内存里一个个问。
-        var prerequisiteIds = dependencies.Select(d => d.DependsOnTaskId).Distinct().ToList();
-
-        var prerequisites = await db.Tasks
-            .AsNoTracking()
-            .Where(t => prerequisiteIds.Contains(t.Id))
-            .Select(t => new { t.Id, t.Status })
-            .ToListAsync(cancellationToken);
-
-        var existing = prerequisites.Select(p => p.Id).ToHashSet();
-        var satisfied = prerequisites
-            .Where(p => p.Status == TaskStatus.Done)
-            .Select(p => p.Id)
-            .ToHashSet();
-
-        // 前置任务被删了算「已完成」—— 依赖指向空气时不该永远挡着
-        foreach (var id in prerequisiteIds)
-        {
-            if (!existing.Contains(id))
-            {
-                satisfied.Add(id);
-            }
-        }
-
-        return dependencies
-            .Where(d => !satisfied.Contains(d.DependsOnTaskId))
-            .GroupBy(d => d.TaskId)
-            .ToDictionary(g => g.Key, g => g.Count());
+        var pending = await PendingDependencyCountsAsync([task.Id], cancellationToken);
+        return ToSummary(task, project, pending.GetValueOrDefault(task.Id));
     }
 
     public async Task<TaskSummaryDto?> GetAsync(Guid id, CancellationToken cancellationToken = default)
@@ -406,7 +380,11 @@ public sealed class TaskService(
         }
 
         var project = await db.Projects.AsNoTracking().FirstOrDefaultAsync(p => p.Id == task.ProjectId, cancellationToken);
-        return ToSummary(task, project);
+
+        // 真算，别恒给 0 —— DTO 上写着「大于 0 表示动不了」，
+        // 恒 0 会让 agent 以为随时能开工，撞在守卫上才发现不是那么回事。
+        var pending = await PendingDependencyCountsAsync([id], cancellationToken);
+        return ToSummary(task, project, pending.GetValueOrDefault(id));
     }
 
     public async Task<TaskSummaryDto> SetTypeAsync(
@@ -432,14 +410,20 @@ public sealed class TaskService(
                 ToStatus = null,
                 Source = TaskEventSource.Human,
                 Note = $"类型变更: {TaskTypes.Name(before)} → {TaskTypes.Name(type)}（编号 {task.Key} 不变）",
+                EventType = TaskEventTypes.TypeChanged,
+                Payload = WorkbenchJson.Serialize(new
+                {
+                    from = before.ToString(),
+                    to = type.ToString(),
+                    key = task.Key
+                }),
                 CreatedAt = clock.UtcNow
             });
 
             await db.SaveChangesAsync(cancellationToken);
         }
 
-        var project = await db.Projects.AsNoTracking().FirstOrDefaultAsync(p => p.Id == task.ProjectId, cancellationToken);
-        return ToSummary(task, project);
+        return await SummaryWithPendingAsync(task, cancellationToken);
     }
 
     public async Task<TaskSummaryDto> BindBranchAsync(
@@ -471,14 +455,15 @@ public sealed class TaskService(
                     : value is null
                         ? $"解绑分支: {before}"
                         : $"绑定分支: {before} → {value}",
+                EventType = TaskEventTypes.BranchBound,
+                Payload = WorkbenchJson.Serialize(new { from = before, to = value }),
                 CreatedAt = clock.UtcNow
             });
 
             await db.SaveChangesAsync(cancellationToken);
         }
 
-        var project = await db.Projects.AsNoTracking().FirstOrDefaultAsync(p => p.Id == task.ProjectId, cancellationToken);
-        return ToSummary(task, project);
+        return await SummaryWithPendingAsync(task, cancellationToken);
     }
 
     public async Task<TaskSummaryDto> ChangeStatusAsync(
@@ -514,18 +499,54 @@ public sealed class TaskService(
             var gate = await reviewGate.GetGateAsync(id, cancellationToken);
 
             if (gate.HasReview &&
-                (gate.PendingDimensions.Count > 0 || gate.FailedDimensions.Count > 0))
+                (gate.PendingDimensions.Count > 0 || gate.FailedDimensions.Count > 0 ||
+                 gate.BlockReason is not null))
             {
                 throw new ReviewGateException(gate);
             }
         }
 
-        task.Status = to;
-        task.UpdatedAt = clock.UtcNow;
-        task.LastActivityAt = clock.UtcNow;
+        var now = clock.UtcNow;
+        var terminal = TaskStatusMachine.IsTerminal(to);
 
-        // 任务完成或取消时释放认领租约
-        if (TaskStatusMachine.IsTerminal(to))
+        // 条件更新：WHERE Status = from。
+        // 「先读后写」挡不住并发 —— 两个请求都读到 Review，各自校验完门禁再写回，
+        // 后写的把先写的盖掉，评审门禁的 TOCTOU 就是这么来的。
+        // 影响行数 0 说明状态在这期间被人改了，这次迁移**没有生效**，必须报冲突。
+        // 终态清租约也放进同一条 UPDATE：分两步写的话，中间被别的 agent 认领就会清掉新租约。
+        var affected = terminal
+            ? await db.Tasks
+                .Where(t => t.Id == id && t.Status == from)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(t => t.Status, to)
+                    .SetProperty(t => t.UpdatedAt, now)
+                    .SetProperty(t => t.LastActivityAt, now)
+                    .SetProperty(t => t.ClaimedByAgentId, (string?)null)
+                    .SetProperty(t => t.LeaseExpiresAt, (DateTimeOffset?)null), cancellationToken)
+            : await db.Tasks
+                .Where(t => t.Id == id && t.Status == from)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(t => t.Status, to)
+                    .SetProperty(t => t.UpdatedAt, now)
+                    .SetProperty(t => t.LastActivityAt, now), cancellationToken);
+
+        if (affected == 0)
+        {
+            var current = await db.Tasks.AsNoTracking()
+                .Where(t => t.Id == id)
+                .Select(t => t.Status)
+                .FirstOrDefaultAsync(cancellationToken);
+
+            throw new StatusConflictException(current, to, TaskStatusMachine.AllowedFrom(current));
+        }
+
+        // ExecuteUpdateAsync 绕过变更跟踪 —— 被跟踪的那份还是旧值。
+        // 不同步的话，下面写流水时的 SaveChanges 会把旧状态整行写回去，迁移当场丢失。
+        task.Status = to;
+        task.UpdatedAt = now;
+        task.LastActivityAt = now;
+
+        if (terminal)
         {
             task.ClaimedByAgentId = null;
             task.LeaseExpiresAt = null;
@@ -546,13 +567,12 @@ public sealed class TaskService(
                 to = to.ToString(),
                 actor
             }),
-            CreatedAt = clock.UtcNow
+            CreatedAt = now
         });
 
         await db.SaveChangesAsync(cancellationToken);
 
-        var project = await db.Projects.AsNoTracking().FirstOrDefaultAsync(p => p.Id == task.ProjectId, cancellationToken);
-        return ToSummary(task, project);
+        return await SummaryWithPendingAsync(task, cancellationToken);
     }
 
     public async Task<TaskSummaryDto> ClaimAsync(
@@ -629,40 +649,60 @@ public sealed class TaskService(
             Source = TaskEventSource.Agent,
             Actor = agentId,
             Note = $"认领任务，租约 {expiresAt:u} 到期",
+            EventType = TaskEventTypes.Claimed,
+            Payload = WorkbenchJson.Serialize(new
+            {
+                agentId,
+                leaseExpiresAt = expiresAt,
+                leaseMinutes = Math.Clamp(leaseMinutes, 1, 24 * 60)
+            }),
             CreatedAt = now
         });
 
         await db.SaveChangesAsync(cancellationToken);
 
-        var project = await db.Projects.AsNoTracking().FirstOrDefaultAsync(p => p.Id == task.ProjectId, cancellationToken);
-        return ToSummary(task, project);
+        return await SummaryWithPendingAsync(task, cancellationToken);
     }
 
     public async Task ReleaseAsync(Guid id, string agentId, CancellationToken cancellationToken = default)
     {
-        var task = await db.Tasks.FirstOrDefaultAsync(t => t.Id == id, cancellationToken)
-                   ?? throw new NotFoundException("任务", id);
-
-        if (!string.Equals(task.ClaimedByAgentId, agentId, StringComparison.Ordinal))
+        var exists = await db.Tasks.AsNoTracking().AnyAsync(t => t.Id == id, cancellationToken);
+        if (!exists)
         {
-            throw new WorkbenchException($"任务不由 {agentId} 持有，无法释放。");
+            throw new NotFoundException("任务", id);
         }
 
-        task.ClaimedByAgentId = null;
-        task.LeaseExpiresAt = null;
-        task.UpdatedAt = clock.UtcNow;
-        task.LastActivityAt = clock.UtcNow;
+        var now = clock.UtcNow;
+
+        // 条件更新：WHERE 租约持有者 = 调用方。
+        // 「先读后写」会清掉别人的租约 —— 读的时候还是自己持有，
+        // 写之前租约过期、别的 agent 接管了，这一写就把新 agent 的租约抹掉了。
+        var affected = await db.Tasks
+            .Where(t => t.Id == id && t.ClaimedByAgentId == agentId)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(t => t.ClaimedByAgentId, (string?)null)
+                .SetProperty(t => t.LeaseExpiresAt, (DateTimeOffset?)null)
+                .SetProperty(t => t.UpdatedAt, now)
+                .SetProperty(t => t.LastActivityAt, now), cancellationToken);
+
+        if (affected == 0)
+        {
+            throw new WorkbenchException(
+                $"任务不由 {agentId} 持有，无法释放（租约可能已过期并被别的 agent 接管）。");
+        }
 
         db.StatusEvents.Add(new StatusEvent
         {
-            TaskId = task.Id,
+            TaskId = id,
             // 这不是状态迁移 —— from/to 留空
             FromStatus = null,
             ToStatus = null,
             Source = TaskEventSource.Agent,
             Actor = agentId,
             Note = "释放任务认领",
-            CreatedAt = clock.UtcNow
+            EventType = TaskEventTypes.Released,
+            Payload = WorkbenchJson.Serialize(new { agentId }),
+            CreatedAt = now
         });
 
         await db.SaveChangesAsync(cancellationToken);
@@ -678,46 +718,60 @@ public sealed class TaskService(
         string? author,
         CancellationToken cancellationToken = default)
     {
-        var task = await db.Tasks.FirstOrDefaultAsync(t => t.Id == id, cancellationToken)
-                   ?? throw new NotFoundException("任务", id);
-
-        var version = await db.Plans
-            .Where(p => p.TaskId == id)
-            .Select(p => (int?)p.Version)
-            .MaxAsync(cancellationToken) ?? 0;
-
-        var plan = new Plan
+        // 版本号可能撞车：并发回写时两个请求会算出同一个 Max+1。
+        // (TaskId, Version) 唯一索引挡得住，撞了就重算一个再来 ——
+        // 与任务编号、评审轮次的既有模式一致。
+        for (var attempt = 0; ; attempt++)
         {
-            TaskId = id,
-            Version = version + 1,
-            Background = background,
-            Understanding = understanding,
-            Breakdown = breakdown,
-            AcceptanceCriteria = acceptanceCriteria,
-            Risks = risks,
-            Author = author,
-            CreatedAt = clock.UtcNow
-        };
+            var task = await db.Tasks.FirstOrDefaultAsync(t => t.Id == id, cancellationToken)
+                       ?? throw new NotFoundException("任务", id);
 
-        db.Plans.Add(plan);
-        task.UpdatedAt = clock.UtcNow;
-        task.LastActivityAt = clock.UtcNow;
+            var version = await db.Plans
+                .Where(p => p.TaskId == id)
+                .Select(p => (int?)p.Version)
+                .MaxAsync(cancellationToken) ?? 0;
 
-        db.StatusEvents.Add(new StatusEvent
-        {
-            TaskId = id,
-            // 这不是状态迁移 —— from/to 留空
-            FromStatus = null,
-            ToStatus = null,
-            Source = TaskEventSource.Agent,
-            Actor = author,
-            Note = $"回写开发计划 v{plan.Version}",
-            EventType = TaskEventTypes.PlanSaved,
-            CreatedAt = clock.UtcNow
-        });
+            var plan = new Plan
+            {
+                TaskId = id,
+                Version = version + 1,
+                Background = background,
+                Understanding = understanding,
+                Breakdown = breakdown,
+                AcceptanceCriteria = acceptanceCriteria,
+                Risks = risks,
+                Author = author,
+                CreatedAt = clock.UtcNow
+            };
 
-        await db.SaveChangesAsync(cancellationToken);
-        return ToPlanDto(plan);
+            db.Plans.Add(plan);
+            task.UpdatedAt = clock.UtcNow;
+            task.LastActivityAt = clock.UtcNow;
+
+            db.StatusEvents.Add(new StatusEvent
+            {
+                TaskId = id,
+                // 这不是状态迁移 —— from/to 留空
+                FromStatus = null,
+                ToStatus = null,
+                Source = TaskEventSource.Agent,
+                Actor = author,
+                Note = $"回写开发计划 v{plan.Version}",
+                EventType = TaskEventTypes.PlanSaved,
+                Payload = WorkbenchJson.Serialize(new { version = plan.Version, author }),
+                CreatedAt = clock.UtcNow
+            });
+
+            try
+            {
+                await db.SaveChangesAsync(cancellationToken);
+                return ToPlanDto(plan);
+            }
+            catch (DbUpdateException) when (attempt < 2)
+            {
+                db.ClearTracking();
+            }
+        }
     }
 
     public async Task<ArtifactDto> AddArtifactAsync(
@@ -761,6 +815,15 @@ public sealed class TaskService(
             Actor = author,
             Note = $"回写产物 [{artifact.Title}]",
             EventType = TaskEventTypes.ArtifactAdded,
+            Payload = WorkbenchJson.Serialize(new
+            {
+                artifactId = artifact.Id,
+                artifactType = type.ToString(),
+                title = artifact.Title,
+                commitSha,
+                branch,
+                externalPath
+            }),
             CreatedAt = clock.UtcNow
         });
 
@@ -869,6 +932,7 @@ public sealed class TaskService(
             Actor = actor,
             Note = message,
             EventType = TaskEventTypes.Note,
+            Payload = WorkbenchJson.Serialize(new { message }),
             CreatedAt = clock.UtcNow
         };
 
@@ -932,14 +996,14 @@ public sealed class TaskService(
                 Source = TaskEventSource.Human,
                 Note = archived ? "归档任务" : "取消归档",
                 EventType = TaskEventTypes.Archived,
+                Payload = WorkbenchJson.Serialize(new { archived }),
                 CreatedAt = clock.UtcNow
             });
 
             await db.SaveChangesAsync(cancellationToken);
         }
 
-        var project = await db.Projects.AsNoTracking().FirstOrDefaultAsync(p => p.Id == task.ProjectId, cancellationToken);
-        return ToSummary(task, project);
+        return await SummaryWithPendingAsync(task, cancellationToken);
     }
 
     /// <summary>
@@ -1020,9 +1084,7 @@ public sealed class TaskService(
             await db.SaveChangesAsync(cancellationToken);
         }
 
-        var project = await db.Projects.AsNoTracking().FirstOrDefaultAsync(p => p.Id == task.ProjectId, cancellationToken);
-        var pending = await PendingDependencyCountsAsync([id], cancellationToken);
-        return ToSummary(task, project, pending.GetValueOrDefault(id));
+        return await SummaryWithPendingAsync(task, cancellationToken);
     }
 
     public async Task<TaskContextDto> GetContextAsync(
@@ -1076,8 +1138,12 @@ public sealed class TaskService(
             ? null
             : await branchGuard.CheckAsync(id, cancellationToken);
 
+        // 前置欠账也要真算 —— 上下文是 agent 开工前唯一的一次性信息包，
+        // 这里给 0 就等于告诉它「没人挡着你」。
+        var pending = await PendingDependencyCountsAsync([id], cancellationToken);
+
         return new TaskContextDto(
-            ToSummary(task, project),
+            ToSummary(task, project, pending.GetValueOrDefault(id)),
             projectContext,
             plan is null ? null : ToPlanDto(plan),
             documents.Select(ToDocumentDto).ToList(),
@@ -1129,9 +1195,8 @@ public sealed class TaskService(
             .Select(t => new { t.Id, t.Key, t.Status })
             .ToListAsync(cancellationToken);
 
-        var existing = prerequisites.Select(p => p.Id).ToHashSet();
-
-        // 前置被删了不算还欠着 —— 依赖指向空气时不该永远挡着
+        // 前置被删了不算还欠着 —— 查不到的前置压根不会出现在这个列表里，
+        // 于是自然被判成「已满足」。依赖指向空气时不该永远挡着。
         var pending = prerequisites.Where(p => p.Status != TaskStatus.Done).ToList();
 
         if (pending.Count == 0)
@@ -1221,29 +1286,24 @@ public sealed class TaskService(
     }
 
     /// <summary>
-    /// 编号是否以给定前缀开头（忽略大小写）—— **只能用在内存里**。
+    /// SQL 侧的「编号以此开头」粗筛，**不区分大小写**。
     ///
-    /// SQL 那边请用 <see cref="KeyStartsWith"/>。
-    /// </summary>
-    internal static bool StartsWithKeyPrefix(string key, string prefix) =>
-        key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
-
-    /// <summary>
-    /// SQL 侧的「编号以此开头」筛选。
+    /// 以前写成 prefix/lower/upper 三种写法各比一次，混合大小写（"rEq-001"）
+    /// 三种都不命中，粗筛直接把它漏掉 —— 后面的归一化比较再正确也没用，
+    /// 于是重号就这么进了库。
     ///
-    /// 写成三种大小写各比一次，是因为 SQLite 的 LIKE 默认对 ASCII 不敏感，
-    /// 但那是 pragma 决定的 —— 万一连接上开了 case_sensitive_like，
-    /// "REQ" 就筛不出 "req001" 了。宁可多写两个条件，别让编号校验悄悄失效。
+    /// 现在两边都 lower 再比：SQLite 的 lower() 只管 ASCII，但编号里的字母段
+    /// 本来就是 ASCII（REQ/BUG/OPT），中文编号没有大小写问题。
+    /// 不用 LIKE：LIKE 的 % / _ 是通配符，而 SQLite 默认没有转义符，
+    /// 也不受 case_sensitive_like 这个 pragma 的影响。
+    ///
+    /// 这只是**粗筛**（规矩 19）：精确的归一化比较仍然在内存里做。
     /// </summary>
     private static Expression<Func<TaskItem, bool>> KeyStartsWith(string prefix)
     {
         var lower = prefix.ToLowerInvariant();
-        var upper = prefix.ToUpperInvariant();
 
-        return t => t.Key != null &&
-                    (t.Key.StartsWith(prefix) ||
-                     t.Key.StartsWith(lower) ||
-                     t.Key.StartsWith(upper));
+        return t => t.Key != null && t.Key.ToLower().StartsWith(lower);
     }
 
     /// <summary>
@@ -1285,7 +1345,19 @@ public sealed class TaskService(
         return new string(buffer[..len]);
     }
 
-    internal TaskSummaryDto ToSummary(TaskItem task, Project? project, int pendingDependencies = 0)
+    internal TaskSummaryDto ToSummary(TaskItem task, Project? project, int pendingDependencies = 0) =>
+        ToSummary(task, project, clock.UtcNow, pendingDependencies);
+
+    /// <summary>
+    /// 任务 → DTO 的**唯一映射**。评审包（ReviewService）也复用它 ——
+    /// 抄第二份就会漏字段：IsArchived / Assignee / Priority / DueAt / Weight /
+    /// PendingDependencies / Stale 全都漏过一次，agent 拿到的评审包比列表还少信息。
+    /// </summary>
+    internal static TaskSummaryDto ToSummary(
+        TaskItem task,
+        Project? project,
+        DateTimeOffset now,
+        int pendingDependencies = 0)
     {
         var lastActivity = task.LastActivityAt ?? task.UpdatedAt;
         return new TaskSummaryDto(
@@ -1298,7 +1370,7 @@ public sealed class TaskService(
             task.LeaseExpiresAt,
             task.UpdatedAt,
             task.LastActivityAt,
-            (clock.UtcNow - lastActivity).TotalHours > StaleAfterHours,
+            (now - lastActivity).TotalHours > StaleAfterHours,
             task.MilestoneId,
             task.Key,
             task.Type,

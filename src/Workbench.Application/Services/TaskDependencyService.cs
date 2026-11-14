@@ -51,6 +51,16 @@ public interface ITaskDependencyService
 
 public sealed class TaskDependencyService(IAppDbContext db, IClock clock) : ITaskDependencyService
 {
+    /// <summary>
+    /// 「环检测 → 写入」的串行闸门。
+    ///
+    /// 检测本身不是原子的：两个并发请求各自遍历时都看不到对方正要写的那条边，
+    /// 于是 A→B 和 B→A 双双通过检测，库里就留下一个环，之后两个任务永远开不了工。
+    /// SQLite 是单写者、Web 是唯一写进程，所以进程内串行化就够了 ——
+    /// 不需要分布式锁，也不要把检测挪进 SQL（EF 翻译不了图遍历）。
+    /// </summary>
+    private static readonly SemaphoreSlim WriteGate = new(1, 1);
+
     public async Task<IReadOnlyList<TaskDependencyDto>> ListAsync(
         Guid taskId,
         CancellationToken cancellationToken = default)
@@ -89,7 +99,9 @@ public sealed class TaskDependencyService(IAppDbContext db, IClock clock) : ITas
                     d.DependsOnTaskId,
                     dependsOn?.Key,
                     dependsOn?.Title ?? "(已删除)",
-                    dependsOn is not null && dependsOn.Status == TaskStatus.Done,
+                    // 前置被删了算「已满足」—— 与 CountPending / 开工守卫同一口径，
+                    // 不能永远等一个不存在的任务
+                    dependsOn is null || dependsOn.Status == TaskStatus.Done,
                     d.Type.ToString(),
                     d.Note,
                     d.CreatedAt);
@@ -126,52 +138,70 @@ public sealed class TaskDependencyService(IAppDbContext db, IClock clock) : ITas
             throw new NotFoundException("前置任务", dependsOnTaskId);
         }
 
+        // 跨项目依赖一律拒绝：两个项目各有自己的里程碑、进度与看板，
+        // 串起来之后「等前置完成」可能永远等不到（那边根本不在这个项目的流程里），
+        // 还会把本项目的任务无声卡死。
+        if (tasks[taskId].ProjectId != tasks[dependsOnTaskId].ProjectId)
+        {
+            throw new WorkbenchException(
+                $"依赖的两个任务不属于同一个项目（{tasks[taskId].ProjectId} / {tasks[dependsOnTaskId].ProjectId}），已拒绝。");
+        }
+
         // Blocks 翻成对偶：库里只存「我依赖它」一种方向
         var (blockedTaskId, prerequisiteId) = type == DependencyType.Blocks
             ? (dependsOnTaskId, taskId)
             : (taskId, dependsOnTaskId);
 
-        if (await WouldCreateCycleAsync(blockedTaskId, prerequisiteId, cancellationToken))
+        // 检测与写入必须在同一个闸门里 —— 见 WriteGate 的说明。
+        await WriteGate.WaitAsync(cancellationToken);
+        try
         {
-            throw new WorkbenchException(
-                "这条依赖会形成环（A 依赖 B、B 依赖 A …），已拒绝。依赖必须是有向无环的。");
+            if (await WouldCreateCycleAsync(blockedTaskId, prerequisiteId, cancellationToken))
+            {
+                throw new WorkbenchException(
+                    "这条依赖会形成环（A 依赖 B、B 依赖 A …），已拒绝。依赖必须是有向无环的。");
+            }
+
+            var existing = await db.TaskDependencies
+                .FirstOrDefaultAsync(
+                    d => d.TaskId == blockedTaskId && d.DependsOnTaskId == prerequisiteId,
+                    cancellationToken);
+
+            if (existing is not null)
+            {
+                throw new WorkbenchException("这两个任务之间已经有依赖了。");
+            }
+
+            var dependency = new TaskDependency
+            {
+                TaskId = blockedTaskId,
+                DependsOnTaskId = prerequisiteId,
+                Type = DependencyType.BlockedBy,
+                Note = note,
+                CreatedAt = clock.UtcNow
+            };
+
+            db.TaskDependencies.Add(dependency);
+
+            // 依赖也是账本上的事 —— 事后要能追溯「当时是谁把它挡住的」
+            db.StatusEvents.Add(new StatusEvent
+            {
+                TaskId = blockedTaskId,
+                FromStatus = null,
+                ToStatus = null,
+                Source = TaskEventSource.Human,
+                EventType = TaskEventTypes.DependencyAdded,
+                Note = $"新增依赖: 依赖 {prerequisiteId} 先完成",
+                Payload = WorkbenchJson.Serialize(new { dependency = prerequisiteId, note }),
+                CreatedAt = clock.UtcNow
+            });
+
+            await db.SaveChangesAsync(cancellationToken);
         }
-
-        var existing = await db.TaskDependencies
-            .FirstOrDefaultAsync(
-                d => d.TaskId == blockedTaskId && d.DependsOnTaskId == prerequisiteId,
-                cancellationToken);
-
-        if (existing is not null)
+        finally
         {
-            throw new WorkbenchException("这两个任务之间已经有依赖了。");
+            WriteGate.Release();
         }
-
-        var dependency = new TaskDependency
-        {
-            TaskId = blockedTaskId,
-            DependsOnTaskId = prerequisiteId,
-            Type = DependencyType.BlockedBy,
-            Note = note,
-            CreatedAt = clock.UtcNow
-        };
-
-        db.TaskDependencies.Add(dependency);
-
-        // 依赖也是账本上的事 —— 事后要能追溯「当时是谁把它挡住的」
-        db.StatusEvents.Add(new StatusEvent
-        {
-            TaskId = blockedTaskId,
-            FromStatus = null,
-            ToStatus = null,
-            Source = TaskEventSource.Human,
-            EventType = TaskEventTypes.DependencyAdded,
-            Note = $"新增依赖: 依赖 {prerequisiteId} 先完成",
-            Payload = WorkbenchJson.Serialize(new { dependency = prerequisiteId, note }),
-            CreatedAt = clock.UtcNow
-        });
-
-        await db.SaveChangesAsync(cancellationToken);
 
         var list = await ListAsync(blockedTaskId, cancellationToken);
         return list.First(d => d.DependsOnTaskId == prerequisiteId);
@@ -212,30 +242,8 @@ public sealed class TaskDependencyService(IAppDbContext db, IClock clock) : ITas
 
     public async Task<int> CountPendingAsync(Guid taskId, CancellationToken cancellationToken = default)
     {
-        var dependencies = await db.TaskDependencies
-            .AsNoTracking()
-            .Where(d => d.TaskId == taskId)
-            .Select(d => d.DependsOnTaskId)
-            .ToListAsync(cancellationToken);
-
-        if (dependencies.Count == 0)
-        {
-            return 0;
-        }
-
-        var prerequisiteIds = dependencies.Distinct().ToList();
-
-        var prerequisites = await db.Tasks
-            .AsNoTracking()
-            .Where(t => prerequisiteIds.Contains(t.Id))
-            .Select(t => new { t.Id, t.Status })
-            .ToListAsync(cancellationToken);
-
-        var existing = prerequisites.Select(p => p.Id).ToHashSet();
-
-        // 前置任务被删了也算「已完成」—— 依赖指向空气时不该永远挡着
-        return prerequisites.Count(p => p.Status != TaskStatus.Done)
-               + prerequisiteIds.Count(id => !existing.Contains(id));
+        var counts = await PendingDependencyCounts.CountAsync(db, [taskId], cancellationToken);
+        return counts.GetValueOrDefault(taskId);
     }
 
     /// <summary>
@@ -288,6 +296,67 @@ public sealed class TaskDependencyService(IAppDbContext db, IClock clock) : ITas
 }
 
 /// <summary>
+/// 「还有几个前置没做完」的**唯一口径**。
+///
+/// 任务列表、任务上下文、评审包、依赖服务、开工守卫全都走这里 ——
+/// 各算各的话口径一定会漂移（曾经就是：一处把「前置已删」算成还欠着，
+/// 另一处算成已满足，于是列表显示动不了、真去开工却放行了）。
+///
+/// 语义：**前置已删 = 已满足**。依赖指向空气时不该永远挡着，
+/// 否则删掉一个任务就把下游整条链永久锁死。
+/// </summary>
+internal static class PendingDependencyCounts
+{
+    internal static async Task<Dictionary<Guid, int>> CountAsync(
+        IAppDbContext db,
+        IReadOnlyList<Guid> taskIds,
+        CancellationToken cancellationToken)
+    {
+        if (taskIds.Count == 0)
+        {
+            return [];
+        }
+
+        var dependencies = await db.TaskDependencies
+            .AsNoTracking()
+            .Where(d => taskIds.Contains(d.TaskId))
+            .Select(d => new { d.TaskId, d.DependsOnTaskId })
+            .ToListAsync(cancellationToken);
+
+        if (dependencies.Count == 0)
+        {
+            return [];
+        }
+
+        // 前置任务的状态一次查完 —— 别在内存里一个个问。
+        var prerequisiteIds = dependencies.Select(d => d.DependsOnTaskId).Distinct().ToList();
+
+        var prerequisites = await db.Tasks
+            .AsNoTracking()
+            .Where(t => prerequisiteIds.Contains(t.Id))
+            .Select(t => new { t.Id, t.Status })
+            .ToListAsync(cancellationToken);
+
+        var satisfied = prerequisites
+            .Where(p => p.Status == TaskStatus.Done)
+            .Select(p => p.Id)
+            .ToHashSet();
+
+        // 查不到的前置 = 已被删除 = 已满足
+        var existing = prerequisites.Select(p => p.Id).ToHashSet();
+        foreach (var id in prerequisiteIds.Where(id => !existing.Contains(id)))
+        {
+            satisfied.Add(id);
+        }
+
+        return dependencies
+            .Where(d => !satisfied.Contains(d.DependsOnTaskId))
+            .GroupBy(d => d.TaskId)
+            .ToDictionary(g => g.Key, g => g.Count());
+    }
+}
+
+/// <summary>
 /// 事件类型常量。机器消费事件账本时按这个判定，不去猜 Note 的文本。
 /// </summary>
 public static class TaskEventTypes
@@ -301,4 +370,14 @@ public static class TaskEventTypes
     public const string Assigned = "task.assigned";
     public const string Archived = "task.archived";
     public const string Note = "note";
+    public const string Claimed = "task.claimed";
+    public const string Released = "task.released";
+    public const string ReviewRoundOpened = "review.round_opened";
+    public const string ReviewDimensionResult = "review.dimension_result";
+    public const string ReviewRoundClosed = "review.round_closed";
+    public const string AgentLaunched = "agent.launched";
+    public const string AgentExited = "agent.exited";
+    public const string MilestoneAssigned = "milestone.assigned";
+    public const string TypeChanged = "task.type_changed";
+    public const string BranchBound = "task.branch_bound";
 }

@@ -6,7 +6,17 @@ namespace Workbench.Application.Services;
 
 public interface IProjectService
 {
-    Task<ProjectSummaryDto> CreateAsync(string name, string? description = null, CancellationToken cancellationToken = default);
+    Task<ProjectSummaryDto> CreateAsync(
+        string name,
+        string? description = null,
+        CancellationToken cancellationToken = default,
+        /// <summary>
+        /// 项目绑定的本地仓库路径。
+        ///
+        /// 参数放在 CancellationToken 之后：插在中间会破坏既有的位置参数调用
+        /// （老代码第 3 个位置传的是 ct，直接编译不过）。
+        /// </summary>
+        string? repoPath = null);
     Task<IReadOnlyList<ProjectSummaryDto>> ListAsync(CancellationToken cancellationToken = default);
     Task<ProjectSummaryDto?> GetAsync(Guid id, CancellationToken cancellationToken = default);
     Task<ProjectSummaryDto> UpdateAsync(
@@ -47,7 +57,8 @@ public sealed class ProjectService(IAppDbContext db, IClock clock) : IProjectSer
     public async Task<ProjectSummaryDto> CreateAsync(
         string name,
         string? description = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? repoPath = null)
     {
         if (string.IsNullOrWhiteSpace(name))
         {
@@ -68,10 +79,52 @@ public sealed class ProjectService(IAppDbContext db, IClock clock) : IProjectSer
             UpdatedAt = clock.UtcNow
         };
 
+        // 仓库路径在这里就落定：项目跟本地仓库的绑定是**创建时**建立的，
+        // 不是「以后有空再补」。绑了之后 agent 在这个仓库里干活才能落到本项目上。
+        ApplyRepoPathAsync(project, repoPath);
+
         db.Projects.Add(project);
         await db.SaveChangesAsync(cancellationToken);
 
         return BuildSummary(project, []);
+    }
+
+    /// <summary>
+    /// 设置仓库路径并算出绑定键 <see cref="Project.RepoRoot"/>。
+    ///
+    /// 绑定键是**规范化后的绝对路径**（解过符号链接）——
+    /// macOS 上 /tmp 其实是 /private/tmp，不规范化就会同一个仓库出现两个键。
+    ///
+    /// 同一个仓库不允许绑两个项目：反查仓库→项目时才会唯一，
+    /// 不唯一的话审计会把干活记到随机的那个项目上。
+    /// </summary>
+    private void ApplyRepoPathAsync(
+        Project project,
+        string? repoPath)
+    {
+        if (repoPath is null)
+        {
+            return;
+        }
+
+        var trimmed = repoPath.Trim();
+        if (trimmed.Length == 0)
+        {
+            project.RepoPath = null;
+            project.RepoRoot = null;
+            return;
+        }
+
+        // 两套路径，分工明确：
+        //   RepoPath —— 人填的（绝对化，但不解软链），界面上显示的就是它；
+        //   RepoRoot —— 规范化后的绑定键（解软链），反查仓库→项目只用它。
+        // 分开存是因为 macOS 上 /tmp 其实是 /private/tmp：绑定键必须规范化，
+        // 但把用户填的路径改写成 /private/tmp/... 会让人认不出自己填了什么。
+        var absolute = Path.GetFullPath(trimmed);
+        var canonical = PathBoundary.ResolveRealPath(trimmed);
+
+        project.RepoPath = absolute;
+        project.RepoRoot = canonical;
     }
 
     private async Task<Workspace> CreateDefaultWorkspaceAsync(CancellationToken cancellationToken)
@@ -142,7 +195,7 @@ public sealed class ProjectService(IAppDbContext db, IClock clock) : IProjectSer
 
         if (repoPath is not null)
         {
-            project.RepoPath = repoPath;
+            ApplyRepoPathAsync(project, repoPath);
         }
 
         if (repoRemote is not null)
@@ -201,7 +254,7 @@ public sealed class ProjectService(IAppDbContext db, IClock clock) : IProjectSer
 
         if (repoPath is not null)
         {
-            project.RepoPath = Normalize(repoPath);
+            ApplyRepoPathAsync(project, repoPath);
         }
 
         if (repoRemote is not null)
@@ -277,28 +330,21 @@ public sealed class ProjectService(IAppDbContext db, IClock clock) : IProjectSer
         ShellRunner.ParseAllowed(project.AllowedCommandsJson),
         project.AgentCommand,
         project.NotificationWebhookUrl,
-        project.NotificationFormat);
+        project.NotificationFormat,
+        project.RepoRoot);
 
     private ProjectSummaryDto BuildSummary(
         Project project,
         IReadOnlyList<TaskItem> tasks)
     {
-        // 子任务归并到父任务，避免重复计数
-        var topLevel = tasks.Where(t => t.ParentTaskId == null).ToList();
-        var counted = topLevel.Count > 0 ? topLevel : tasks.ToList();
-
-        var totalWeight = counted.Sum(t => Math.Max(t.Weight, 0.0001));
+        // 统计口径统一走 TaskProgress：排除归档与取消，子任务归并到父任务。
+        // 归档的任务以前只在列表里被排除，统计里照样算进分母 ——
+        // 于是「清理掉误建的任务」之后项目进度永远到不了 100%。
+        var counted = TaskProgress.Countable(tasks);
 
         // 没有任务时 totalWeight 为 0，直接相除会得到 NaN，
         // 而 NaN 无法序列化成合法 JSON，会让整个列表接口 500。
-        var progress = totalWeight > 0d
-            ? counted.Sum(t => TaskStatusMachine.ProgressWeight(t.Status) * Math.Max(t.Weight, 0.0001)) / totalWeight
-            : 0d;
-
-        if (!double.IsFinite(progress))
-        {
-            progress = 0d;
-        }
+        var progress = TaskProgress.Weighted(counted);
 
         DateTimeOffset? lastActivity = tasks.Count == 0
             ? null
@@ -320,6 +366,7 @@ public sealed class ProjectService(IAppDbContext db, IClock clock) : IProjectSer
             stale,
             project.RepoPath,
             project.DefaultBranch,
-            project.RepoRemote);
+            project.RepoRemote,
+            project.RepoRoot);
     }
 }

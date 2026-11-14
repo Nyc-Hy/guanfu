@@ -88,10 +88,23 @@ public sealed class WorkspaceArchiver(
 
         // 加密密钥：数据库密码是 AES-GCM 加密的，密钥丢了换机后连不上老库
         var keySource = _options.KeyFilePath;
+        string? keyMode = null;
         if (File.Exists(keySource))
         {
             var keyTarget = Path.Combine(target, KeyFileName);
             File.Copy(keySource, keyTarget, overwrite: true);
+
+            // File.Copy 不保留 Unix 权限：secret.key 源是 0600，复制出来变 0644，
+            // 导出目录里人人都能读密钥。复制后按源文件把权限设回去（非 Windows）。
+            // 权限信息同时写进 manifest（keyMode，八进制），导入侧据此恢复 ——
+            // 导出物可能被打包成 zip / 经不保留权限的文件系统中转，光靠文件本身不够。
+            if (!OperatingSystem.IsWindows())
+            {
+                var mode = File.GetUnixFileMode(keySource);
+                File.SetUnixFileMode(keyTarget, mode);
+                keyMode = Convert.ToString((int)mode, 8).PadLeft(4, '0');
+            }
+
             fileCount++;
             totalBytes += new FileInfo(keyTarget).Length;
         }
@@ -105,7 +118,8 @@ public sealed class WorkspaceArchiver(
             database = DatabaseFileName,
             documents = DocumentsFolderName,
             runs = Directory.Exists(runsSource) ? WorkspaceArchiveFiles.RunsFolderName : null,
-            key = File.Exists(keySource) ? KeyFileName : null
+            key = File.Exists(keySource) ? KeyFileName : null,
+            keyMode
         };
 
         var manifestPath = Path.Combine(target, ManifestFileName);

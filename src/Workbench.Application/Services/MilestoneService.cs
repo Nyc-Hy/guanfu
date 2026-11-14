@@ -42,7 +42,9 @@ public interface IMilestoneService
         int? order = null,
         CancellationToken cancellationToken = default,
         Guid? parentId = null,
-        MilestoneKind? kind = null);
+        MilestoneKind? kind = null,
+        bool clearParent = false,
+        bool clearDue = false);
 
     Task DeleteAsync(Guid id, CancellationToken cancellationToken = default);
 
@@ -144,6 +146,11 @@ public sealed class MilestoneService(IAppDbContext db, IClock clock) : IMileston
         return Build(milestone, []);
     }
 
+    /// <summary>
+    /// 改里程碑。null 表示「不动这个字段」——
+    /// 所以「解除父级」「清空截止日」必须走显式的 <paramref name="clearParent"/> /
+    /// <paramref name="clearDue"/>，否则这两件事永远做不到。
+    /// </summary>
     public async Task<MilestoneDto> UpdateAsync(
         Guid id,
         string? name = null,
@@ -152,8 +159,20 @@ public sealed class MilestoneService(IAppDbContext db, IClock clock) : IMileston
         int? order = null,
         CancellationToken cancellationToken = default,
         Guid? parentId = null,
-        MilestoneKind? kind = null)
+        MilestoneKind? kind = null,
+        bool clearParent = false,
+        bool clearDue = false)
     {
+        if (clearParent && parentId is not null)
+        {
+            throw new WorkbenchException("clearParent 与 parentId 不能同时给：一个要清空，一个要设值。");
+        }
+
+        if (clearDue && dueAt is not null)
+        {
+            throw new WorkbenchException("clearDue 与 dueAt 不能同时给：一个要清空，一个要设值。");
+        }
+
         var milestone = await db.Milestones.FirstOrDefaultAsync(m => m.Id == id, cancellationToken)
                         ?? throw new NotFoundException("里程碑", id);
 
@@ -167,7 +186,11 @@ public sealed class MilestoneService(IAppDbContext db, IClock clock) : IMileston
             milestone.Description = description;
         }
 
-        if (dueAt is not null)
+        if (clearDue)
+        {
+            milestone.DueAt = null;
+        }
+        else if (dueAt is not null)
         {
             milestone.DueAt = dueAt;
         }
@@ -182,7 +205,12 @@ public sealed class MilestoneService(IAppDbContext db, IClock clock) : IMileston
             milestone.Kind = kind.Value;
         }
 
-        if (parentId is not null)
+        if (clearParent)
+        {
+            // 解除父级 = 变成顶层（迭代版本）
+            milestone.ParentId = null;
+        }
+        else if (parentId is not null)
         {
             if (parentId.Value == id)
             {
@@ -274,6 +302,8 @@ public sealed class MilestoneService(IAppDbContext db, IClock clock) : IMileston
         var task = await db.Tasks.FirstOrDefaultAsync(t => t.Id == taskId, cancellationToken)
                    ?? throw new NotFoundException("任务", taskId);
 
+        string? milestoneName = null;
+
         if (milestoneId is not null)
         {
             var milestone = await db.Milestones
@@ -284,30 +314,49 @@ public sealed class MilestoneService(IAppDbContext db, IClock clock) : IMileston
             {
                 throw new WorkbenchException("里程碑与任务不属于同一个项目。");
             }
+
+            milestoneName = milestone.Name;
+        }
+
+        var before = task.MilestoneId;
+        if (before == milestoneId)
+        {
+            return;
         }
 
         task.MilestoneId = milestoneId;
         task.UpdatedAt = clock.UtcNow;
+        task.LastActivityAt = clock.UtcNow;
+
+        // 挂载/摘出也是账本上的事：事后要能回答「这个任务什么时候进的哪个版本」
+        db.StatusEvents.Add(new StatusEvent
+        {
+            TaskId = taskId,
+            // 这不是状态迁移 —— from/to 留空
+            FromStatus = null,
+            ToStatus = null,
+            Source = TaskEventSource.Human,
+            Note = milestoneId is null
+                ? "摘出里程碑"
+                : $"挂到里程碑「{milestoneName}」",
+            EventType = TaskEventTypes.MilestoneAssigned,
+            Payload = WorkbenchJson.Serialize(new
+            {
+                from = before,
+                to = milestoneId,
+                milestoneName
+            }),
+            CreatedAt = clock.UtcNow
+        });
+
         await db.SaveChangesAsync(cancellationToken);
     }
 
     private static MilestoneDto Build(Milestone milestone, IReadOnlyList<TaskItem> tasks)
     {
-        var counted = tasks.Where(t => t.ParentTaskId == null).ToList();
-        if (counted.Count == 0)
-        {
-            counted = tasks.ToList();
-        }
-
-        var totalWeight = counted.Sum(t => Math.Max(t.Weight, 0.0001));
-        var progress = totalWeight > 0d
-            ? counted.Sum(t => TaskStatusMachine.ProgressWeight(t.Status) * Math.Max(t.Weight, 0.0001)) / totalWeight
-            : 0d;
-
-        if (!double.IsFinite(progress))
-        {
-            progress = 0d;
-        }
+        // 与项目进度、度量看板同一口径：排除归档与取消，子任务归并到父任务。
+        var counted = TaskProgress.Countable(tasks);
+        var progress = TaskProgress.Weighted(counted);
 
         return new MilestoneDto(
             milestone.Id,

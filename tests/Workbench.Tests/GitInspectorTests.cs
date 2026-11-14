@@ -251,6 +251,183 @@ public class GitInspectorTests : IDisposable
         Assert.False(File.Exists(marker), "超时后孙进程还活着 —— 进程树没杀干净。");
     }
 
+    // ---------- 待提交指纹（git_commit 审批要绑的内容指纹） ----------
+
+    [Fact]
+    public void 指纹_干净仓库稳定且非空()
+    {
+        var repo = NewRepo();
+        File.WriteAllText(Path.Combine(repo, "a.cs"), "x\n");
+        RunGit(repo, "add", "-A");
+        RunGit(repo, "commit", "-m", "init");
+
+        var inspector = new GitInspector();
+        var first = inspector.GetPendingCommitFingerprint(repo);
+        var second = inspector.GetPendingCommitFingerprint(repo);
+
+        Assert.NotNull(first);
+        Assert.Matches("^[0-9a-f]{64}$", first!);
+        Assert.Equal(first, second);
+    }
+
+    [Fact]
+    public void 指纹_对已跟踪文件内容敏感()
+    {
+        var repo = NewRepo();
+        File.WriteAllText(Path.Combine(repo, "a.cs"), "v1\n");
+        RunGit(repo, "add", "-A");
+        RunGit(repo, "commit", "-m", "init");
+
+        var inspector = new GitInspector();
+        var before = inspector.GetPendingCommitFingerprint(repo);
+
+        File.WriteAllText(Path.Combine(repo, "a.cs"), "v2\n");
+        var after = inspector.GetPendingCommitFingerprint(repo);
+
+        Assert.NotNull(before);
+        Assert.NotNull(after);
+        Assert.NotEqual(before, after);
+    }
+
+    [Fact]
+    public void 指纹_对未跟踪文件内容敏感()
+    {
+        var repo = NewRepo();
+        File.WriteAllText(Path.Combine(repo, "a.cs"), "x\n");
+        RunGit(repo, "add", "-A");
+        RunGit(repo, "commit", "-m", "init");
+
+        File.WriteAllText(Path.Combine(repo, "u.txt"), "one\n");
+        var inspector = new GitInspector();
+        var before = inspector.GetPendingCommitFingerprint(repo);
+
+        // 未跟踪文件不在 git diff HEAD 里 —— 内容哈希必须自己覆盖它
+        File.WriteAllText(Path.Combine(repo, "u.txt"), "two\n");
+        var after = inspector.GetPendingCommitFingerprint(repo);
+
+        Assert.NotNull(before);
+        Assert.NotNull(after);
+        Assert.NotEqual(before, after);
+    }
+
+    [Fact]
+    public void 指纹_新增未跟踪文件会变()
+    {
+        var repo = NewRepo();
+        File.WriteAllText(Path.Combine(repo, "a.cs"), "x\n");
+        RunGit(repo, "add", "-A");
+        RunGit(repo, "commit", "-m", "init");
+
+        var inspector = new GitInspector();
+        var before = inspector.GetPendingCommitFingerprint(repo);
+
+        File.WriteAllText(Path.Combine(repo, "新文件.txt"), "hello\n");
+        var after = inspector.GetPendingCommitFingerprint(repo);
+
+        Assert.NotEqual(before, after);
+    }
+
+    [Fact]
+    public void 指纹_未跟踪目录里的文件逐个纳入()
+    {
+        var repo = NewRepo();
+        File.WriteAllText(Path.Combine(repo, "a.cs"), "x\n");
+        RunGit(repo, "add", "-A");
+        RunGit(repo, "commit", "-m", "init");
+
+        Directory.CreateDirectory(Path.Combine(repo, "dir"));
+        File.WriteAllText(Path.Combine(repo, "dir", "a.txt"), "a\n");
+
+        var inspector = new GitInspector();
+        var before = inspector.GetPendingCommitFingerprint(repo);
+
+        // 默认 porcelain 只报 "?? dir/"，目录里加文件就漏了 —— 必须 -uall 展开
+        File.WriteAllText(Path.Combine(repo, "dir", "b.txt"), "b\n");
+        var after = inspector.GetPendingCommitFingerprint(repo);
+
+        Assert.NotNull(before);
+        Assert.NotEqual(before, after);
+    }
+
+    [Fact]
+    public void 指纹_中文未跟踪文件名内容敏感()
+    {
+        var repo = NewRepo();
+        File.WriteAllText(Path.Combine(repo, "a.cs"), "x\n");
+        RunGit(repo, "add", "-A");
+        RunGit(repo, "commit", "-m", "init");
+
+        File.WriteAllText(Path.Combine(repo, "需求文档.md"), "v1\n");
+        var inspector = new GitInspector();
+        var before = inspector.GetPendingCommitFingerprint(repo);
+
+        File.WriteAllText(Path.Combine(repo, "需求文档.md"), "v2\n");
+        var after = inspector.GetPendingCommitFingerprint(repo);
+
+        Assert.NotNull(before);
+        Assert.NotEqual(before, after);
+    }
+
+    [Fact]
+    public void 指纹_读不到仓库返回null()
+    {
+        var inspector = new GitInspector();
+
+        // 不是 git 仓库
+        Assert.Null(inspector.GetPendingCommitFingerprint(_root));
+        // 路径不存在
+        Assert.Null(inspector.GetPendingCommitFingerprint(Path.Combine(_root, "不存在")));
+        // 空路径
+        Assert.Null(inspector.GetPendingCommitFingerprint(" "));
+    }
+
+    [Fact]
+    public void 指纹_还没有提交的仓库也能算()
+    {
+        var repo = NewRepo();
+        File.WriteAllText(Path.Combine(repo, "a.cs"), "x\n");
+        RunGit(repo, "add", "-A");  // 只暂存，不提交：git diff HEAD 会失败，要能退回
+
+        var inspector = new GitInspector();
+        var before = inspector.GetPendingCommitFingerprint(repo);
+        Assert.NotNull(before);
+
+        File.WriteAllText(Path.Combine(repo, "a.cs"), "y\n");
+        RunGit(repo, "add", "-A");
+        var after = inspector.GetPendingCommitFingerprint(repo);
+
+        Assert.NotEqual(before, after);
+    }
+
+    [Fact]
+    public void 指纹_超大未跟踪文件只哈希路径与长度()
+    {
+        var repo = NewRepo();
+        File.WriteAllText(Path.Combine(repo, "a.cs"), "x\n");
+        RunGit(repo, "add", "-A");
+        RunGit(repo, "commit", "-m", "init");
+
+        // 超过 10MB 的未跟踪文件：只哈希路径+长度（取舍见实现注释）。
+        // 同长度换内容指纹不变 —— 这是明示的取舍，钉住它防止口径漂移。
+        var big = new byte[11 * 1024 * 1024];
+        File.WriteAllBytes(Path.Combine(repo, "big.bin"), big);
+
+        var inspector = new GitInspector();
+        var before = inspector.GetPendingCommitFingerprint(repo);
+        Assert.NotNull(before);
+
+        big[0] = 1;
+        File.WriteAllBytes(Path.Combine(repo, "big.bin"), big);
+        var after = inspector.GetPendingCommitFingerprint(repo);
+
+        Assert.Equal(before, after);
+
+        // 长度变了就必须能察觉
+        File.WriteAllBytes(Path.Combine(repo, "big.bin"), new byte[11 * 1024 * 1024 + 1]);
+        var resized = inspector.GetPendingCommitFingerprint(repo);
+        Assert.NotEqual(before, resized);
+    }
+
     // ---------- 辅助 ----------
 
     private string NewRepo()

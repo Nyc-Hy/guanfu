@@ -25,6 +25,9 @@ public sealed class WorkbenchDbContext(DbContextOptions<WorkbenchDbContext> opti
     public DbSet<ReviewItem> ReviewItems => Set<ReviewItem>();
     public DbSet<TaskDependency> TaskDependencies => Set<TaskDependency>();
     public DbSet<SchemaVersion> SchemaVersions => Set<SchemaVersion>();
+    public DbSet<AgentSession> AgentSessions => Set<AgentSession>();
+    public DbSet<TaskFileChange> TaskFileChanges => Set<TaskFileChange>();
+    public DbSet<DbCallRecord> DbCallRecords => Set<DbCallRecord>();
 
     /// <inheritdoc />
     public void ClearTracking() => ChangeTracker.Clear();
@@ -57,8 +60,13 @@ public sealed class WorkbenchDbContext(DbContextOptions<WorkbenchDbContext> opti
             e.Property(x => x.Name).HasMaxLength(200).IsRequired();
             e.Property(x => x.Description).HasMaxLength(4000);
             e.Property(x => x.RepoPath).HasMaxLength(1000);
+            e.Property(x => x.RepoRoot).HasMaxLength(1000);
             e.Property(x => x.RepoRemote).HasMaxLength(500);
             e.Property(x => x.DefaultBranch).HasMaxLength(200);
+
+            // 仓库绑定键。索引是为了反查「这个目录归哪个项目」时不用全表扫 ——
+            // agent 每次开工都要查一次。
+            e.HasIndex(x => x.RepoRoot);
 
             e.HasOne(x => x.Workspace)
                 .WithMany(w => w.Projects)
@@ -163,7 +171,9 @@ public sealed class WorkbenchDbContext(DbContextOptions<WorkbenchDbContext> opti
                 .HasForeignKey(x => x.TaskId)
                 .OnDelete(DeleteBehavior.Cascade);
 
-            e.HasIndex(x => new { x.TaskId, x.Version });
+            // 同一任务的计划版本号唯一 —— 版本重试（并发保存）会算出同一个 Version，
+            // 这条索引是兜底。老库已有重复数据时 SchemaUpgrader 会跳过并记警告。
+            e.HasIndex(x => new { x.TaskId, x.Version }).IsUnique();
         });
 
         modelBuilder.Entity<Artifact>(e =>
@@ -268,6 +278,7 @@ public sealed class WorkbenchDbContext(DbContextOptions<WorkbenchDbContext> opti
             e.Property(x => x.Status).HasConversion<string>().HasMaxLength(32);
             e.Property(x => x.RequestedBy).HasMaxLength(200);
             e.Property(x => x.DecidedBy).HasMaxLength(200);
+            e.Property(x => x.DecidedByCredential).HasMaxLength(64);
             e.Property(x => x.DecisionReason).HasMaxLength(2000);
             e.Property(x => x.ResultSummary).HasMaxLength(4000);
 
@@ -284,11 +295,15 @@ public sealed class WorkbenchDbContext(DbContextOptions<WorkbenchDbContext> opti
             e.Property(x => x.Arguments).HasMaxLength(16000);
             e.Property(x => x.Outcome).HasMaxLength(50);
             e.Property(x => x.ResultSummary).HasMaxLength(4000);
+            e.Property(x => x.PrevHash).HasMaxLength(64);
+            e.Property(x => x.Hash).HasMaxLength(64);
 
             // 审计表原来一个索引都没有 —— 查一次调用记录就是全表扫
             e.HasIndex(x => x.CreatedAt);
             e.HasIndex(x => x.ToolName);
             e.HasIndex(x => x.TaskId);
+            e.HasIndex(x => x.Hash);
+            e.HasIndex(x => x.Sequence);
         });
 
         modelBuilder.Entity<DbConnectionConfig>(e =>
@@ -364,6 +379,100 @@ public sealed class WorkbenchDbContext(DbContextOptions<WorkbenchDbContext> opti
                 .WithMany(c => c.Rules)
                 .HasForeignKey(x => x.ConnectionId)
                 .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<AgentSession>(e =>
+        {
+            e.ToTable("agent_sessions");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.AgentId).HasMaxLength(200).IsRequired();
+            e.Property(x => x.RepoPath).HasMaxLength(1000).IsRequired();
+            e.Property(x => x.McpSessionId).HasMaxLength(200);
+
+            e.HasOne(x => x.Project)
+                .WithMany()
+                .HasForeignKey(x => x.ProjectId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            e.HasOne(x => x.Task)
+                .WithMany()
+                .HasForeignKey(x => x.TaskId)
+                .OnDelete(DeleteBehavior.SetNull);
+
+            e.HasIndex(x => x.ProjectId);
+            e.HasIndex(x => x.LastSeenAt);
+
+            // 同一个 MCP 协议会话只对应一条 agent 会话。
+            // 协议会话 id 为空的行不参与唯一性判断（SQLite 的唯一索引不约束多个 NULL）。
+            e.HasIndex(x => x.McpSessionId).IsUnique();
+        });
+
+        modelBuilder.Entity<TaskFileChange>(e =>
+        {
+            e.ToTable("task_file_changes");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Path).HasMaxLength(1000).IsRequired();
+            e.Property(x => x.ChangeKind).HasMaxLength(32);
+            e.Property(x => x.OldPath).HasMaxLength(1000);
+            e.Property(x => x.CommitSha).HasMaxLength(64);
+            e.Property(x => x.Branch).HasMaxLength(200);
+            e.Property(x => x.Author).HasMaxLength(200);
+
+            e.HasOne(x => x.Task)
+                .WithMany(t => t.FileChanges)
+                .HasForeignKey(x => x.TaskId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            e.HasOne(x => x.Project)
+                .WithMany()
+                .HasForeignKey(x => x.ProjectId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            e.HasOne(x => x.Session)
+                .WithMany()
+                .HasForeignKey(x => x.SessionId)
+                .OnDelete(DeleteBehavior.SetNull);
+
+            e.HasIndex(x => new { x.TaskId, x.CreatedAt });
+            e.HasIndex(x => x.ProjectId);
+            e.HasIndex(x => x.CommitSha);
+        });
+
+        modelBuilder.Entity<DbCallRecord>(e =>
+        {
+            e.ToTable("db_call_records");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.ToolName).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Server).HasMaxLength(500);
+            e.Property(x => x.Database).HasMaxLength(200);
+            e.Property(x => x.Sql).HasMaxLength(16000);
+            e.Property(x => x.Kind).HasMaxLength(32);
+            e.Property(x => x.TargetTables).HasMaxLength(2000);
+            e.Property(x => x.Outcome).HasMaxLength(50);
+            e.Property(x => x.CallerId).HasMaxLength(200);
+
+            e.HasOne(x => x.Project)
+                .WithMany()
+                .HasForeignKey(x => x.ProjectId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            e.HasOne(x => x.Task)
+                .WithMany()
+                .HasForeignKey(x => x.TaskId)
+                .OnDelete(DeleteBehavior.SetNull);
+
+            e.HasOne(x => x.Task)
+                .WithMany()
+                .HasForeignKey(x => x.TaskId)
+                .OnDelete(DeleteBehavior.SetNull);
+
+            // 查库调用记录最常见的三个问法：某个项目干了什么、某个库被碰过没有、
+            // 某张表被哪些任务改过。索引就照这三个问法建。
+            e.HasIndex(x => x.CreatedAt);
+            e.HasIndex(x => new { x.ProjectId, x.CreatedAt });
+            e.HasIndex(x => x.ConnectionId);
+            e.HasIndex(x => x.TargetTables);
+            e.HasIndex(x => x.TaskId);
         });
     }
 }

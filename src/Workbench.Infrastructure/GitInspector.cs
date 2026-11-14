@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using Workbench.Application.Services;
 
@@ -25,15 +27,744 @@ public sealed class GitInspector : IGitInspector
 
         try
         {
-            // Inspect 是同步契约，底下是异步的（两个输出流必须并发读，见 GitProcessRunner）。
-            // 丢到线程池上跑再取结果：直接在当前线程上阻塞等待，
-            // 在带 SynchronizationContext 的线程（Blazor 渲染线程）上有互锁风险。
-            return Task.Run(() => InspectAsync(repoPath)).GetAwaiter().GetResult();
+            // Inspect 是同步契约（调用方多），保留同步。这里直接阻塞等异步实现完成，
+            // 不再套 Task.Run —— 底下整条链路（GitProcessRunner / InspectAsync）都用了
+            // ConfigureAwait(false)，续体不会回贴到调用方的 SynchronizationContext，
+            // 所以在 Blazor 渲染线程上阻塞也不会互锁。
+            return InspectAsync(repoPath).GetAwaiter().GetResult();
         }
         catch (Exception ex)
         {
             return new GitState(null, null, false, 0, ex.Message);
         }
+    }
+
+    /// <inheritdoc />
+    public string? GetPendingCommitFingerprint(string repoPath)
+    {
+        if (string.IsNullOrWhiteSpace(repoPath) || !Directory.Exists(repoPath))
+        {
+            return null;
+        }
+
+        try
+        {
+            // 与 Inspect 同样的同步契约：整条链路 ConfigureAwait(false)，直接阻塞安全。
+            return ComputeFingerprintAsync(repoPath).GetAwaiter().GetResult();
+        }
+        catch (Exception)
+        {
+            // 读不到仓库（不是 git 仓库 / git 挂住 / 超时）一律返回 null，
+            // 调用方必须按「拒绝」处理 —— 不能给出一个「看起来稳定」的假指纹。
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 一个 commit 改了哪些文件。
+    ///
+    /// 两条命令各管一半：<c>--numstat</c> 给增删行数，<c>--name-status</c> 给变更类型。
+    /// 两者按路径合并 —— numstat 只有行数没有类型，name-status 只有类型没有行数。
+    ///
+    /// 读不到（仓库不存在 / 不是 git 仓库 / git 报错 / 超时）一律返回空列表：
+    /// 采集失败不能挡住 agent 干活。
+    /// </summary>
+    public IReadOnlyList<GitFileChange> GetCommitFileChanges(string repoPath, string commitSha)
+    {
+        if (string.IsNullOrWhiteSpace(repoPath) || !Directory.Exists(repoPath)
+            || string.IsNullOrWhiteSpace(commitSha))
+        {
+            return [];
+        }
+
+        try
+        {
+            return GetCommitFileChangesAsync(repoPath, commitSha).GetAwaiter().GetResult();
+        }
+        catch (Exception)
+        {
+            return [];
+        }
+    }
+
+    private static async Task<IReadOnlyList<GitFileChange>> GetCommitFileChangesAsync(
+        string repoPath,
+        string commitSha)
+    {
+        var numstat = await RunGitAsync(
+            repoPath, ["-c", "core.quotePath=false", "show", "--numstat", "--format=", commitSha])
+            .ConfigureAwait(false);
+
+        if (numstat is null)
+        {
+            return [];
+        }
+
+        var nameStatus = await RunGitAsync(
+            repoPath, ["-c", "core.quotePath=false", "show", "--name-status", "--format=", commitSha])
+            .ConfigureAwait(false);
+
+        return MergeChanges(
+            ParseNumStat(numstat ?? string.Empty),
+            ParseNameStatus(nameStatus ?? string.Empty));
+    }
+
+    /// <summary>
+    /// 工作区里改了哪些文件（相对 HEAD，含未跟踪文件）。
+    ///
+    /// 「已产出但还没提交」的那部分也得能追到 —— 否则任务在 Review 阶段
+    /// 看起来像是啥也没干。
+    ///
+    /// 读不到时返回空列表，不抛异常。
+    /// </summary>
+    public IReadOnlyList<GitFileChange> GetWorkingTreeFileChanges(string repoPath)
+    {
+        if (string.IsNullOrWhiteSpace(repoPath) || !Directory.Exists(repoPath))
+        {
+            return [];
+        }
+
+        try
+        {
+            return GetWorkingTreeFileChangesAsync(repoPath).GetAwaiter().GetResult();
+        }
+        catch (Exception)
+        {
+            return [];
+        }
+    }
+
+    private static async Task<IReadOnlyList<GitFileChange>> GetWorkingTreeFileChangesAsync(
+        string repoPath)
+    {
+        // 相对 HEAD 的改动。仓库还没有任何提交时 `git diff HEAD` 会失败，
+        // 退回 `git diff --cached`（对空树）——跟指纹计算里的处理一致。
+        var numstat = await RunGitAsync(
+            repoPath, ["-c", "core.quotePath=false", "diff", "--numstat", "HEAD"])
+            .ConfigureAwait(false);
+
+        var nameStatus = await RunGitAsync(
+            repoPath, ["-c", "core.quotePath=false", "diff", "--name-status", "HEAD"])
+            .ConfigureAwait(false);
+
+        if (numstat is null)
+        {
+            numstat = await RunGitAsync(
+                repoPath, ["-c", "core.quotePath=false", "diff", "--numstat", "--cached"])
+                .ConfigureAwait(false);
+        }
+
+        if (nameStatus is null)
+        {
+            nameStatus = await RunGitAsync(
+                repoPath, ["-c", "core.quotePath=false", "diff", "--name-status", "--cached"])
+                .ConfigureAwait(false);
+        }
+
+        var changes = MergeChanges(
+            ParseNumStat(numstat ?? string.Empty),
+            ParseNameStatus(nameStatus ?? string.Empty)).ToList();
+
+        // 未跟踪文件 diff 看不见，得从 status 里捞。
+        var status = await RunGitAsync(
+            repoPath, ["-c", "core.quotePath=false", "status", "--porcelain", "-uall"])
+            .ConfigureAwait(false);
+
+        if (status is not null)
+        {
+            foreach (var path in ParseUntrackedPaths(status))
+            {
+                // 已经算进去的别重复加
+                if (changes.Any(c => string.Equals(c.Path, path, StringComparison.Ordinal)))
+                {
+                    continue;
+                }
+
+                changes.Add(new GitFileChange(path, "Added", 0, 0));
+            }
+        }
+
+        return changes;
+    }
+
+    /// <summary>当前 HEAD 的 commit sha。读不到返回 null。</summary>
+    public string? GetHeadSha(string repoPath)
+    {
+        if (string.IsNullOrWhiteSpace(repoPath) || !Directory.Exists(repoPath))
+        {
+            return null;
+        }
+
+        try
+        {
+            var result = GitProcessRunner.RunAsync(
+                "git",
+                ["-c", "core.quotePath=false", "rev-parse", "HEAD"],
+                repoPath,
+                CommandTimeout,
+                CancellationToken.None).GetAwaiter().GetResult();
+
+            if (result.ExitCode != 0)
+            {
+                return null;
+            }
+
+            var sha = result.Stdout.Trim();
+            return string.IsNullOrWhiteSpace(sha) ? null : sha;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 跑一条只读的 git 命令。成功返回 stdout，失败返回 null。
+    ///
+    /// 失败一律吞掉：产出文件采集是「锦上添花」的事，
+    /// 读不到就不能把 agent 的主流程带崩。
+    /// </summary>
+    private static async Task<string?> RunGitAsync(string repoPath, IReadOnlyList<string> args)
+    {
+        try
+        {
+            var result = await GitProcessRunner.RunAsync(
+                "git", args, repoPath, CommandTimeout, CancellationToken.None).ConfigureAwait(false);
+
+            return result.ExitCode == 0 ? result.Stdout : null;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 解析 <c>git show --numstat</c> 的输出：<c>added\tdeleted\tpath</c>。
+    ///
+    /// 两个坑：
+    /// - 二进制文件是 <c>-\t-\tpath</c>，增删行数当 0；
+    /// - 重命名时 path 是合并写法（<c>old =&gt; new</c> 或
+    ///   <c>dir/{old =&gt; new}</c>），要拆出新旧两条路径。
+    ///
+    /// 原始的第三段一并留着（<see cref="NumStatEntry.RawPath"/>）——
+    /// 合并时要靠它跟 name-status 对账：文件名里本来就有 <c>=&gt;</c> 的时候，
+    /// 「猜」出来的重命名是错的，只有原文对得上才算数。
+    /// </summary>
+    internal static IReadOnlyList<NumStatEntry> ParseNumStat(string output)
+    {
+        var entries = new List<NumStatEntry>();
+
+        foreach (var raw in output.Split('\n'))
+        {
+            var line = raw.TrimEnd('\r');
+            if (line.Length == 0)
+            {
+                continue;
+            }
+
+            // 按制表符切：<c>added\tdeleted\tpath</c>。
+            // 路径里的制表符会被 git 转义成 \t，所以按制表符切是安全的。
+            var fields = line.Split('\t');
+            if (fields.Length < 3)
+            {
+                continue;
+            }
+
+            var added = ParseLineCount(fields[0]);
+            var deleted = ParseLineCount(fields[1]);
+
+            // 合并提交（combined diff）可能给多组增删数（每对父提交一组）。
+            // 那些组都是数字 —— 跳过它们，路径是后面那段非数字的内容。
+            // 注意留一个字段：路径本身可能就是纯数字（有个文件就叫「123」）。
+            var pathIndex = 2;
+            while (pathIndex < fields.Length - 1 && IsLineCountField(fields[pathIndex]))
+            {
+                pathIndex++;
+            }
+
+            if (pathIndex >= fields.Length)
+            {
+                continue;
+            }
+
+            var rawPath = string.Join('\t', fields[pathIndex..]);
+            var (path, oldPath) = SplitRenamePath(rawPath);
+
+            if (path.Length == 0)
+            {
+                continue;
+            }
+
+            entries.Add(new NumStatEntry(
+                rawPath, path, added, deleted, oldPath));
+        }
+
+        return entries;
+    }
+
+    /// <summary>
+    /// 这一段是不是增删行数（数字，或者二进制文件用的 <c>-</c>）。
+    /// </summary>
+    private static bool IsLineCountField(string value) =>
+        value == "-" || (value.Length > 0 && value.All(char.IsAsciiDigit));
+
+    /// <summary>解析 <c>git show --name-status</c> 的输出。</summary>
+    internal static IReadOnlyList<NameStatusEntry> ParseNameStatus(string output)
+    {
+        var entries = new List<NameStatusEntry>();
+
+        foreach (var raw in output.Split('\n'))
+        {
+            var line = raw.TrimEnd('\r');
+            if (line.Length == 0)
+            {
+                continue;
+            }
+
+            var tab = line.IndexOf('\t');
+            if (tab < 0)
+            {
+                continue;
+            }
+
+            var code = line[..tab];
+            if (code.Length == 0)
+            {
+                continue;
+            }
+
+            // 状态字母后面可能跟相似度（R100 / C075）。
+            var letter = code[0];
+            var kind = letter switch
+            {
+                'A' => "Added",
+                'M' => "Modified",
+                'D' => "Deleted",
+                'R' => "Renamed",
+                'C' => "Added",
+                'T' => "Modified",
+                _ => "Modified"
+            };
+
+            var rest = line[(tab + 1)..];
+
+            // 重命名与复制：旧路径与新路径分列两段
+            if (letter is 'R' or 'C')
+            {
+                var second = rest.IndexOf('\t');
+                if (second < 0)
+                {
+                    // 合并提交的合并 diff（combined diff）只给一个路径：
+                    // 状态是「RM」这种两字母的，路径只有新路径那一段。
+                    // 旧路径给不出来 —— 留空，由 numstat 那边补。
+                    var mergedPath = DecodeGitPath(rest);
+                    if (mergedPath.Length == 0)
+                    {
+                        continue;
+                    }
+
+                    entries.Add(new NameStatusEntry(mergedPath, kind, null));
+                    continue;
+                }
+
+                var oldPath = DecodeGitPath(rest[..second]);
+                var newPath = DecodeGitPath(rest[(second + 1)..]);
+
+                if (newPath.Length == 0)
+                {
+                    continue;
+                }
+
+                entries.Add(new NameStatusEntry(newPath, kind, oldPath));
+                continue;
+            }
+
+            var path = DecodeGitPath(rest);
+            if (path.Length == 0)
+            {
+                continue;
+            }
+
+            entries.Add(new NameStatusEntry(path, kind, null));
+        }
+
+        return entries;
+    }
+
+    /// <summary>
+    /// 把 numstat（行数）与 name-status（类型）合并。
+    ///
+    /// **name-status 是权威**：它给的路径没有歧义（重命名的旧新路径分列两段），
+    /// numstat 的重命名路径是拼出来的（<c>old =&gt; new</c> 或
+    /// <c>dir/{old =&gt; new}</c>），单看它分不清「重命名」与「文件名里本来就有 =&gt;」。
+    /// 所以类型与路径都取 name-status，行数从 numstat 补。
+    ///
+    /// 配对靠路径：重命名要把 numstat 的原文拆出几种可能，
+    /// 拆出来的那一对跟 name-status 给的完全一致才算对上。
+    ///
+    /// name-status 里没配上的（合并提交时它可能是空的），
+    /// numstat 里剩下的也补进去 —— 宁可多一条也别把文件丢了。
+    /// </summary>
+    internal static IReadOnlyList<GitFileChange> MergeChanges(
+        IReadOnlyList<NumStatEntry> numstat,
+        IReadOnlyList<NameStatusEntry> nameStatus)
+    {
+        var result = new List<GitFileChange>();
+        var consumed = new HashSet<int>();
+
+        foreach (var entry in nameStatus)
+        {
+            var added = 0;
+            var deleted = 0;
+
+            for (var i = 0; i < numstat.Count; i++)
+            {
+                if (consumed.Contains(i) || !NumStatMatches(numstat[i], entry))
+                {
+                    continue;
+                }
+
+                added = numstat[i].LinesAdded;
+                deleted = numstat[i].LinesDeleted;
+                consumed.Add(i);
+                break;
+            }
+
+            result.Add(new GitFileChange(
+                entry.Path, entry.ChangeKind, added, deleted, entry.OldPath));
+        }
+
+        for (var i = 0; i < numstat.Count; i++)
+        {
+            if (consumed.Contains(i))
+            {
+                continue;
+            }
+
+            var entry = numstat[i];
+
+            // 有旧路径说明是重命名（git 的 numstat 把旧新路径拼在一起给了）。
+            result.Add(new GitFileChange(
+                entry.Path,
+                entry.OldPath is null ? "Modified" : "Renamed",
+                entry.LinesAdded,
+                entry.LinesDeleted,
+                entry.OldPath));
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// numstat 的一行是不是在说 name-status 里的这一条。
+    ///
+    /// - 普通文件：整段路径原样对得上就行（<c>has =&gt; arrow.txt</c> 这种文件名
+    ///   在 git 眼里就是一个普通文件，不能被当成重命名）。
+    /// - 重命名：把 numstat 的原文按 git 的写法拆开，拆出来的旧新路径
+    ///   要跟 name-status 给的完全一致才算数。
+    /// </summary>
+    private static bool NumStatMatches(NumStatEntry numstat, NameStatusEntry entry)
+    {
+        if (entry.ChangeKind == "Renamed")
+        {
+            if (entry.OldPath is not null)
+            {
+                // 有旧路径 —— 拆出来的旧新两段都要对得上。
+                return RenameCandidates(numstat.RawPath)
+                    .Any(c => string.Equals(c.Old, entry.OldPath, StringComparison.Ordinal)
+                              && string.Equals(c.New, entry.Path, StringComparison.Ordinal));
+            }
+
+            // 没有旧路径（合并提交的合并 diff 只给一个路径）——
+            // 只要拆出来的新路径对得上就算数。
+            var (path, _) = SplitRenamePath(numstat.RawPath);
+            return string.Equals(path, entry.Path, StringComparison.Ordinal);
+        }
+
+        // 不是重命名 —— numstat 的第三段就是文件自己的路径，原样比。
+        return string.Equals(
+            DecodeGitPath(numstat.RawPath), entry.Path, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 把 numstat 的重命名原文拆成「可能的旧路径 / 新路径」候选。
+    ///
+    /// git 有两种写法：
+    /// - <c>old =&gt; new</c>（没有公共目录前缀时）
+    /// - <c>dir/{old =&gt; new}</c>（有公共目录前缀时，前缀被提到花括号外）
+    ///
+    /// 两种都试 —— 文件名里带 <c>{}</c> 的时候（比如 <c>a{b}.txt =&gt; a{c}.txt</c>）
+    /// 花括号形式拆不出东西，得靠普通形式才拆得开。
+    ///
+    /// 而文件名里本来就有 <c>=&gt;</c> 时（<c>has =&gt; arrow.txt</c>），
+    /// 拆点在哪全靠猜 —— 所以这里把所有可能的拆法都列出来，
+    /// 由调用方拿 name-status 的权威路径去筛。
+    /// </summary>
+    internal static IReadOnlyList<(string Old, string New)> RenameCandidates(string raw)
+    {
+        var candidates = new List<(string Old, string New)>();
+
+        // 普通形式先：old => new
+        foreach (var (left, right) in SplitOnArrow(raw))
+        {
+            candidates.Add((DecodeGitPath(left), DecodeGitPath(right)));
+        }
+
+        // 花括号形式后：dir/{old => new}。放后面是因为「猜一个主路径」时
+        // 它更准 —— git 只在两条路径有公共目录前缀时才给这种写法。
+        var open = raw.IndexOf('{');
+        var close = open >= 0 ? raw.IndexOf('}', open + 1) : -1;
+
+        if (open >= 0 && close > open)
+        {
+            var prefix = raw[..open];
+            var middle = raw[(open + 1)..close];
+            var suffix = raw[(close + 1)..];
+
+            foreach (var (left, right) in SplitOnArrow(middle))
+            {
+                candidates.Add((
+                    DecodeGitPath(prefix + left + suffix),
+                    DecodeGitPath(prefix + right + suffix)));
+            }
+        }
+
+        return candidates;
+    }
+
+    /// <summary>按 <c> =&gt; </c> 切开，列出所有可能的拆法。</summary>
+    private static IEnumerable<(string Left, string Right)> SplitOnArrow(string value)
+    {
+        var index = 0;
+
+        while (true)
+        {
+            var at = value.IndexOf(" => ", index, StringComparison.Ordinal);
+            if (at < 0)
+            {
+                yield break;
+            }
+
+            yield return (value[..at], value[(at + 4)..]);
+            index = at + 1;
+        }
+    }
+
+    /// <summary>
+    /// 从 numstat 的路径里拆出「新路径」与「旧路径」。
+    ///
+    /// 两种重命名写法都要认：
+    /// - <c>old =&gt; new</c>（没有公共目录前缀时 git 给这种）
+    /// - <c>dir/{old =&gt; new}</c>（有公共目录前缀时 git 给花括号形式）
+    ///
+    /// 引号路径逐段解码 —— git 只把出问题的那一段包起来。
+    ///
+    /// **这个拆分是有歧义的，而且无法在 numstat 内部解决**：文件名里本来就有
+    /// <c>=&gt;</c>（<c>has =&gt; arrow.txt</c>）时，git 的输出跟重命名长得一模一样。
+    /// 所以这里只是「猜一个主路径」，**权威路径来自 name-status**
+    /// （它的重命名是旧新两段分开的，没有歧义）。
+    /// 猜的时候优先挑旧新两段都「干净」的拆法（不含花括号与箭头）——
+    /// 拆剩的花括号说明这个拆点切错了。
+    /// </summary>
+    internal static (string Path, string? OldPath) SplitRenamePath(string raw)
+    {
+        var candidates = RenameCandidates(raw);
+        if (candidates.Count == 0)
+        {
+            return (DecodeGitPath(raw), null);
+        }
+
+        // 旧新两段都干净的 —— 拆对了
+        foreach (var candidate in candidates)
+        {
+            if (IsCleanPath(candidate.Old) && IsCleanPath(candidate.New))
+            {
+                return (candidate.New, candidate.Old);
+            }
+        }
+
+        // 没有两段都干净的（文件名里本来就有 =&gt;）——
+        // 退而求其次：挑旧路径干净且最长的那个。
+        // git 的写法是「旧路径 => 新路径」，旧路径在前，所以先看旧路径。
+        var best = candidates[0];
+        var bestOldLength = -1;
+
+        foreach (var candidate in candidates)
+        {
+            if (!IsCleanPath(candidate.Old))
+            {
+                continue;
+            }
+
+            if (candidate.Old.Length > bestOldLength)
+            {
+                best = candidate;
+                bestOldLength = candidate.Old.Length;
+            }
+        }
+
+        return (best.New, best.Old);
+    }
+
+    /// <summary>
+    /// 路径「干净」吗 —— 不含没拆完的花括号，也不含没拆完的箭头。
+    ///
+    /// 拆完的旧新两条路径里不该再出现 <c>{}</c> 或 <c>=&gt;</c>：
+    /// 出现就说明这个拆点切在了中间。
+    /// </summary>
+    private static bool IsCleanPath(string path) =>
+        !path.Contains('{') && !path.Contains('}')
+        && !path.Contains(" => ", StringComparison.Ordinal);
+
+    /// <summary>
+    /// 从 <c>git status --porcelain -uall</c> 里挑出未跟踪文件的路径。
+    ///
+    /// 只看行首的 <c>??</c>：那是未跟踪。其余状态行（已修改 / 已暂存）由 diff 负责。
+    ///
+    /// 路径自己解，不复用 <see cref="ParsePorcelainPath"/> ——
+    /// 那个方法会把 <c>old -&gt; new</c> 当成重命名改写，
+    /// 而文件名里真有个 <c>-&gt;</c> 的话就被改坏了。
+    /// </summary>
+    internal static IReadOnlyList<string> ParseUntrackedPaths(string porcelain)
+    {
+        var paths = new List<string>();
+
+        foreach (var raw in porcelain.Split('\n'))
+        {
+            var line = raw.TrimEnd('\r');
+            if (!line.StartsWith("?? ", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            // 只 TrimEnd —— 前导空格是路径的一部分。
+            var path = DecodeGitPath(line[3..].TrimEnd());
+            if (!string.IsNullOrEmpty(path))
+            {
+                paths.Add(path);
+            }
+        }
+
+        return paths;
+    }
+
+    /// <summary>numstat 的行数：二进制文件是 <c>-</c>，当 0。</summary>
+    private static int ParseLineCount(string value)
+    {
+        return int.TryParse(value, out var count) && count >= 0 ? count : 0;
+    }
+
+    /// <summary>
+    /// 待提交内容的指纹：SHA256(工作区 porcelain 状态 + <c>git diff HEAD</c> 全文
+    /// + 每个未跟踪文件的路径与内容哈希)。
+    ///
+    /// git_commit 的审批要绑它 —— 人批的是「这些内容」，不是「提交这个动作」。
+    /// 所以指纹必须对内容敏感：改一个字节、加一个未跟踪文件，指纹都要变。
+    /// </summary>
+    private static async Task<string> ComputeFingerprintAsync(string repoPath)
+    {
+        // 1) 工作区状态。用 v1 porcelain（路径解析复用 ParsePorcelainPath）。
+        //    -uall 让未跟踪目录展开成逐个文件，否则默认只给目录名，内容哈希无从谈起。
+        var status = await GitProcessRunner.RunAsync(
+            "git",
+            ["-c", "core.quotePath=false", "status", "--porcelain", "-uall"],
+            repoPath,
+            CommandTimeout,
+            CancellationToken.None).ConfigureAwait(false);
+
+        if (status.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"git status 失败 ({status.ExitCode}): {status.Stderr.Trim()}");
+        }
+
+        // 2) 相对 HEAD 的 diff 全文。还没有任何提交的仓库 `git diff HEAD` 会失败，
+        //    这时退回 `git diff --cached`（对空树），至少把已暂存内容纳入指纹。
+        var diff = await GitProcessRunner.RunAsync(
+            "git",
+            ["-c", "core.quotePath=false", "diff", "HEAD"],
+            repoPath,
+            CommandTimeout,
+            CancellationToken.None).ConfigureAwait(false);
+
+        if (diff.ExitCode != 0)
+        {
+            diff = await GitProcessRunner.RunAsync(
+                "git",
+                ["-c", "core.quotePath=false", "diff", "--cached"],
+                repoPath,
+                CommandTimeout,
+                CancellationToken.None).ConfigureAwait(false);
+        }
+
+        // 3) 未跟踪文件逐个哈希。按路径排序保证稳定（porcelain 输出顺序不保证跨平台一致）。
+        var untracked = status.Stdout
+            .Split('\n')
+            .Select(line => line.TrimEnd('\r'))
+            .Where(line => line.StartsWith("?? ", StringComparison.Ordinal))
+            .Select(ParsePorcelainPath)
+            .Where(path => !string.IsNullOrEmpty(path))
+            .OrderBy(path => path, StringComparer.Ordinal)
+            .ToList();
+
+        using var sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+
+        // 状态段：只 TrimEnd，不 Trim —— porcelain 第一行常以空格开头（规矩 13），
+        // Trim 会把前导空格吃掉，第一条路径就少一个字符，指纹随之失真。
+        AppendSegment(sha, "status", status.Stdout.TrimEnd());
+        AppendSegment(sha, "diff", diff.Stdout);
+
+        foreach (var path in untracked)
+        {
+            AppendSegment(sha, "untracked-path", path);
+
+            var fullPath = Path.Combine(repoPath, path);
+            if (!File.Exists(fullPath))
+            {
+                // 状态里有、磁盘上却没有（刚被删 / 是目录）：记一个标记，别整个指纹失败。
+                AppendSegment(sha, "untracked-missing", path);
+                continue;
+            }
+
+            var length = new FileInfo(fullPath).Length;
+
+            // 大文件取舍：超过 10MB 只哈希「路径 + 长度」，不读内容。
+            // 逐个读大文件的内容会把指纹计算拖成 I/O 灾难（几百 MB 的产物 / 数据集），
+            // 而审批关心的是「哪些文件、多大」这个量级；同尺寸的内容替换确实漏检，
+            // 但这类大文件通常不是评审重点，且 diff 段仍会覆盖已跟踪的大文件改动。
+            if (length > MaxUntrackedContentBytes)
+            {
+                AppendSegment(sha, "untracked-large", $"{path}:{length}");
+                continue;
+            }
+
+            byte[] contentHash;
+            using (var stream = File.OpenRead(fullPath))
+            {
+                contentHash = await SHA256.HashDataAsync(stream).ConfigureAwait(false);
+            }
+
+            AppendSegment(sha, "untracked-content", Convert.ToHexString(contentHash));
+        }
+
+        return Convert.ToHexString(sha.GetHashAndReset()).ToLowerInvariant();
+    }
+
+    /// <summary>未跟踪文件内容哈希的尺寸上限，超过就只哈希路径 + 长度。</summary>
+    private const long MaxUntrackedContentBytes = 10 * 1024 * 1024;
+
+    /// <summary>
+    /// 往指纹里追加一段。带长度前缀，避免「段边界歧义」——
+    /// 不然 `a` + `bc` 与 `ab` + `c` 会哈希出同一个值。
+    /// </summary>
+    private static void AppendSegment(IncrementalHash sha, string label, string content)
+    {
+        var bytes = Encoding.UTF8.GetBytes(content);
+        var header = Encoding.UTF8.GetBytes(
+            $"{label}:{bytes.Length.ToString(CultureInfo.InvariantCulture)}:");
+        sha.AppendData(header);
+        sha.AppendData(bytes);
     }
 
     /// <summary>
@@ -49,7 +780,7 @@ public sealed class GitInspector : IGitInspector
             ["-c", "core.quotePath=false", "status", "--porcelain=v2", "--branch"],
             repoPath,
             CommandTimeout,
-            CancellationToken.None);
+            CancellationToken.None).ConfigureAwait(false);
 
         if (result.ExitCode != 0)
         {
@@ -300,6 +1031,22 @@ public sealed class GitInspector : IGitInspector
     }
 }
 
+/// <summary>
+/// numstat 的一行：路径 + 增删行数（重命名时带旧路径）。
+///
+/// <paramref name="RawPath"/> 是 git 原样给的第三段 —— 合并时要靠它跟
+/// name-status 对账（「文件名里本来就有 =&gt;」的时候猜出来的重命名是错的）。
+/// </summary>
+internal sealed record NumStatEntry(
+    string RawPath,
+    string Path,
+    int LinesAdded,
+    int LinesDeleted,
+    string? OldPath);
+
+/// <summary>name-status 的一行：路径 + 变更类型（重命名时带旧路径）。</summary>
+internal sealed record NameStatusEntry(string Path, string ChangeKind, string? OldPath);
+
 /// <summary>外部进程的退出码与输出。</summary>
 internal sealed record GitProcessResult(int ExitCode, string Stdout, string Stderr);
 
@@ -312,6 +1059,8 @@ internal sealed record GitProcessResult(int ExitCode, string Stdout, string Stde
 ///   老写法把 <c>WaitForExit(10s)</c> 放在两次同步 <c>ReadToEnd</c> 之后，那个超时根本轮不到，
 ///   git 一挂住（凭证提示 / 坏索引 / 网络盘）就把请求线程永久占住；
 ///   顺序同步读两个流还会互等死锁（git 写满 stderr 管道缓冲、而 stdout 又没关闭）。
+/// - 所有 await 都 ConfigureAwait(false)：GitInspector 的同步契约要在调用方线程上
+///   直接阻塞等结果，续体若回贴 SynchronizationContext（Blazor）就会互锁。
 /// </summary>
 internal static class GitProcessRunner
 {
@@ -350,15 +1099,15 @@ internal static class GitProcessRunner
 
         try
         {
-            await process.WaitForExitAsync(timer.Token);
+            await process.WaitForExitAsync(timer.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
             // 超时或调用方取消：都得把进程树杀掉。
             // git 卡住时（比如等 GPG 口令）会继续占着 .git/index.lock，
             // 之后所有 git 命令都报 "Unable to create '.git/index.lock': File exists"。
-            await KillAsync(process);
-            await DrainAsync(stdoutTask, stderrTask);
+            await KillAsync(process).ConfigureAwait(false);
+            await DrainAsync(stdoutTask, stderrTask).ConfigureAwait(false);
 
             if (cancellationToken.IsCancellationRequested)
             {
@@ -370,8 +1119,8 @@ internal static class GitProcessRunner
                 $"{fileName} {string.Join(' ', args)} 超时（{timeout.TotalSeconds:0.#} 秒），已终止进程。");
         }
 
-        var stdout = await stdoutTask;
-        var stderr = await stderrTask;
+        var stdout = await stdoutTask.ConfigureAwait(false);
+        var stderr = await stderrTask.ConfigureAwait(false);
 
         return new GitProcessResult(process.ExitCode, stdout, stderr);
     }
@@ -397,7 +1146,7 @@ internal static class GitProcessRunner
         try
         {
             // 回收子进程：不等它退出就等于留了个僵尸。
-            await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         }
         catch
         {
@@ -410,7 +1159,7 @@ internal static class GitProcessRunner
     {
         try
         {
-            await Task.WhenAll(tasks).WaitAsync(TimeSpan.FromSeconds(2));
+            await Task.WhenAll(tasks).WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
         }
         catch
         {

@@ -25,8 +25,8 @@ public sealed record DbColumnInfo(
 /// <summary>表信息。</summary>
 public sealed record DbTableInfo(string Schema, string Table, IReadOnlyList<DbColumnInfo> Columns);
 
-/// <summary>库结构快照。</summary>
-public sealed record DbSchemaResult(IReadOnlyList<DbTableInfo> Tables);
+/// <summary>库结构快照。Truncated=true 表示行数撞上安全上限，结构可能不全。</summary>
+public sealed record DbSchemaResult(IReadOnlyList<DbTableInfo> Tables, bool Truncated = false);
 
 /// <summary>
 /// SQL Server 命令执行器。只做「执行」，不含审批策略——
@@ -148,13 +148,31 @@ public sealed class SqlServerCommandRunner(ISecretProtector protector) : ISqlCom
         await using var connection = new SqlConnection(BuildConnectionString(config, readOnlyIntent: false));
         await connection.OpenAsync(cancellationToken);
 
+        // 整批包事务：中途失败全部回滚。
+        // **语义变化**：以前多语句批处理在第 N 条失败时，前 N-1 条已经落库（留半截）；
+        // 现在要么全成、要么全回滚。批处理里自己显式管理事务（BEGIN TRAN/COMMIT）的
+        // 不受这个保证 —— 那类脚本的提交点由脚本自己决定。
+        await using var transaction =
+            (SqlTransaction)await connection.BeginTransactionAsync(cancellationToken);
+
         await using var command = new SqlCommand(sql, connection)
         {
-            CommandTimeout = 60
+            CommandTimeout = 60,
+            Transaction = transaction
         };
 
-        var affected = await command.ExecuteNonQueryAsync(cancellationToken);
-        return new SqlExecResult(affected, DateTimeOffset.UtcNow - started);
+        try
+        {
+            var affected = await command.ExecuteNonQueryAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return new SqlExecResult(affected, DateTimeOffset.UtcNow - started);
+        }
+        catch
+        {
+            // 失败回滚（用 CancellationToken.None —— 请求被取消时也要回滚），原异常照抛
+            await RollbackAsync(transaction);
+            throw;
+        }
     }
 
     public async Task<DbSchemaResult> GetSchemaAsync(
@@ -162,7 +180,7 @@ public sealed class SqlServerCommandRunner(ISecretProtector protector) : ISqlCom
         string? schemaName = null,
         CancellationToken cancellationToken = default)
     {
-        // 表与列
+        // 表与列（ORDER BY 是分页的前提，顺序必须确定）
         const string columnsSql = """
             SELECT t.TABLE_SCHEMA, t.TABLE_NAME, c.COLUMN_NAME, c.DATA_TYPE,
                    c.IS_NULLABLE, c.CHARACTER_MAXIMUM_LENGTH, c.ORDINAL_POSITION
@@ -173,20 +191,29 @@ public sealed class SqlServerCommandRunner(ISecretProtector protector) : ISqlCom
             ORDER BY t.TABLE_SCHEMA, t.TABLE_NAME, c.ORDINAL_POSITION
             """;
 
-        // 主键列
+        // 主键列。约束名只在**同一 schema 内**唯一 —— 只按 CONSTRAINT_NAME 匹配，
+        // 别的 schema 里同名的约束会把这里的列误判成主键。
+        // 所以按 schema + 约束名 + 表 一起精确匹配。
         const string primaryKeySql = """
             SELECT k.TABLE_SCHEMA, k.TABLE_NAME, k.COLUMN_NAME
             FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE k
-            WHERE k.CONSTRAINT_NAME IN (
-                SELECT CONSTRAINT_NAME FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
-                WHERE CONSTRAINT_TYPE = 'PRIMARY KEY')
+            JOIN INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
+              ON tc.CONSTRAINT_SCHEMA = k.CONSTRAINT_SCHEMA
+             AND tc.CONSTRAINT_NAME = k.CONSTRAINT_NAME
+             AND tc.TABLE_SCHEMA = k.TABLE_SCHEMA
+             AND tc.TABLE_NAME = k.TABLE_NAME
+            WHERE tc.CONSTRAINT_TYPE = 'PRIMARY KEY'
+            ORDER BY k.TABLE_SCHEMA, k.TABLE_NAME, k.COLUMN_NAME
             """;
 
-        var columns = await QueryAsync(config, columnsSql, 5000, cancellationToken);
-        var primaryKeys = await QueryAsync(config, primaryKeySql, 5000, cancellationToken);
+        // 分页取全：以前一次取 5000 行，大库的 schema 被静默截断，
+        // agent 拿着不全的结构写查询必然撞墙。现在逐页取，直到取完；
+        // 只有撞上安全上限才报 Truncated。
+        var (columnRows, columnsTruncated) = await QueryAllRowsAsync(config, columnsSql, cancellationToken);
+        var (pkRows, pkTruncated) = await QueryAllRowsAsync(config, primaryKeySql, cancellationToken);
 
         var keySet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var row in primaryKeys.Rows)
+        foreach (var row in pkRows)
         {
             if (row.Count >= 3 && row[0] is not null && row[1] is not null && row[2] is not null)
             {
@@ -197,7 +224,7 @@ public sealed class SqlServerCommandRunner(ISecretProtector protector) : ISqlCom
         var tables = new List<DbTableInfo>();
         var byKey = new Dictionary<string, DbTableInfo>(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var row in columns.Rows)
+        foreach (var row in columnRows)
         {
             if (row.Count < 7)
             {
@@ -233,7 +260,43 @@ public sealed class SqlServerCommandRunner(ISecretProtector protector) : ISqlCom
                 maxLength));
         }
 
-        return new DbSchemaResult(tables);
+        return new DbSchemaResult(tables, columnsTruncated || pkTruncated);
+    }
+
+    /// <summary>
+    /// 分页取全一个有序查询。每页走 QueryAsync（只读防线不变），
+    /// 用 OFFSET/FETCH 翻页 —— 所以 <paramref name="orderedSql"/> 必须带确定的 ORDER BY。
+    /// 行数撞上安全上限（20 万行）时停止并返回 Truncated=true，不无限吃内存。
+    /// </summary>
+    private async Task<(List<IReadOnlyList<string?>> Rows, bool Truncated)> QueryAllRowsAsync(
+        DbConnectionConfig config,
+        string orderedSql,
+        CancellationToken cancellationToken)
+    {
+        const int pageSize = 5000;
+        const int maxRows = 200_000;
+
+        var rows = new List<IReadOnlyList<string?>>();
+        var offset = 0;
+
+        while (true)
+        {
+            var pagedSql = $"{orderedSql}\nOFFSET {offset} ROWS FETCH NEXT {pageSize} ROWS ONLY";
+            var page = await QueryAsync(config, pagedSql, pageSize, cancellationToken);
+            rows.AddRange(page.Rows);
+
+            if (page.Rows.Count < pageSize)
+            {
+                return (rows, false);
+            }
+
+            if (rows.Count >= maxRows)
+            {
+                return (rows, true);
+            }
+
+            offset += pageSize;
+        }
     }
 
     /// <summary>
@@ -272,7 +335,7 @@ public sealed class SqlServerCommandRunner(ISecretProtector protector) : ISqlCom
     }
 
     /// <summary>
-    /// 只读查询结束后把事务收掉。用 CancellationToken.None —— 请求被取消时也要回滚。
+    /// 把事务收掉（回滚）。用 CancellationToken.None —— 请求被取消时也要回滚。
     /// </summary>
     private static async Task RollbackAsync(SqlTransaction transaction)
     {
@@ -283,6 +346,11 @@ public sealed class SqlServerCommandRunner(ISecretProtector protector) : ISqlCom
         catch (InvalidOperationException)
         {
             // 服务器已经中止了这个事务（语句报错等），回滚不了也无所谓
+        }
+        catch (SqlException)
+        {
+            // 连接断了 / 事务已被服务器回滚：同样无需再做什么，
+            // 不能让回滚的异常盖掉真正的业务异常
         }
     }
 }

@@ -148,26 +148,26 @@ public sealed class MetricsService(IAppDbContext db, IClock clock) : IMetricsSer
         IReadOnlyList<TestRun> testRuns,
         int openApprovals)
     {
-        var counted = tasks.Where(t => t.ParentTaskId == null).ToList();
-        if (counted.Count == 0)
-        {
-            counted = tasks.ToList();
-        }
-
-        var totalWeight = counted.Sum(t => Math.Max(t.Weight, 0.0001));
-        var progress = totalWeight > 0d
-            ? counted.Sum(t => TaskStatusMachine.ProgressWeight(t.Status) * Math.Max(t.Weight, 0.0001)) / totalWeight
-            : 0d;
-
-        if (!double.IsFinite(progress))
-        {
-            progress = 0d;
-        }
+        // 与项目进度、里程碑同一口径：排除归档与取消，子任务归并到父任务
+        var counted = TaskProgress.Countable(tasks);
+        var progress = TaskProgress.Weighted(counted);
 
         var now = clock.UtcNow;
 
         // ---- 停滞：最近一次动静超过阈值 ----
         var stale = counted.Count(t => now - (t.LastActivityAt ?? t.UpdatedAt) > TimeSpan.FromHours(StaleAfterHours));
+
+        var taskById = tasks.ToDictionary(t => t.Id);
+
+        // 状态机允许 Done → Blocked → … → Done，同一个任务会有多条 Done 事件。
+        // 流速与周期都只认每个任务的**最后一次** Done：不去重的话一次返工
+        // 就被算成两次交付，流速虚高、平均周期偏小。
+        // 归档任务的历史交付也不再计入 —— 与进度口径保持一致。
+        var lastDoneByTask = doneEvents
+            .Where(e => taskById.TryGetValue(e.TaskId, out var t) && !t.IsArchived)
+            .GroupBy(e => e.TaskId)
+            .Select(g => g.OrderByDescending(e => e.CreatedAt).First())
+            .ToList();
 
         // ---- 流速：最近 N 周每周完成数 ----
         var throughput = new List<ThroughputPointDto>();
@@ -176,19 +176,11 @@ public sealed class MetricsService(IAppDbContext db, IClock clock) : IMetricsSer
         {
             var weekStart = currentWeekStart.AddDays(-7 * i);
             var weekEnd = weekStart.AddDays(7);
-            var count = doneEvents.Count(e => e.CreatedAt >= weekStart && e.CreatedAt < weekEnd);
+            var count = lastDoneByTask.Count(e => e.CreatedAt >= weekStart && e.CreatedAt < weekEnd);
             throughput.Add(new ThroughputPointDto($"{weekStart:yyyy-MM-dd}", count));
         }
 
         // ---- 周期：从建任务到完成 ----
-        // 状态机允许 Done → Blocked → … → Done，同一个任务会有多条 Done 事件。
-        // 只取每个任务的**最后一次** Done，不然平均周期被重复计权，数字偏小。
-        var taskById = tasks.ToDictionary(t => t.Id);
-        var lastDoneByTask = doneEvents
-            .GroupBy(e => e.TaskId)
-            .Select(g => g.OrderByDescending(e => e.CreatedAt).First())
-            .ToList();
-
         var cycles = new List<double>();
         foreach (var evt in lastDoneByTask)
         {
@@ -236,7 +228,9 @@ public sealed class MetricsService(IAppDbContext db, IClock clock) : IMetricsSer
             cycles.Count > 0 ? Math.Round(cycles.Average(), 2) : null,
             passRate is null ? null : Math.Round(passRate.Value, 4),
             openApprovals,
-            avgCoverage is null || avgCoverage.Value == 0 ? null : Math.Round(avgCoverage.Value, 4));
+            // 覆盖率 0 是**测出来的 0**，不是「没数据」。
+            // 以前把 0 也映射成 null，看板上「一行没覆盖」和「压根没跑过覆盖率」长得一样。
+            avgCoverage is null ? null : Math.Round(avgCoverage.Value, 4));
     }
 
     private static DateTimeOffset StartOfWeek(DateTimeOffset value)

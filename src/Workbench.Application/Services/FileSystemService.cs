@@ -79,12 +79,29 @@ public sealed class FileSystemService(IAppDbContext db) : IFileSystemService
 
         var info = new FileInfo(target);
         var limit = Math.Clamp(maxBytes, 1, 8 * 1024 * 1024);
-        var truncated = info.Length > limit;
 
         await using var stream = File.OpenRead(target);
         var buffer = new byte[limit];
-        var read = await stream.ReadAsync(buffer, cancellationToken);
-        var bytes = buffer.AsSpan(0, read).ToArray();
+        var total = 0;
+
+        // Stream.ReadAsync **允许短读**：一次调用不保证填满缓冲区
+        // （网络盘、管道、甚至本地大文件都可能只返回一部分）。
+        // 以前只读一次，结果就是文件明明有内容却只拿到开头一截，还被告知「没截断」。
+        // 必须循环读到 limit 或 EOF（返回 0）为止。
+        while (total < limit)
+        {
+            var read = await stream.ReadAsync(buffer.AsMemory(total, limit - total), cancellationToken);
+            if (read == 0)
+            {
+                break;
+            }
+
+            total += read;
+        }
+
+        var bytes = buffer.AsSpan(0, total).ToArray();
+        // 以实际读到的字节数为准：文件比上限大、或读的过程中被改小，都要如实标注
+        var truncated = info.Length > total;
 
         // 二进制文件不做文本解码，直接告诉调用方
         if (bytes.Contains((byte)0))
