@@ -777,6 +777,19 @@ public static class WorkbenchApi
         api.MapGet("/audit/verify", async (IToolAuditService audit, CancellationToken ct) =>
             Results.Ok(await audit.VerifyChainAsync(ct)));
 
+        // 链头归档：把链头写到工作台数据目录之外的文件里。
+        // 库里自己算的链挡不住「连哈希一起重算」 —— 归档到外面才多一道对上的机会。
+        api.MapGet("/audit/archive", async (IAuditChainArchiveService archive, CancellationToken ct) =>
+            Results.Ok(await archive.VerifyAsync(ct)));
+
+        // 归档是往工作台外面写文件，归档位置由部署方决定 ——
+        // 跟改项目配置同权，要人工在场。
+        api.MapPost("/audit/archive", async (IAuditChainArchiveService archive, CancellationToken ct) =>
+        {
+            var result = await archive.ArchiveAsync(ct);
+            return result.Ok ? Results.Ok(result) : Results.BadRequest(result);
+        });
+
         return app;
     }
 

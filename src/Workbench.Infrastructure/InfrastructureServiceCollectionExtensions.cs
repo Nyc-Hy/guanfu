@@ -21,6 +21,11 @@ public static class InfrastructureServiceCollectionExtensions
             options.HomeDirectory = string.IsNullOrWhiteSpace(home)
                 ? WorkbenchOptions.DefaultHomeDirectory()
                 : Path.GetFullPath(home);
+
+            // 审计链头的外部归档路径。必须在本机之外（部署方自己保证），
+            // 但不能落在工作台数据目录里 —— 那种路径运行时会拒掉。
+            var archive = configuration["Workbench:AuditArchivePath"];
+            options.AuditArchivePath = string.IsNullOrWhiteSpace(archive) ? null : archive;
         });
 
         services.AddDbContext<WorkbenchDbContext>((provider, options) =>
@@ -65,6 +70,7 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<ISqlCommandRunner, SqlServerCommandRunner>();
         services.AddScoped<IAgentLauncher, AgentLauncher>();
         services.AddScoped<IWorkspaceArchiver, WorkspaceArchiver>();
+        services.AddScoped<IAuditChainArchiveService, AuditChainArchiver>();
 
         return services;
     }

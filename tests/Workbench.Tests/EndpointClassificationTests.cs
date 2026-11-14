@@ -75,6 +75,7 @@ public class EndpointClassificationTests
         "POST /api/mcp/tools/reset",
         "POST /api/workspace/export",
         "POST /api/workspace/import",
+        "POST /api/audit/archive",
     };
 
     [Fact]

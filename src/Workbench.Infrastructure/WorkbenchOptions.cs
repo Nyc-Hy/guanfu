@@ -21,6 +21,19 @@ public sealed class WorkbenchOptions
     /// </summary>
     public string RunsDirectory => Path.Combine(HomeDirectory, "runs");
 
+    /// <summary>
+    /// 审计链头的外部归档路径（文件或目录）。
+    ///
+    /// 必须**在工作台数据目录之外** —— 放在里面等于没归档：
+    /// 拿到库文件的人连归档文件一起改就白搭。配成目录时，
+    /// 链头文件放 <c>workbench-audit-chain.jsonl</c>。
+    ///
+    /// 不配就不归档：链只在库内可验，拿到库文件的人连哈希一起重算就挡不住。
+    /// 这不是缺陷，是这套机制的本分 —— 工作台只管诚实地归档与对比，
+    /// 归档位置能不能被同样的人改，是部署方的选择。
+    /// </summary>
+    public string? AuditArchivePath { get; set; }
+
     public static string DefaultHomeDirectory()
     {
         var fromEnv = Environment.GetEnvironmentVariable(HomeEnvironmentVariable);

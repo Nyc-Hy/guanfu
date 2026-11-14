@@ -106,9 +106,9 @@
 
 | 项 | 内容 |
 |---|---|
-| 能力 | 工具调用逐条留痕（谁调的、哪个项目、哪个任务、用的哪条审批、结果如何）；审计表只追加不修改 |
-| 落地 | `src/Workbench.Application/Services/ToolAuditService.cs`（append-only）<br>写工具无论成功、失败、被策略拦下（`denied`）都记 |
-| 自动化证据 | 端到端 **D10**（`pending` / `success` / `denied` 三种结果都留痕，approvalId 与 callerId 都记上）<br>CLI：`wb audit list --tool/--project/--task` |
+| 能力 | 工具调用逐条留痕（谁调的、哪个项目、哪个任务、用的哪条审批、结果如何）；审计表只追加不修改；链头可归档到工作台数据目录**之外** |
+| 落地 | `src/Workbench.Application/Services/ToolAuditService.cs`（append-only + 哈希链）<br>`src/Workbench.Infrastructure/AuditChainArchiver.cs`（链头外部归档与对账）<br>写工具无论成功、失败、被策略拦下（`denied`）都记 |
+| 自动化证据 | 端到端 **D10**（`pending` / `success` / `denied` 三种结果都留痕，approvalId 与 callerId 都记上）<br>单测 `AuditChainTests`（链断点定位）、`AuditChainArchiveTests`（8：归档、删过查得出、改过查得出、路径在工作台里面要拒）<br>CLI：`wb audit list --tool/--project/--task` |
 
 ### H. 事件账本：机器可读，不是自由文本
 
@@ -272,11 +272,15 @@
 3. **单机 SQLite。**
    适合团队级 / 部门级部署，不适合多节点高并发。可用性与并发上限受单机限制。
    WAL 模式与 busy_timeout 有配（`SqlitePragmasTests`），但改不了「只有一个写进程」这件事。
-4. **审计表的防篡改是「可发现」，不是「不可篡改」。**
+4. **审计表的防篡改做到了「库外可查」，还不是「不可篡改」。**
    审计记录之间用哈希链串起来了（每条带 `prevHash` + `hash`，改动或删除都会让链断），
-   「审计」页面上点「验哈希链」就能验出断在哪一条。但链是应用层算的：
-   拿到库文件的人如果**连哈希一起重算**，链照样能对上 —— 那要靠外部归档（把链头定期
-   推到工作台之外）才挡得住。链只覆盖启用之后写入的记录。
+   「审计」页面上点「验哈希链」就能验出断在哪一条。链头还可以**归档到工作台数据目录之外**
+   （配 `Workbench:AuditArchivePath`，每 10 分钟自动归档一次，界面上也能手动归档），
+   对账时能发现「记录被删过」「库被回滚过」「同一条被改过」。
+   **但归档文件本身挡不住同样的人** —— 拿到库文件的人如果也能改归档文件，
+   照样能把两边一起重算。归档位置必须放在工作台够不着的地方
+   （只读挂载、另一台机器、另一个权限域），这一步是部署方的责任。
+   另外链只覆盖启用之后写入的记录。
 5. **没有真实 SQL Server 的端到端。**
    只读判定发生在连库之前，所以 D8 不需要真库就能验；
    但 `db_execute` 真正连库执行的那一段（事务、超时、批量结果）只有单测覆盖，没有跑过真库。

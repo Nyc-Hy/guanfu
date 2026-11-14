@@ -26,7 +26,8 @@ public sealed class WorkbenchMcpTools(
     IAppDbContext? db = null,
     IProjectScopeResolver? scopeResolver = null,
     IAgentSessionService? sessions = null,
-    IFileChangeService? fileChanges = null)
+    IFileChangeService? fileChanges = null,
+    IAuditChainArchiveService? archive = null)
 {
     /// <summary>
     /// 算出这次调用算在哪个项目上。
@@ -599,6 +600,31 @@ public sealed class WorkbenchMcpTools(
             report.Intact ? null : report.Reason);
     }
 
+    [McpServerTool(Name = "workbench_verify_audit_archive")]
+    [Description(
+        "把审计库跟**外部归档**对账：归档文件在工作台数据目录之外，" +
+        "里面记着当初的链头。库里的记录要是被删过或被回滚过，这个工具能看出来。" +
+        "没配置归档路径时返回 configured=false —— 那说明只验得了库内的链。")]
+    public async Task<AuditArchiveCheckResult> VerifyAuditArchiveAsync(
+        CancellationToken cancellationToken = default)
+    {
+        if (archive is null)
+        {
+            return new AuditArchiveCheckResult(false, false, false, 0, 0, 0, "当前部署没有启用审计归档服务。");
+        }
+
+        var report = await archive.VerifyAsync(cancellationToken);
+
+        return new AuditArchiveCheckResult(
+            true,
+            report.Configured,
+            report.Intact,
+            report.ArchivedSequence,
+            report.CurrentSequence,
+            report.ArchivedCount,
+            report.Reason);
+    }
+
     [McpServerTool(Name = "workbench_list_audit")]
     [Description(
         "查工具调用审计（谁在什么时候调了哪个工具、结果如何）。" +
@@ -822,6 +848,16 @@ public sealed record ExportToolResult(
     string? Error = null);
 
 /// <summary>审计哈希链的校验结果。</summary>
+/// <summary>审计归档对账的结果。</summary>
+public sealed record AuditArchiveCheckResult(
+    bool Ok,
+    bool Configured,
+    bool Intact,
+    long ArchivedSequence,
+    long CurrentSequence,
+    int ArchivedCount,
+    string? Error = null);
+
 public sealed record AuditChainResult(
     bool Ok,
     bool Intact,

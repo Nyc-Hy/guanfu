@@ -106,6 +106,17 @@ public static class HumanTokenPolicy
             return IsPost(method);
         }
 
+        // POST /api/audit/archive —— 往工作台数据目录**之外**写归档文件。
+        // 归档位置由部署方决定，写出去的东西（链头哈希）就是将来的对账依据，
+        // 跟改项目配置同权：要人工在场。
+        // 读归档（GET /api/audit/archive）只是对账，不算敏感。
+        if (segments.Length == 3
+            && segments[1].Equals("audit", StringComparison.OrdinalIgnoreCase)
+            && segments[2].Equals("archive", StringComparison.OrdinalIgnoreCase))
+        {
+            return IsPost(method);
+        }
+
         // /api/mcp/tools/reset —— 一键恢复全部工具，同样是改能力面。
         // 必须排在 tools/{name} 之前：否则 reset 会被那条更宽的规则先接住，
         // 而那条只认 PUT，POST reset 就漏判了。

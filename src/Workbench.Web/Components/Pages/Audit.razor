@@ -1,7 +1,11 @@
 @page "/audit"
 @rendermode InteractiveServer
+@using Microsoft.Extensions.Options
+@using Workbench.Infrastructure
 @inject IToolAuditService AuditService
 @inject IProjectService Projects
+@inject IAuditChainArchiveService Archive
+@inject IOptions<WorkbenchOptions> Options
 
 <PageTitle>工具审计 · 开发工作台</PageTitle>
 
@@ -30,6 +34,58 @@
         }
     </div>
 }
+
+@* 链头归档：库里自己算的链挡不住「连哈希一起重算」——
+   把链头写到工作台数据目录之外，才多一道对上的机会。 *@
+<div class="wb-panel" style="margin-bottom:16px;">
+    <h3>链头归档</h3>
+    <p class="wb-muted">
+        归档路径：@if (string.IsNullOrWhiteSpace(ArchivePath))
+        {
+            <span class="wb-tag wb-tag-warn">未配置</span>
+            <span>（配 <code>Workbench:AuditArchivePath</code> 才生效；路径必须在工作台数据目录之外。）</span>
+        }
+        else
+        {
+            <code>@ArchivePath</code>
+        }
+    </p>
+
+    @if (ArchiveResultMessage is not null)
+    {
+        <p><span class="wb-tag wb-tag-ok">已归档</span> @ArchiveResultMessage</p>
+    }
+
+    @if (ArchiveCompareMessage is not null)
+    {
+        <p>
+            @switch (ArchiveCompareKind)
+            {
+                case "ok":
+                    <span class="wb-tag wb-tag-ok">对得上</span>
+                    break;
+                case "bad":
+                    <span class="wb-tag wb-tag-danger">对不上</span>
+                    break;
+                default:
+                    <span class="wb-tag wb-chip-muted">还没归档过</span>
+                    break;
+            }
+            @ArchiveCompareMessage
+        </p>
+    }
+
+    <div class="wb-form-row">
+        <button class="wb-btn" disabled="@(Busy || !Authorized)" @onclick="ArchiveAsync">归档链头</button>
+        <button class="wb-btn" disabled="@Busy" @onclick="VerifyArchiveAsync">与归档对账</button>
+        @if (!Authorized && !string.IsNullOrWhiteSpace(ArchivePath))
+        {
+            <span class="wb-muted">归档要人工凭证（往工作台外面写文件）。</span>
+        }
+    </div>
+</div>
+
+<PageTokenGate @bind-Authorized="Authorized" />
 
 <ErrorNotice Error="LoadError" />
 
@@ -198,6 +254,15 @@ else
     private string? ChainMessage { get; set; }
     private bool ChainIntact { get; set; }
 
+    // 链头归档
+    private bool Authorized { get; set; }
+    private string? ArchivePath => Options.Value.AuditArchivePath;
+    private string? ArchiveResultMessage { get; set; }
+    private string? ArchiveCompareMessage { get; set; }
+    private string ArchiveCompareKind { get; set; } = "none";
+    private bool Archiving { get; set; }
+    private bool Busy => Archiving;
+
     private readonly HashSet<Guid> Expanded = [];
 
     private bool OutcomeFilterSet => !string.IsNullOrWhiteSpace(OutcomeFilter);
@@ -237,6 +302,9 @@ else
         }
 
         await ReloadAsync(resetPage: true);
+
+        // 归档对账是只读的，顺手把现状摆出来 —— 不用等人点。
+        await VerifyArchiveAsync();
     }
 
     private async Task ReloadAsync(bool resetPage)
@@ -330,6 +398,65 @@ else
         finally
         {
             Verifying = false;
+        }
+    }
+
+    /// <summary>把当前链头写到归档文件（工作台数据目录之外）。</summary>
+    private async Task ArchiveAsync()
+    {
+        Archiving = true;
+        try
+        {
+            var result = await Archive.ArchiveAsync();
+            ArchiveResultMessage = result.Ok
+                ? $"第 {result.Sequence} 条链头，写到 {result.Path}。"
+                : result.Error;
+        }
+        catch (Exception ex)
+        {
+            ArchiveResultMessage = "归档失败：" + ex.Message;
+        }
+        finally
+        {
+            Archiving = false;
+        }
+    }
+
+    /// <summary>用归档里的链头跟库里的现状对账。</summary>
+    private async Task VerifyArchiveAsync()
+    {
+        Archiving = true;
+        try
+        {
+            var report = await Archive.VerifyAsync();
+
+            // 没归档过就直说「还没归档过」，别摆个绿色的「对得上」——
+            // 那是拿「没东西可比」冒充「比过了没问题」。
+            if (!report.Configured)
+            {
+                ArchiveCompareKind = "none";
+                ArchiveCompareMessage = report.Reason;
+                return;
+            }
+
+            if (report.ArchivedCount == 0)
+            {
+                ArchiveCompareKind = "none";
+                ArchiveCompareMessage = report.Reason;
+                return;
+            }
+
+            ArchiveCompareKind = report.Intact ? "ok" : "bad";
+            ArchiveCompareMessage = report.Reason;
+        }
+        catch (Exception ex)
+        {
+            ArchiveCompareKind = "bad";
+            ArchiveCompareMessage = "对账失败：" + ex.Message;
+        }
+        finally
+        {
+            Archiving = false;
         }
     }
 
