@@ -52,18 +52,28 @@
         <section class="wb-panel">
             <h3>典型流程</h3>
             <ol class="wb-doc-list">
-                <li><code>workbench_claim_task</code> 领一个任务（带租约，别人抢不走）</li>
-                <li><code>workbench_get_context</code> 一次取回全部上下文：文档、计划、产物、流水、允许的迁移</li>
-                <li><code>workbench_set_plan</code> 回写需求理解与开发计划</li>
+                <li>领一个任务（带租约，别人抢不走）</li>
+                <li>一次取回全部上下文：文档、计划、产物、流水、允许的状态迁移</li>
+                <li>回写需求理解与开发计划</li>
                 <li>干活（改代码、跑测试）</li>
-                <li><code>workbench_report_test_result</code> 回写单元测试结果</li>
-                <li><code>workbench_update_status</code> 推进状态；非法迁移会带出允许列表</li>
+                <li>回写单元测试结果</li>
+                <li>推进状态；非法迁移会带出当前允许的列表</li>
             </ol>
             <p class="wb-hint">
-                写数据库必须走 <code>db_execute</code>，git 写操作走 <code>git_commit</code> /
-                <code>git_push</code>，执行命令走 <code>shell_run</code>——三个都要人工审批，
-                批准后带 <code>approvalId</code> 再次调用即执行。
+                改数据库、提交代码、推送、执行命令这几类写操作都要人工审批，
+                批准后带审批号再次调用即执行。
             </p>
+            <details>
+                <summary class="wb-muted">对应的工具名（agent 按这些名字调用）</summary>
+                <ul class="wb-doc-list wb-muted">
+                    <li><code>workbench_claim_task</code></li>
+                    <li><code>workbench_get_context</code></li>
+                    <li><code>workbench_set_plan</code></li>
+                    <li><code>workbench_report_test_result</code></li>
+                    <li><code>workbench_update_status</code></li>
+                    <li><code>db_execute</code> · <code>git_commit</code> · <code>git_push</code> · <code>shell_run</code></li>
+                </ul>
+            </details>
         </section>
     </div>
 

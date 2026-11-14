@@ -24,6 +24,14 @@ public class HumanTokenTests
     [InlineData("POST", "/api/tasks/11111111-1111-1111-1111-111111111111/launch-agent")]
     [InlineData("POST", "/api/workspace/export")]
     [InlineData("POST", "/api/workspace/import")]
+    // 新增：撤销审批 / 表级规则写 / 探活连接 / MCP 工具开关
+    [InlineData("POST", "/api/approvals/11111111-1111-1111-1111-111111111111/revoke")]
+    [InlineData("POST", "/api/db-connections/11111111-1111-1111-1111-111111111111/rules")]
+    [InlineData("DELETE", "/api/db-connections/11111111-1111-1111-1111-111111111111/rules")]
+    [InlineData("DELETE", "/api/db-connections/11111111-1111-1111-1111-111111111111/rules/22222222-2222-2222-2222-222222222222")]
+    [InlineData("POST", "/api/db-connections/11111111-1111-1111-1111-111111111111/test")]
+    [InlineData("PUT", "/api/mcp/tools/db_execute")]
+    [InlineData("POST", "/api/mcp/tools/reset")]
     public void 敏感端点要人工在场(string method, string path)
     {
         Assert.True(HumanTokenPolicy.IsSensitiveEndpoint(method, path));
@@ -39,6 +47,12 @@ public class HumanTokenTests
     [InlineData("POST", "/mcp")]
     [InlineData("GET", "/health")]
     [InlineData("GET", "/")]
+    // 读规则 / 读工具清单 / 搜索是普通读，保持开放
+    [InlineData("GET", "/api/db-connections/11111111-1111-1111-1111-111111111111/rules")]
+    [InlineData("GET", "/api/mcp/tools")]
+    [InlineData("GET", "/api/search")]
+    // 撤销只保护 POST；GET 同名路径不是写操作
+    [InlineData("GET", "/api/approvals/11111111-1111-1111-1111-111111111111/revoke")]
     public void 普通端点保持开放(string method, string path)
     {
         Assert.False(HumanTokenPolicy.IsSensitiveEndpoint(method, path));
@@ -100,6 +114,20 @@ public class HumanTokenTests
 
         Assert.Equal(StatusCodes.Status200OK, result.Status);
         Assert.True(result.Reached);
+    }
+
+    [Theory]
+    [InlineData("POST", "/api/approvals/11111111-1111-1111-1111-111111111111/revoke")]
+    [InlineData("POST", "/api/db-connections/11111111-1111-1111-1111-111111111111/test")]
+    [InlineData("PUT", "/api/mcp/tools/db_execute")]
+    [InlineData("POST", "/api/mcp/tools/reset")]
+    [InlineData("DELETE", "/api/db-connections/11111111-1111-1111-1111-111111111111/rules/22222222-2222-2222-2222-222222222222")]
+    public async Task 新增敏感端点不带凭证也401(string method, string path)
+    {
+        var result = await RunAsync(method, path);
+
+        Assert.Equal(StatusCodes.Status401Unauthorized, result.Status);
+        Assert.False(result.Reached);
     }
 
     [Fact]

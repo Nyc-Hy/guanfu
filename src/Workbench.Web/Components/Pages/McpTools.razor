@@ -1,6 +1,9 @@
 @page "/mcp-tools"
 @rendermode InteractiveServer
+@using Microsoft.AspNetCore.Http
 @inject IMcpToolService Tools
+@inject HumanTokenAccessor Tokens
+@inject IJSRuntime JS
 
 <PageTitle>MCP 工具 · 开发工作台</PageTitle>
 
@@ -14,20 +17,41 @@
     </div>
     <div class="wb-form-row">
         <span class="wb-chip">@EnabledCount / @Items.Count 开启</span>
-        <button class="wb-btn" disabled="@Saving" @onclick="ResetAsync">全部恢复默认</button>
+        <button class="wb-btn" disabled="@(Saving || !Gate.Authorized)" @onclick="ResetAsync">全部恢复默认</button>
     </div>
 </div>
 
-@if (!string.IsNullOrWhiteSpace(Message))
-{
-    <p class="@(IsError ? "wb-error" : "wb-hint")">@Message</p>
-}
-
+<ErrorNotice Error="ActionError" />
 <ErrorNotice Error="LoadError" />
 
-@if (Items.Count == 0)
+@if (!Gate.Authorized)
 {
-    <div class="wb-empty">没有发现任何 MCP 工具。</div>
+    <div class="wb-panel">
+        <p class="wb-error">开关 MCP 工具需要人工凭证 —— 这改的是 agent 的能力面。</p>
+        <p class="wb-muted">
+            在本机打开工作台时会自动获取；远程访问请从启动工作台的控制台复制人工 token，粘贴到下面。
+        </p>
+        <div class="wb-form-row">
+            <input class="wb-input" type="password" placeholder="人工 token（控制台里那串）"
+                   @oninput="OnTokenInputChanged" />
+            <button class="wb-btn wb-btn-primary"
+                    disabled="@string.IsNullOrWhiteSpace(TokenInput)"
+                    @onclick="VerifyToken">验证</button>
+        </div>
+        @if (!string.IsNullOrWhiteSpace(Gate.Hint))
+        {
+            <p class="wb-hint">@Gate.Hint</p>
+        }
+    </div>
+}
+
+@if (Loading)
+{
+    <div class="wb-empty">加载中…</div>
+}
+else if (Items.Count == 0)
+{
+    <div class="wb-empty">@(LoadError is null ? "没有发现任何 MCP 工具。" : "工具清单加载失败。")</div>
 }
 else
 {
@@ -53,19 +77,22 @@ else
                 {
                     <tr>
                         <td>
-                            <input type="checkbox" checked="@tool.Enabled" disabled="@Saving"
+                            <input type="checkbox" checked="@tool.Enabled" disabled="@(Saving || !Gate.Authorized)"
                                    @onchange="e => SetEnabledAsync(tool.Name, (bool)(e.Value ?? false))" />
                         </td>
-                        <td><code>@tool.Name</code></td>
+                        <td>
+                            @UiText.Tool(tool.Name)
+                            <div class="wb-muted"><code>@tool.Name</code></div>
+                        </td>
                         <td class="wb-muted">@tool.Description</td>
                         <td>
                             @if (tool.RequiresApproval)
                             {
-                                <span class="wb-tag wb-tag-warn">需审批</span>
+                                <span class="wb-tag wb-tag-warn">需人工审批</span>
                             }
                             else
                             {
-                                <span class="wb-tag wb-tag-ok">直通</span>
+                                <span class="wb-tag wb-tag-ok">直接执行</span>
                             }
                         </td>
                     </tr>
@@ -79,9 +106,15 @@ else
 @code {
     private IReadOnlyList<McpToolInfo> Items { get; set; } = [];
     private bool Saving { get; set; }
-    private string? Message { get; set; }
-    private bool IsError { get; set; }
+    private bool Loading { get; set; }
+    private PageError? ActionError { get; set; }
     private PageError? LoadError { get; set; }
+
+    // ---- 人工凭证（开关工具 = 改 agent 能力面，必须有人在场）----
+    private UiTokenGate Gate { get; set; } = default!;
+    private string TokenInput { get; set; } = string.Empty;
+
+    [CascadingParameter] public HttpContext? RequestContext { get; set; }
 
     private int EnabledCount => Items.Count(t => t.Enabled);
 
@@ -89,10 +122,65 @@ else
     private IEnumerable<IGrouping<string, McpToolInfo>> Groups =>
         Items.GroupBy(t => t.Category);
 
-    protected override async Task OnInitializedAsync() => await ReloadAsync();
+    protected override async Task OnInitializedAsync()
+    {
+        Gate = new UiTokenGate(Tokens.Token);
+        Gate.AuthorizeFromRequest(RequestContext?.Request);
+        await ReloadAsync();
+    }
+
+    protected override Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _ = AcquireTokenAsync();
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private async Task AcquireTokenAsync()
+    {
+        if (Gate.Authorized)
+        {
+            return;
+        }
+
+        string? payload = null;
+
+        try
+        {
+            payload = await JS.InvokeAsync<string>("eval", ApprovalUiGuard.FetchTokenScript);
+        }
+        catch (JSException)
+        {
+            // 取不到就走粘贴流程
+        }
+        catch (InvalidOperationException)
+        {
+            // 预渲染阶段没有 JS 运行时
+        }
+
+        Gate.ApplyFetchResult(payload);
+        StateHasChanged();
+    }
+
+    private void OnTokenInputChanged(ChangeEventArgs args) =>
+        TokenInput = args.Value?.ToString() ?? string.Empty;
+
+    private void VerifyToken()
+    {
+        if (Gate.TryVerify(TokenInput))
+        {
+            TokenInput = string.Empty;
+            ActionError = null;
+        }
+    }
 
     private async Task ReloadAsync()
     {
+        Loading = true;
+
         try
         {
             Items = await Tools.ListAsync();
@@ -102,6 +190,10 @@ else
         {
             // 别让异常从初始化方法冒出去 —— 冒出去就是整页白屏
             LoadError = PageError.From(ex, "加载工具清单");
+        }
+        finally
+        {
+            Loading = false;
         }
     }
 
@@ -113,6 +205,13 @@ else
             return;
         }
 
+        if (!Gate.Authorized)
+        {
+            ActionError = PageError.Simple(ApprovalUiGuard.MissingTokenMessage);
+            await ReloadAsync();
+            return;
+        }
+
         Saving = true;
 
         // 立刻把控件置灰：Blazor 在 await 期间不重绘
@@ -121,15 +220,13 @@ else
         try
         {
             await Tools.SetEnabledAsync(toolName, enabled);
-            Message = enabled
+            ActionError = PageError.Notice(enabled
                 ? $"已开启 {toolName}。"
-                : $"已关闭 {toolName}。agent 不会再看到它。";
-            IsError = false;
+                : $"已关闭 {toolName}。agent 不会再看到它。");
         }
         catch (Exception ex)
         {
-            Message = ex.Message;
-            IsError = true;
+            ActionError = PageError.From(ex, $"开关工具 {toolName}");
         }
         finally
         {
@@ -146,19 +243,23 @@ else
             return;
         }
 
+        if (!Gate.Authorized)
+        {
+            ActionError = PageError.Simple(ApprovalUiGuard.MissingTokenMessage);
+            return;
+        }
+
         Saving = true;
         StateHasChanged();
 
         try
         {
             Items = await Tools.ResetAsync();
-            Message = "已恢复默认（全部工具开启）。";
-            IsError = false;
+            ActionError = PageError.Notice("已恢复默认（全部工具开启）。");
         }
         catch (Exception ex)
         {
-            Message = ex.Message;
-            IsError = true;
+            ActionError = PageError.From(ex, "恢复默认工具开关");
         }
         finally
         {

@@ -1,15 +1,19 @@
 @page "/projects/{ProjectId:guid}"
 @rendermode InteractiveServer
-@inject IProjectService Projects
-@inject ITaskService Tasks
-@inject IMilestoneService Milestones
+@inject IServiceScopeFactory ScopeFactory
 @inject NavigationManager Nav
+@implements IAsyncDisposable
 
 <PageTitle>看板 · 开发工作台</PageTitle>
 
-@if (Project is null)
+@if (Loading && Project is null)
 {
-    <div class="wb-empty">项目不存在。<a href="/">返回</a></div>
+    <div class="wb-empty">加载中…</div>
+}
+else if (Project is null)
+{
+    <ErrorNotice Error="LoadError" />
+    <div class="wb-empty">@(LoadError is null ? "项目不存在。" : "看板加载失败。")<a href="/">返回</a></div>
 }
 else
 {
@@ -54,6 +58,7 @@ else
     }
 
     <ErrorNotice Error="LoadError" />
+    <ErrorNotice Error="Error" />
 
     <section class="wb-panel">
         <div class="wb-card-head">
@@ -79,9 +84,25 @@ else
                 {
                     <span class="wb-chip">
                         @m.Name @Percent(m.Progress)
-                        <button class="wb-chip-x" title="删除迭代版本" disabled="@Busy" @onclick="() => DeleteMilestoneAsync(m.Id)">×</button>
+                        <button class="wb-chip-x" title="删除迭代版本" disabled="@Busy"
+                                @onclick="() => _confirmDeleteMilestoneId = m.Id">×</button>
                     </span>
                 }
+            </div>
+        }
+
+        @if (_confirmDeleteMilestoneId is { } confirmingId)
+        {
+            <div style="border:1px solid #c0392b;border-radius:8px;padding:12px;margin-top:8px">
+                <p class="wb-error">
+                    确认删除迭代版本「@(MilestoneItems.FirstOrDefault(m => m.Id == confirmingId)?.Name ?? confirmingId.ToString())」？
+                    任务不会被删除，只会从版本里摘出来。
+                </p>
+                <div class="wb-form-row">
+                    <button class="wb-btn wb-btn-danger" disabled="@Busy"
+                            @onclick="() => DeleteMilestoneAsync(confirmingId)">确认删除</button>
+                    <button class="wb-btn" @onclick="() => _confirmDeleteMilestoneId = null">取消</button>
+                </div>
             </div>
         }
 
@@ -92,75 +113,146 @@ else
         <p class="wb-hint">删除迭代版本只会把任务摘出来，不会删任务。</p>
     </section>
 
-    <div class="wb-board">
-        @foreach (var status in Columns)
-        {
-            var column = Items.Where(t => t.Status == status).ToList();
-
-            // 一次渲染几百上千个任务就是几万行 DOM，浏览器直接卡死。
-            // 每列先只渲染前 N 条，剩下的点「显示更多」再放出来。
-            var limit = ColumnLimit(status);
-            var visible = column.Count <= limit ? column : column.Take(limit).ToList();
-
-            <section class="wb-column">
-                <header class="wb-column-head">
-                    <span>@StatusLabel(status)</span>
-                    <span class="wb-count">@column.Count</span>
-                </header>
-
-                @foreach (var task in visible)
+    @* 看板筛选：关键字 / 状态 / 负责人，都是对已加载任务的本地过滤 *@
+    <section class="wb-panel">
+        <div class="wb-form-row">
+            <input class="wb-input" placeholder="按标题 / 编号过滤" @bind="KeywordFilter" @bind:event="oninput" />
+            <select class="wb-input" @bind="StatusFilter">
+                <option value="">全部状态</option>
+                @foreach (var status in Columns)
                 {
-                    <a class="wb-task" href="/tasks/@task.Id">
-                        <div class="wb-task-title">
-                            <span class="wb-chip @TaskTypes.CssClass(task.Type)">@TaskTypes.Name(task.Type)</span>
-                            @if (!string.IsNullOrWhiteSpace(task.Key))
-                            {
-                                <span class="wb-chip wb-chip-muted">@task.Key</span>
-                            }
-                            @task.Title
-                        </div>
-                        @if (!string.IsNullOrWhiteSpace(task.Branch))
-                        {
-                            <div class="wb-task-meta">
-                                <span class="wb-chip wb-chip-muted">⎇ @task.Branch</span>
-                            </div>
-                        }
-                        @if (MilestoneName(task.MilestoneId) is { } milestoneName)
-                        {
-                            <div class="wb-task-meta">
-                                <span class="wb-chip wb-chip-muted">@milestoneName</span>
-                            </div>
-                        }
-                        @if (!string.IsNullOrWhiteSpace(task.ClaimedBy))
-                        {
-                            <div class="wb-task-meta">
-                                <span class="wb-chip wb-chip-agent">@task.ClaimedBy</span>
-                                @if (task.LeaseExpiresAt is not null)
+                    <option value="@status">@StatusLabel(status)</option>
+                }
+            </select>
+            <select class="wb-input" @bind="AssigneeFilter">
+                <option value="">全部负责人</option>
+                @foreach (var assignee in Assignees)
+                {
+                    <option value="@assignee">@assignee</option>
+                }
+            </select>
+            <label class="wb-label" style="display:flex;align-items:center;gap:6px">
+                <input type="checkbox" @bind="IncludeArchived" @bind:after="ReloadAsync" />
+                显示归档
+            </label>
+            <button class="wb-btn" disabled="@Loading" @onclick="ReloadAsync">刷新</button>
+        </div>
+        <p class="wb-hint">
+            拖拽任务卡到目标列即可流转状态；非法迁移会被拒绝并列出当前允许的迁移。
+            不想拖拽的话，打开任务详情页点「状态流转」里的按钮也行。
+            每 15 秒自动刷新。
+        </p>
+        @if (Items.Count >= MaxTasks)
+        {
+            <p class="wb-muted">这个项目任务太多，只拉了最近 @MaxTasks 条 —— 用筛选或搜索缩小范围。</p>
+        }
+    </section>
+
+    @if (Loading)
+    {
+        <div class="wb-empty">加载中…</div>
+    }
+    else if (FilteredItems.Count == 0)
+    {
+        <div class="wb-empty">
+            @if (Items.Count == 0)
+            {
+                <span>还没有任务。点右上角「新建任务」开始。</span>
+            }
+            else
+            {
+                <span>没有符合筛选条件的任务。</span>
+            }
+        </div>
+    }
+    else
+    {
+        <div class="wb-board">
+            @foreach (var status in Columns)
+            {
+                var column = FilteredItems.Where(t => t.Status == status).ToList();
+
+                // 一次渲染几百上千个任务就是几万行 DOM，浏览器直接卡死。
+                // 每列先只渲染前 N 条，剩下的点「显示更多」再放出来。
+                var limit = ColumnLimit(status);
+                var visible = column.Count <= limit ? column : column.Take(limit).ToList();
+
+                <section class="wb-column" @ondrop="() => DropAsync(status)" @ondragover:preventDefault="true">
+                    <header class="wb-column-head">
+                        <span>@StatusLabel(status)</span>
+                        <span class="wb-count">@column.Count</span>
+                    </header>
+
+                    @foreach (var task in visible)
+                    {
+                        <a class="wb-task" href="/tasks/@task.Id" draggable="true"
+                           @ondragstart="() => OnDragStart(task.Id)" @ondragend="OnDragEnd">
+                            <div class="wb-task-title">
+                                <span class="wb-chip @TaskTypes.CssClass(task.Type)">@TaskTypes.Name(task.Type)</span>
+                                @if (!string.IsNullOrWhiteSpace(task.Key))
                                 {
-                                    <span class="wb-chip wb-chip-muted">租至 @task.LeaseExpiresAt.Value.ToLocalTime().ToString("HH:mm")</span>
+                                    <span class="wb-chip wb-chip-muted">@task.Key</span>
+                                }
+                                @task.Title
+                                @if (task.IsArchived)
+                                {
+                                    <span class="wb-tag">归档</span>
                                 }
                             </div>
-                        }
-                        @if (task.Stale)
-                        {
-                            <span class="wb-tag wb-tag-warn">停滞</span>
-                        }
-                    </a>
-                }
+                            @if (!string.IsNullOrWhiteSpace(task.Branch))
+                            {
+                                <div class="wb-task-meta">
+                                    <span class="wb-chip wb-chip-muted">⎇ @task.Branch</span>
+                                </div>
+                            }
+                            @if (MilestoneName(task.MilestoneId) is { } milestoneName)
+                            {
+                                <div class="wb-task-meta">
+                                    <span class="wb-chip wb-chip-muted">@milestoneName</span>
+                                </div>
+                            }
+                            @if (!string.IsNullOrWhiteSpace(task.Assignee))
+                            {
+                                <div class="wb-task-meta">
+                                    <span class="wb-chip">@task.Assignee</span>
+                                    <span class="wb-chip wb-chip-muted">@task.Priority</span>
+                                    @if (task.DueAt is not null)
+                                    {
+                                        <span class="wb-chip wb-chip-muted">截止 @task.DueAt.Value.ToLocalTime().ToString("MM-dd")</span>
+                                    }
+                                </div>
+                            }
+                            @if (!string.IsNullOrWhiteSpace(task.ClaimedBy))
+                            {
+                                <div class="wb-task-meta">
+                                    <span class="wb-chip wb-chip-agent">@task.ClaimedBy</span>
+                                    @if (task.LeaseExpiresAt is not null)
+                                    {
+                                        <span class="wb-chip wb-chip-muted">租至 @task.LeaseExpiresAt.Value.ToLocalTime().ToString("HH:mm")</span>
+                                    }
+                                </div>
+                            }
+                            @if (task.Stale)
+                            {
+                                <span class="wb-tag wb-tag-warn">停滞</span>
+                            }
+                        </a>
+                    }
 
-                @if (visible.Count == 0)
-                {
-                    <div class="wb-column-empty">—</div>
-                }
-                else if (visible.Count < column.Count)
-                {
-                    <button class="wb-btn wb-btn-link" @onclick="() => ShowMore(status)">
-                        显示更多（还有 @(column.Count - visible.Count) 个）
-                    </button>
-                }
-            </section>
-        }
-    </div>
+                    @if (visible.Count == 0)
+                    {
+                        <div class="wb-column-empty">—</div>
+                    }
+                    else if (visible.Count < column.Count)
+                    {
+                        <button class="wb-btn wb-btn-link" @onclick="() => ShowMore(status)">
+                            显示更多（还有 @(column.Count - visible.Count) 个）
+                        </button>
+                    }
+                </section>
+            }
+        </div>
+    }
 }
 
 @code {
@@ -173,7 +265,9 @@ else
         TaskStatus.Testing,
         TaskStatus.Review,
         TaskStatus.Done,
-        TaskStatus.Blocked
+        TaskStatus.Blocked,
+        // 取消的任务也要看得见：彻底消失等于没人知道它存在过
+        TaskStatus.Cancelled
     ];
 
     [Parameter] public Guid ProjectId { get; set; }
@@ -191,22 +285,129 @@ else
     private PageError? Error { get; set; }
     private PageError? LoadError { get; set; }
     private bool Busy { get; set; }
+    private bool Loading { get; set; }
+
+    // ---- 筛选 ----
+    private string KeywordFilter { get; set; } = string.Empty;
+    private string StatusFilter { get; set; } = string.Empty;
+    private string AssigneeFilter { get; set; } = string.Empty;
+    private bool IncludeArchived { get; set; }
+
+    // ---- 拖拽 ----
+    private Guid? _dragTaskId;
+
+    // ---- 里程碑删除确认 ----
+    private Guid? _confirmDeleteMilestoneId;
 
     // 每列先渲染多少条
     private const int ColumnPageSize = 50;
     private readonly Dictionary<TaskStatus, int> _columnLimits = new();
 
+    /// <summary>一次最多从库里拉多少个任务。渲染层有按列的「显示更多」兜着，拉取这步也得有上限。</summary>
+    private const int MaxTasks = 500;
+
+    private IReadOnlyList<string> Assignees =>
+        Items.Select(t => t.Assignee)
+            .Where(a => !string.IsNullOrWhiteSpace(a))
+            .Distinct()
+            .OrderBy(a => a)
+            .ToList()!;
+
+    private List<TaskSummaryDto> FilteredItems
+    {
+        get
+        {
+            var keyword = KeywordFilter.Trim();
+            var query = Items.AsEnumerable();
+
+            if (keyword.Length > 0)
+            {
+                query = query.Where(t =>
+                    t.Title.Contains(keyword, StringComparison.OrdinalIgnoreCase)
+                    || (t.Key?.Contains(keyword, StringComparison.OrdinalIgnoreCase) ?? false));
+            }
+
+            if (Enum.TryParse<TaskStatus>(StatusFilter, out var status))
+            {
+                query = query.Where(t => t.Status == status);
+            }
+
+            if (!string.IsNullOrWhiteSpace(AssigneeFilter))
+            {
+                query = query.Where(t => t.Assignee == AssigneeFilter);
+            }
+
+            return query.ToList();
+        }
+    }
+
     protected override async Task OnParametersSetAsync() => await ReloadAsync();
 
-    private async Task ReloadAsync()
+    /// <summary>自动刷新间隔。agent 在推进任务时看板得自己动起来。</summary>
+    private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(15);
+
+    private CancellationTokenSource? _timerCts;
+
+    protected override Task OnAfterRenderAsync(bool firstRender)
+    {
+        // 只在交互阶段起定时器：预渲染出来的实例用完就扔。
+        if (firstRender)
+        {
+            _timerCts = new CancellationTokenSource();
+            _ = RunRefreshTimerAsync(_timerCts.Token);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// 自动刷新。每 tick 独立 scope —— 与页面上的写操作共用电路级 DbContext 的话，
+    /// 人正在拖拽流转状态、定时器也来查库，就是 "A second operation was started"。
+    /// </summary>
+    private async Task RunRefreshTimerAsync(CancellationToken cancellationToken)
     {
         try
         {
-            Project = await Projects.GetAsync(ProjectId);
-            MilestoneItems = await Milestones.ListAsync(ProjectId);
+            using var timer = new PeriodicTimer(RefreshInterval);
+
+            while (await timer.WaitForNextTickAsync(cancellationToken))
+            {
+                await InvokeAsync(async () =>
+                {
+                    await ReloadAsync();
+                    StateHasChanged();
+                });
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // 组件被销毁，正常收尾
+        }
+        catch (ObjectDisposedException)
+        {
+            // 电路已经断了
+        }
+    }
+
+    private async Task ReloadAsync()
+    {
+        Loading = true;
+
+        try
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var projects = scope.ServiceProvider.GetRequiredService<IProjectService>();
+            var milestones = scope.ServiceProvider.GetRequiredService<IMilestoneService>();
+            var tasks = scope.ServiceProvider.GetRequiredService<ITaskService>();
+
+            Project = await projects.GetAsync(ProjectId);
+            MilestoneItems = await milestones.ListAsync(ProjectId);
 
             Guid? milestoneId = Guid.TryParse(SelectedMilestoneFilter, out var parsed) ? parsed : null;
-            Items = await Tasks.ListAsync(ProjectId, null, null, milestoneId);
+
+            // 一次最多拉 500 条。渲染层还有按列的「显示更多」兜着，
+            // 但拉取这步也不能没上限 —— 几千个任务全进内存一样会卡。
+            Items = await tasks.ListAsync(ProjectId, null, null, milestoneId, includeArchived: IncludeArchived, limit: MaxTasks);
             LoadError = null;
         }
         catch (Exception ex)
@@ -214,12 +415,15 @@ else
             // 别让异常从初始化方法冒出去 —— 冒出去就是整页白屏
             LoadError = PageError.From(ex, "加载看板");
         }
+        finally
+        {
+            Loading = false;
+        }
     }
 
     /// <summary>这一列现在放出来几条。</summary>
     private int ColumnLimit(TaskStatus status) =>
         _columnLimits.TryGetValue(status, out var limit) ? limit : ColumnPageSize;
-
     private void ShowMore(TaskStatus status) =>
         _columnLimits[status] = ColumnLimit(status) + ColumnPageSize;
 
@@ -227,6 +431,56 @@ else
     {
         ShowCreate = !ShowCreate;
         Error = null;
+    }
+
+    // ---- 拖拽换状态 ----
+
+    private void OnDragStart(Guid taskId) => _dragTaskId = taskId;
+
+    private void OnDragEnd() => _dragTaskId = null;
+
+    private async Task DropAsync(TaskStatus target)
+    {
+        var taskId = _dragTaskId;
+        _dragTaskId = null;
+
+        if (taskId is null || Busy)
+        {
+            return;
+        }
+
+        var task = Items.FirstOrDefault(t => t.Id == taskId.Value);
+        if (task is null || task.Status == target)
+        {
+            return;
+        }
+
+        Busy = true;
+        StateHasChanged();
+
+        try
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var tasks = scope.ServiceProvider.GetRequiredService<ITaskService>();
+
+            await tasks.ChangeStatusAsync(taskId.Value, target, "看板拖拽", TaskEventSource.Human, "human");
+            Error = null;
+            await ReloadAsync();
+        }
+        catch (InvalidStatusTransitionException ex)
+        {
+            // 非法迁移：把服务端给的「当前允许列表」原样摆出来，人才知道该拖去哪
+            Error = PageError.Simple(
+                $"「{task.Title}」不能从 {ex.From} 拖到 {ex.To}。当前允许: {string.Join(", ", ex.Allowed)}");
+        }
+        catch (Exception ex)
+        {
+            Error = PageError.From(ex, "拖拽流转状态");
+        }
+        finally
+        {
+            Busy = false;
+        }
     }
 
     private async Task CreateTaskAsync()
@@ -250,7 +504,10 @@ else
                 return;
             }
 
-            await Tasks.CreateAsync(
+            using var scope = ScopeFactory.CreateScope();
+            var tasks = scope.ServiceProvider.GetRequiredService<ITaskService>();
+
+            await tasks.CreateAsync(
                 ProjectId,
                 NewTitle,
                 string.IsNullOrWhiteSpace(NewDescription) ? null : NewDescription,
@@ -287,7 +544,10 @@ else
 
         try
         {
-            await Milestones.CreateAsync(ProjectId, NewMilestoneName);
+            using var scope = ScopeFactory.CreateScope();
+            var milestones = scope.ServiceProvider.GetRequiredService<IMilestoneService>();
+
+            await milestones.CreateAsync(ProjectId, NewMilestoneName);
             NewMilestoneName = string.Empty;
             Error = null;
             await ReloadAsync();
@@ -310,11 +570,15 @@ else
         }
 
         Busy = true;
+        _confirmDeleteMilestoneId = null;
         StateHasChanged();
 
         try
         {
-            await Milestones.DeleteAsync(milestoneId);
+            using var scope = ScopeFactory.CreateScope();
+            var milestones = scope.ServiceProvider.GetRequiredService<IMilestoneService>();
+
+            await milestones.DeleteAsync(milestoneId);
 
             if (SelectedMilestoneFilter == milestoneId.ToString())
             {
@@ -359,4 +623,14 @@ else
         TaskStatus.Cancelled => "已取消",
         _ => status.ToString()
     };
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_timerCts is not null)
+        {
+            await _timerCts.CancelAsync();
+            _timerCts.Dispose();
+            _timerCts = null;
+        }
+    }
 }

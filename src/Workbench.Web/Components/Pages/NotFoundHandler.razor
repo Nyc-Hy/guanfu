@@ -1,0 +1,29 @@
+@page "/not-found-handler"
+@inject NavigationManager Nav
+
+<PageTitle>页面不存在</PageTitle>
+
+<LayoutView Layout="typeof(Layout.MainLayout)">
+    <div class="wb-empty">
+        <h1>页面不存在</h1>
+        <p class="wb-muted">地址可能写错了，或者这个页面已被移除。</p>
+        <p><a class="wb-btn wb-btn-primary" href="/">回首页</a></p>
+    </div>
+</LayoutView>
+
+@code {
+    /// <summary>
+    /// 直接访问未知 URL 时，静态 SSR 会得到一个空 body ——
+    /// 这里把状态码改成 404，并渲染中文提示（路由器的 NotFound 只管交互式导航）。
+    /// </summary>
+    [CascadingParameter]
+    private HttpContext? Http { get; set; }
+
+    protected override void OnInitialized()
+    {
+        if (Http is not null)
+        {
+            Http.Response.StatusCode = StatusCodes.Status404NotFound;
+        }
+    }
+}

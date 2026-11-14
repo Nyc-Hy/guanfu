@@ -1,0 +1,356 @@
+@page "/audit"
+@rendermode InteractiveServer
+@inject IToolAuditService AuditService
+@inject IProjectService Projects
+
+<PageTitle>工具审计 · 开发工作台</PageTitle>
+
+<div class="wb-page-head">
+    <div>
+        <h1>工具审计</h1>
+        <p class="wb-muted">
+            agent 每次调用工具都会记一笔：谁调的、要不要审批、结果如何、花了多久。
+            审计只追加不修改，出了事从这里复盘。
+        </p>
+    </div>
+    <button class="wb-btn" disabled="@Loading" @onclick="() => ReloadAsync(resetPage: false)">刷新</button>
+    <button class="wb-btn" disabled="@Verifying" @onclick="VerifyAsync">验哈希链</button>
+</div>
+
+@if (ChainMessage is not null)
+{
+    <div class="wb-panel" style="margin-bottom:16px;">
+        @if (ChainIntact)
+        {
+            <p><span class="wb-tag wb-tag-ok">链完整</span> @ChainMessage</p>
+        }
+        else
+        {
+            <p><span class="wb-tag wb-tag-danger">链断了</span> @ChainMessage</p>
+        }
+    </div>
+}
+
+<ErrorNotice Error="LoadError" />
+
+<div class="wb-filter-bar">
+    <select class="wb-input" @bind="ToolFilter" @bind:after="() => ReloadAsync(resetPage: true)">
+        <option value="">全部操作</option>
+        <option value="__approval__">需要人工审批的</option>
+        <option value="__direct__">直接执行的</option>
+    </select>
+    <select class="wb-input" @bind="ProjectFilter" @bind:after="() => ReloadAsync(resetPage: true)">
+        <option value="">全部项目</option>
+        @foreach (var project in ProjectList)
+        {
+            <option value="@project.Id">@project.Name</option>
+        }
+    </select>
+    <select class="wb-input" @bind="OutcomeFilter" @bind:after="() => ReloadAsync(resetPage: true)">
+        <option value="">全部结果</option>
+        <option value="success">成功</option>
+        <option value="denied">已拒绝</option>
+        <option value="error">错误</option>
+        <option value="pending">待审批</option>
+    </select>
+    <span class="wb-muted">按时间倒序</span>
+</div>
+
+@if (Loading && Fetched.Count == 0)
+{
+    <div class="wb-loading">加载中…</div>
+}
+else if (VisibleRows.Count == 0)
+{
+    <div class="wb-empty">没有符合条件的审计记录。</div>
+}
+else
+{
+    <div class="wb-table-scroll">
+        <table class="wb-table">
+            <thead>
+            <tr>
+                <th>时间</th>
+                <th>做了什么</th>
+                <th>调用方</th>
+                <th>项目 / 任务</th>
+                <th>结果</th>
+                <th>耗时</th>
+                <th>审批</th>
+                <th></th>
+            </tr>
+            </thead>
+            <tbody>
+            @foreach (var row in VisibleRows)
+            {
+                <tr>
+                    <td class="wb-muted">@row.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</td>
+                    <td title="@row.ToolName">@UiText.Tool(row.ToolName)</td>
+                    <td>
+                        @if (string.IsNullOrWhiteSpace(row.CallerId))
+                        {
+                            <span class="wb-muted">—</span>
+                        }
+                        else
+                        {
+                            <span class="wb-chip wb-chip-agent">@row.CallerId</span>
+                        }
+                    </td>
+                    <td>
+                        @if (row.ProjectId is not null)
+                        {
+                            <a href="/projects/@row.ProjectId">@ProjectName(row.ProjectId.Value)</a>
+                        }
+                        @if (row.TaskId is not null)
+                        {
+                            <div><a class="wb-back" href="/tasks/@row.TaskId">@UiText.TaskRef(row.TaskKey)</a></div>
+                        }
+                        @if (row.ProjectId is null && row.TaskId is null)
+                        {
+                            <span class="wb-muted">—</span>
+                        }
+                    </td>
+                    <td><span class="wb-tag @OutcomeClass(row.Outcome)">@OutcomeLabel(row.Outcome)</span></td>
+                    <td class="wb-muted">@row.DurationMs ms</td>
+                    <td>
+                        @if (!row.RequiredApproval)
+                        {
+                            <span class="wb-chip wb-chip-muted">无需审批</span>
+                        }
+                        else if (row.ApprovalId is not null)
+                        {
+                            <a class="wb-chip wb-chip-warn" href="/approvals?id=@row.ApprovalId">已审批</a>
+                        }
+                        else
+                        {
+                            <a class="wb-chip wb-chip-warn" href="/approvals">待审批</a>
+                        }
+                    </td>
+                    <td>
+                        <button class="wb-btn wb-btn-link" @onclick="() => ToggleDetail(row.Id)">
+                            @(Expanded.Contains(row.Id) ? "收起" : "详情")
+                        </button>
+                    </td>
+                </tr>
+                @if (Expanded.Contains(row.Id))
+                {
+                    <tr>
+                        <td colspan="8">
+                            <details open>
+                                <summary class="wb-muted">调用参数</summary>
+                                <pre class="wb-sql">@row.Arguments</pre>
+                            </details>
+                            <details open>
+                                <summary class="wb-muted">结果</summary>
+                                @if (string.IsNullOrWhiteSpace(row.ResultSummary))
+                                {
+                                    <p class="wb-muted">（无）</p>
+                                }
+                                else
+                                {
+                                    <pre class="wb-sql">@row.ResultSummary</pre>
+                                }
+                                @if (row.RowsAffected is not null)
+                                {
+                                    <p class="wb-muted">影响行数：@row.RowsAffected</p>
+                                }
+                            </details>
+                        </td>
+                    </tr>
+                }
+            }
+            </tbody>
+        </table>
+    </div>
+
+    <div class="wb-pager">
+        <button class="wb-btn" disabled="@(Loading || PageIndex == 0)" @onclick="PrevPageAsync">上一页</button>
+        <span class="wb-muted">第 @(PageIndex + 1) 页</span>
+        <button class="wb-btn" disabled="@(Loading || !HasNext)" @onclick="NextPageAsync">下一页</button>
+        @if (Loading)
+        {
+            <span class="wb-muted">加载中…</span>
+        }
+        <span class="wb-muted">
+            @(OutcomeFilterSet
+                ? "「结果」过滤在最近 1000 条记录内进行。"
+                : "最多可翻到最近 1000 条；更早的记录请用工具 / 项目过滤缩小范围。")
+        </span>
+    </div>
+}
+
+@code {
+    private const int PageSize = 20;
+
+    private IReadOnlyList<ToolAuditDto> Fetched { get; set; } = [];
+    private IReadOnlyList<ProjectSummaryDto> ProjectList { get; set; } = [];
+
+    private string ToolFilter { get; set; } = string.Empty;
+    private string ProjectFilter { get; set; } = string.Empty;
+    private string OutcomeFilter { get; set; } = string.Empty;
+
+    private int PageIndex { get; set; }
+    private bool Loading { get; set; } = true;
+    private bool _reloading;
+    private PageError? LoadError { get; set; }
+
+    private bool Verifying { get; set; }
+    private string? ChainMessage { get; set; }
+    private bool ChainIntact { get; set; }
+
+    private readonly HashSet<Guid> Expanded = [];
+
+    private bool OutcomeFilterSet => !string.IsNullOrWhiteSpace(OutcomeFilter);
+
+    /// <summary>按「要不要审批」筛。原始工具名不再铺在下拉里 —— 一屏四十个代码名没人看得下去。</summary>
+    private const string ApprovalFilterValue = "__approval__";
+    private const string DirectFilterValue = "__direct__";
+
+    private bool? RequiredApprovalFilter =>
+        ToolFilter switch
+        {
+            ApprovalFilterValue => true,
+            DirectFilterValue => false,
+            _ => null
+        };
+
+    private IReadOnlyList<ToolAuditDto> FilteredRows =>
+        Fetched
+            .Where(r => !OutcomeFilterSet || r.Outcome == OutcomeFilter)
+            .Where(r => RequiredApprovalFilter is null || r.RequiredApproval == RequiredApprovalFilter.Value)
+            .ToList();
+
+    private IReadOnlyList<ToolAuditDto> VisibleRows => AuditPaging.PageSlice(FilteredRows, PageIndex, PageSize);
+
+    private bool HasNext => AuditPaging.HasNextPage(FilteredRows.Count, PageIndex, PageSize, OutcomeFilterSet);
+
+    protected override async Task OnInitializedAsync()
+    {
+        // 过滤下拉的数据源。失败不拦审计查询本身，只是下拉为空。
+        try
+        {
+            ProjectList = await Projects.ListAsync();
+        }
+        catch (Exception ex)
+        {
+            LoadError = PageError.From(ex, "加载过滤选项");
+        }
+
+        await ReloadAsync(resetPage: true);
+    }
+
+    private async Task ReloadAsync(bool resetPage)
+    {
+        // 连点 / 过滤连改：上一次查询还没回来就不再叠一次
+        if (_reloading)
+        {
+            return;
+        }
+
+        if (resetPage)
+        {
+            PageIndex = 0;
+        }
+
+        _reloading = true;
+        Loading = true;
+        StateHasChanged();
+
+        try
+        {
+            Guid? projectId = Guid.TryParse(ProjectFilter, out var parsed) ? parsed : null;
+
+            Fetched = await AuditService.ListAsync(
+                toolName: null,
+                taskId: null,
+                projectId: projectId,
+                limit: AuditPaging.RequestLimit(PageIndex, PageSize, OutcomeFilterSet || RequiredApprovalFilter is not null));
+
+            // 过滤选项加载失败时这里补一次错误清理；查询本身的错误在下面单独报
+            LoadError = null;
+        }
+        catch (Exception ex)
+        {
+            LoadError = PageError.From(ex, "加载审计记录");
+        }
+        finally
+        {
+            Loading = false;
+            _reloading = false;
+        }
+    }
+
+    private async Task PrevPageAsync()
+    {
+        if (PageIndex == 0)
+        {
+            return;
+        }
+
+        PageIndex--;
+        await ReloadAsync(resetPage: false);
+    }
+
+    private async Task NextPageAsync()
+    {
+        if (!HasNext)
+        {
+            return;
+        }
+
+        PageIndex++;
+        await ReloadAsync(resetPage: false);
+    }
+
+    private void ToggleDetail(Guid id)
+    {
+        if (!Expanded.Remove(id))
+        {
+            Expanded.Add(id);
+        }
+    }
+
+    /// <summary>验哈希链：审计有没有被人在库文件层面改过。</summary>
+    private async Task VerifyAsync()
+    {
+        Verifying = true;
+        try
+        {
+            var report = await AuditService.VerifyChainAsync();
+            ChainIntact = report.Intact;
+            ChainMessage = report.Intact
+                ? $"{report.Total} 条记录，其中 {report.Chained} 条在链上，没有发现改动。"
+                : $"{report.Total} 条记录，链在第 {report.FirstBrokenId} 条断了：{report.Reason}";
+        }
+        catch (Exception ex)
+        {
+            ChainIntact = false;
+            ChainMessage = "验链失败：" + ex.Message;
+        }
+        finally
+        {
+            Verifying = false;
+        }
+    }
+
+    private string ProjectName(Guid projectId) =>
+        ProjectList.FirstOrDefault(p => p.Id == projectId)?.Name ?? "未命名项目";
+
+    private static string OutcomeLabel(string outcome) => outcome switch
+    {
+        "success" => "成功",
+        "denied" => "已拒绝",
+        "error" => "错误",
+        "pending" => "待审批",
+        _ => outcome
+    };
+
+    private static string OutcomeClass(string outcome) => outcome switch
+    {
+        "success" => "wb-tag-ok",
+        "denied" => "wb-tag-danger",
+        "error" => "wb-tag-danger",
+        "pending" => "wb-tag-warn",
+        _ => string.Empty
+    };
+}

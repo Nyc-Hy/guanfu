@@ -1,6 +1,9 @@
 /* 开发工作台样式 —— 独立于模板自带的 app.css */
 
 :root {
+    /* 暗色页面里原生控件（select 下拉、checkbox、滚动条）跟着走暗色，
+       不再亮色突兀 */
+    color-scheme: dark;
     --wb-bg: #0f1115;
     --wb-panel: #171a21;
     --wb-panel-2: #1e222b;
@@ -25,7 +28,8 @@ body {
 .wb-topbar {
     display: flex;
     align-items: center;
-    gap: 24px;
+    flex-wrap: wrap;
+    gap: 12px 24px;
     padding: 12px 24px;
     border-bottom: 1px solid var(--wb-border);
     background: var(--wb-panel);
@@ -41,9 +45,48 @@ body {
     text-decoration: none;
 }
 
-.wb-nav { display: flex; gap: 18px; }
+.wb-nav { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: center; }
 .wb-nav a { color: var(--wb-muted); text-decoration: none; font-size: 14px; }
 .wb-nav a:hover { color: var(--wb-text); }
+/* 导航分组之间的竖线：按「追一件事」分组，不是按系统模块平铺 */
+.wb-nav-sep { width: 1px; height: 14px; background: var(--wb-border); }
+
+/* Blazor 的错误提示条。
+   模板的 app.css 里本来带「display:none」，本项目的 app.css 换掉了 —— 不补这条，
+   它就会在每个页面底部常驻，看着像出错了，其实没事。
+   真出错时 SDK 用内联 style 把它弹出来，内联样式优先级高于这里的 display:none。 */
+#blazor-error-ui {
+    display: none;
+    position: fixed;
+    left: 0;
+    bottom: 0;
+    width: 100%;
+    z-index: 1000;
+    padding: 0.7rem 1.25rem;
+    background: #3b1d1d;
+    color: #ffbcbc;
+    box-shadow: 0 -1px 2px rgba(0, 0, 0, 0.45);
+    font-size: 14px;
+}
+#blazor-error-ui a { color: #ffbcbc; margin: 0 0.4rem; }
+#blazor-error-ui .dismiss {
+    cursor: pointer;
+    position: absolute;
+    right: 0.9rem;
+    top: 0.5rem;
+    color: inherit;
+}
+
+/* 首次上手的路标 */
+.wb-onboard {
+    border-color: var(--wb-accent);
+}
+.wb-onboard ol { margin: 0; padding-left: 22px; }
+.wb-onboard li { margin-bottom: 12px; line-height: 1.8; }
+.wb-onboard li:last-child { margin-bottom: 0; }
+
+/* 精简视图：次要区块先藏起来，页头一个按钮切回来 */
+.wb-compact .wb-secondary { display: none; }
 
 .wb-badge {
     display: inline-block;
@@ -285,6 +328,8 @@ body {
     word-break: break-word;
     max-height: 320px;
     overflow: auto;
+    /* 长 SQL 别把表格撑成一屏宽 —— 折行比横向滚动好读 */
+    max-width: 420px;
 }
 
 .wb-timeline { list-style: none; margin: 0; padding: 0; }
@@ -308,6 +353,12 @@ body {
 .wb-artifact:first-of-type { border-top: none; }
 
 .wb-approval-list .wb-panel { margin-bottom: 12px; }
+
+/* 从别处跳过来要定位的那条审批：描一圈边，让人一眼看见 */
+.wb-approval-focus {
+    border-color: var(--wb-accent);
+    box-shadow: 0 0 0 1px var(--wb-accent);
+}
 
 .wb-outline { list-style: none; margin: 0; padding: 0; font-size: 13px; }
 .wb-outline li { padding: 3px 0; color: var(--wb-muted); }
@@ -373,3 +424,93 @@ body {
 }
 .wb-bar-label { font-size: 11px; color: var(--wb-text); }
 .wb-bar-week { font-size: 10px; color: var(--wb-muted); }
+
+/* ---- 新页面（审计 / 数据库连接 / 工作区 / 搜索）通用件 ---- */
+
+/* 键盘可见焦点环：暗色背景下默认焦点几乎看不见 */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+summary:focus-visible {
+    outline: 2px solid var(--wb-accent);
+    outline-offset: 2px;
+}
+
+input[type="checkbox"] { accent-color: var(--wb-accent); }
+
+.wb-loading { padding: 32px; text-align: center; color: var(--wb-muted); font-size: 13px; }
+
+/* 过滤条：一行放下拉 / 输入，窄屏自动换行 */
+.wb-filter-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.wb-filter-bar .wb-input { flex: 0 1 auto; min-width: 160px; }
+
+/* 分页条 */
+.wb-pager {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    margin-top: 12px;
+}
+
+/* 警示框：免审批写、覆盖导入这类安全敏感操作的醒目提示 */
+.wb-alert {
+    border: 1px solid var(--wb-danger);
+    background: rgba(224, 85, 97, 0.12);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 13px;
+    line-height: 1.7;
+    margin: 10px 0;
+}
+
+.wb-alert strong { color: var(--wb-danger); }
+.wb-alert code { background: var(--wb-bg); padding: 1px 4px; border-radius: 3px; }
+
+.wb-alert-warn {
+    border-color: var(--wb-warn);
+    background: rgba(224, 163, 58, 0.12);
+}
+
+.wb-alert-warn strong { color: var(--wb-warn); }
+
+/* 表格横向滚动容器：窄屏下表格不挤爆布局 */
+.wb-table-scroll { overflow-x: auto; }
+.wb-table-scroll > .wb-table { min-width: 640px; }
+
+/* 免审批写的规则行：整行染上警示底色 */
+.wb-rule-open td { background: rgba(224, 85, 97, 0.10); }
+
+/* 搜索结果里的文档内容摘要 */
+.wb-search-snippet {
+    margin-top: 6px;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* Error 页沿用的模板类，这里给它暗色主题下的定义 */
+.text-danger { color: var(--wb-danger); }
+
+/* ---- 窄屏（手机）---- */
+@media (max-width: 640px) {
+    .wb-topbar { padding: 10px 12px; }
+    .wb-main { padding: 12px; }
+
+    .wb-page-head { flex-direction: column; align-items: stretch; }
+
+    /* 输入框不再撑最小宽度，跟着容器走 */
+    .wb-input { min-width: 0; }
+    .wb-filter-bar .wb-input { flex: 1 1 100%; min-width: 0; }
+
+    .wb-empty { padding: 24px 12px; }
+    .wb-panel { padding: 12px; }
+}

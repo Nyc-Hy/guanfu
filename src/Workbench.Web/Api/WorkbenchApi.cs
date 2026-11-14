@@ -51,7 +51,7 @@ public static class WorkbenchApi
 
         api.MapPost("/projects", async (IProjectService projects, CreateProjectRequest request, CancellationToken ct) =>
         {
-            var project = await projects.CreateAsync(request.Name, request.Description, ct);
+            var project = await projects.CreateAsync(request.Name, request.Description, ct, request.RepoPath);
             return Results.Created($"/api/projects/{project.Id}", project);
         });
 
@@ -70,9 +70,9 @@ public static class WorkbenchApi
             TaskStatus? parsed = null;
             if (!string.IsNullOrWhiteSpace(status))
             {
-                if (!Enum.TryParse<TaskStatus>(status, ignoreCase: true, out var value))
+                if (!UiText.TryParseStatus(status, out var value))
                 {
-                    return Results.BadRequest($"未知状态: {status}");
+                    return Results.BadRequest($"未知状态「{status}」。合法值: {UiText.StatusNames()}");
                 }
 
                 parsed = value;
@@ -173,6 +173,41 @@ public static class WorkbenchApi
             return Results.Ok(events);
         });
 
+        // 产出文件：这个任务实际改了哪些文件。工作台自己从 git 数的，
+        // 不是 agent 自报的 —— 所以这条是可查的证据，不是自我声明。
+        api.MapGet("/tasks/{taskId:guid}/file-changes", async (
+            Guid taskId, IFileChangeService fileChanges, CancellationToken ct) =>
+            Results.Ok(await fileChanges.ListAsync(taskId, ct)));
+
+        // 会话：谁在什么时候接的这个任务。工作目录、agent 标识都在里头。
+        api.MapGet("/tasks/{taskId:guid}/sessions", async (
+            Guid taskId, IAgentSessionService sessions, CancellationToken ct) =>
+            Results.Ok(await sessions.ListByTaskAsync(taskId, ct)));
+
+        // 数据库调用记录：SQL 原文、目标库、目标表摊成列，能筛能查。
+        api.MapGet("/db-calls", async (
+            IDbCallService dbCalls,
+            Guid? projectId,
+            Guid? connectionId,
+            string? database,
+            string? table,
+            string? kind,
+            Guid? taskId,
+            DateTimeOffset? from,
+            DateTimeOffset? to,
+            int? limit,
+            int? offset,
+            CancellationToken ct) =>
+        {
+            var take = Math.Clamp(limit ?? 50, 1, 500);
+            var skip = Math.Max(offset ?? 0, 0);
+
+            var (rows, total) = await dbCalls.ListAsync(
+                projectId, connectionId, database, table, kind, taskId, from, to, take, skip, ct);
+
+            return Results.Ok(new { rows, total, limit = take, offset = skip });
+        });
+
         // 归档 / 取消归档。归档不是删除：流水、产物、评审全都留着。
         api.MapPost("/tasks/{taskId:guid}/archive", async (
             Guid taskId, ArchiveTaskRequest request, ITaskService tasks, CancellationToken ct) =>
@@ -247,9 +282,9 @@ public static class WorkbenchApi
         api.MapPost("/tasks/{taskId:guid}/status", async (
             Guid taskId, ChangeStatusRequest request, ITaskService tasks, CancellationToken ct) =>
         {
-            if (!Enum.TryParse<TaskStatus>(request.Status, ignoreCase: true, out var target))
+            if (!UiText.TryParseStatus(request.Status, out var target))
             {
-                return Results.BadRequest($"未知状态: {request.Status}");
+                return Results.BadRequest($"未知状态「{request.Status}」。合法值: {UiText.StatusNames()}");
             }
 
             var source = Enum.TryParse<TaskEventSource>(request.Source, ignoreCase: true, out var parsedSource)
@@ -387,12 +422,13 @@ public static class WorkbenchApi
         });
 
         api.MapPost("/approvals/{approvalId:guid}/decide", async (
-            Guid approvalId, DecideApprovalRequest request, IApprovalService approvals, CancellationToken ct) =>
+            Guid approvalId, DecideApprovalRequest request, IApprovalService approvals, HttpContext http, CancellationToken ct) =>
         {
             try
             {
                 var approval = await approvals.DecideAsync(
-                    approvalId, request.Approve, request.DecidedBy, request.Reason, ct);
+                    approvalId, request.Approve, request.DecidedBy, request.Reason,
+                    ct, decidedByCredential: CredentialFingerprint(http));
                 return Results.Ok(approval);
             }
             catch (WorkbenchException ex)
@@ -401,10 +437,16 @@ public static class WorkbenchApi
             }
         });
 
+        // 人工撤销（Pending / Approved → Rejected）。「批错了但还没执行」的后悔药。
+        // 敏感端点：撤销改变的是「哪条写操作能执行」，与裁决同权。
+        api.MapPost("/approvals/{approvalId:guid}/revoke", async (
+            Guid approvalId, RevokeApprovalRequest? request, IApprovalService approvals, CancellationToken ct) =>
+            Results.Ok(await approvals.RevokeAsync(approvalId, request?.Reason, ct)));
+
         // 批量批准。一条一条点太慢了 —— 人工审核通常是「这批都同意」。
         // 部分失败不吞掉：哪些批了、哪些没批，逐条回。
         api.MapPost("/approvals/batch-decide", async (
-            BatchDecideApprovalRequest request, IApprovalService approvals, CancellationToken ct) =>
+            BatchDecideApprovalRequest request, IApprovalService approvals, HttpContext http, CancellationToken ct) =>
         {
             if (request.ApprovalIds.Count == 0)
             {
@@ -424,7 +466,8 @@ public static class WorkbenchApi
                 try
                 {
                     var approval = await approvals.DecideAsync(
-                        id, request.Approve, request.DecidedBy, request.Reason, ct);
+                        id, request.Approve, request.DecidedBy, request.Reason,
+                        ct, decidedByCredential: CredentialFingerprint(http));
                     results.Add(new BatchDecisionResult(id, true, approval.Status, null));
                 }
                 catch (WorkbenchException ex)
@@ -490,7 +533,7 @@ public static class WorkbenchApi
 
             return Results.Ok(await milestones.UpdateAsync(
                 milestoneId, request.Name, request.Description, request.DueAt, request.Order, ct,
-                request.ParentId, kind));
+                request.ParentId, kind, request.ClearParent, request.ClearDue));
         });
 
         api.MapDelete("/milestones/{milestoneId:guid}", async (
@@ -546,6 +589,81 @@ public static class WorkbenchApi
         {
             await connections.DeleteRuleAsync(connectionId, ruleId, ct);
             return Results.NoContent();
+        });
+
+        // 连接探活：拿存好的密码试连一次。敏感端点 —— 密码只有人配过，
+        // 探活结果还会暴露内网可达性，不能让 agent 自己随便试。
+        api.MapPost("/db-connections/{connectionId:guid}/test", async (
+            Guid connectionId, IDbConnectionService connections, CancellationToken ct) =>
+        {
+            var (ok, error) = await connections.TestAsync(connectionId, ct);
+            return Results.Ok(new { ok, error });
+        });
+
+        // ---- 全局搜索 ----
+        // 任务按「归一化编号 + 标题/描述」两路找（归一化在服务层内存里做，
+        // 人嘴里的 req001 和库里的 REQ-001 是同一个编号）；项目按名；
+        // 文档走 DocumentService.SearchAsync 逐篇搜内容，文件名命中也算。
+        api.MapGet("/search", async (
+            ITaskService tasks, IProjectService projects, IDocumentService documents,
+            string? q, int? limit, CancellationToken ct) =>
+        {
+            if (string.IsNullOrWhiteSpace(q))
+            {
+                return Results.BadRequest("q 不能为空。");
+            }
+
+            var take = limit ?? 20;
+            if (take is < 1 or > 100)
+            {
+                return Results.BadRequest("limit 必须在 1~100 之间。");
+            }
+
+            var keyword = q.Trim();
+
+            var byKeyword = await tasks.ListAsync(keyword: keyword, cancellationToken: ct);
+            var byKey = await tasks.ListAsync(key: keyword, cancellationToken: ct);
+            var taskHits = byKeyword.Concat(byKey)
+                .GroupBy(t => t.Id).Select(g => g.First())
+                .Take(take).ToList();
+
+            var projectHits = (await projects.ListAsync(ct))
+                .Where(p => p.Name.Contains(keyword, StringComparison.OrdinalIgnoreCase))
+                .Take(take).ToList();
+
+            var documentHits = new List<object>();
+            var allTasks = await tasks.ListAsync(includeArchived: true, cancellationToken: ct);
+            foreach (var task in allTasks)
+            {
+                if (documentHits.Count >= take)
+                {
+                    break;
+                }
+
+                foreach (var doc in await documents.ListAsync(task.Id, ct))
+                {
+                    if (documentHits.Count >= take)
+                    {
+                        break;
+                    }
+
+                    var hits = await documents.SearchAsync(doc.Id, keyword, ct);
+                    var nameMatch = doc.FileName.Contains(keyword, StringComparison.OrdinalIgnoreCase);
+                    if (hits.Count > 0 || nameMatch)
+                    {
+                        documentHits.Add(new
+                        {
+                            id = doc.Id,
+                            fileName = doc.FileName,
+                            taskId = task.Id,
+                            kind = doc.Kind,
+                            hits
+                        });
+                    }
+                }
+            }
+
+            return Results.Ok(new { tasks = taskHits, projects = projectHits, documents = documentHits });
         });
 
         // ---- 人工凭证 ----
@@ -655,11 +773,41 @@ public static class WorkbenchApi
             return Results.Ok(await audit.ListAsync(toolName, taskId, projectId, take, ct));
         });
 
+        // 验哈希链：审计有没有被人在库文件层面改过。改一条、删一条，链都会断。
+        api.MapGet("/audit/verify", async (IToolAuditService audit, CancellationToken ct) =>
+            Results.Ok(await audit.VerifyChainAsync(ct)));
+
         return app;
+    }
+
+    /// <summary>
+    /// 人工凭证的指纹（哈希前 12 位）。
+    ///
+    /// 共享 token 的现状下系统认不出真人 —— 但记下凭证指纹，好歹能区分
+    /// 「同一个操作员」和「换了个人在操作」，而且不用把 token 明文写进审计。
+    /// </summary>
+    private static string? CredentialFingerprint(HttpContext http)
+    {
+        var token = http.Request.Headers[HumanTokenPolicy.HeaderName].ToString();
+
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            token = http.Request.Cookies[HumanTokenPolicy.CookieName] ?? string.Empty;
+        }
+
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            return null;
+        }
+
+        var hash = System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(token));
+
+        return Convert.ToHexString(hash)[..12];
     }
 }
 
-public sealed record CreateProjectRequest(string Name, string? Description);
+public sealed record CreateProjectRequest(string Name, string? Description, string? RepoPath = null);
 public sealed record CreateTaskRequest(
     string Title, string? Description, Guid? ParentTaskId, Guid? MilestoneId = null,
     string? Type = null, string? Branch = null, string? Key = null);
@@ -678,6 +826,9 @@ public sealed record TestResultRequest(
     int Total, int Passed, string? Failures, double? Coverage, string? Author);
 public sealed record PostEventRequest(string Message, string? Actor);
 public sealed record DecideApprovalRequest(bool Approve, string? DecidedBy, string? Reason);
+
+/// <summary>人工撤销审批。理由可选，但建议写 —— 账本里要能看懂为什么撤。</summary>
+public sealed record RevokeApprovalRequest(string? Reason = null);
 public sealed record CreateDbConnectionRequest(
     string Name, string Server, string Database, string? UserId, string? Password, bool IsDefault = true);
 
@@ -705,7 +856,11 @@ public sealed record CreateMilestoneRequest(
 
 public sealed record UpdateMilestoneRequest(
     string? Name, string? Description, DateTimeOffset? DueAt, int? Order,
-    Guid? ParentId = null, string? Kind = null);
+    Guid? ParentId = null, string? Kind = null,
+    /// <summary>显式摘掉父里程碑（ParentId 传 null 是「不动」，清空要走这里）。</summary>
+    bool ClearParent = false,
+    /// <summary>显式清掉截止日。</summary>
+    bool ClearDue = false);
 
 public sealed record AssignMilestoneRequest(Guid? MilestoneId);
 

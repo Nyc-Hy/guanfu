@@ -5,9 +5,20 @@
 
 <PageTitle>文档 · 开发工作台</PageTitle>
 
-@if (Parsed is null)
+@if (Loading)
 {
-    <div class="wb-empty">文档不存在或无法读取。</div>
+    <div class="wb-empty">加载中…</div>
+}
+else if (Parsed is null)
+{
+    <div class="wb-page-head">
+        <a class="wb-back" href="/">← 返回</a>
+    </div>
+    <ErrorNotice Error="LoadError" />
+    @if (LoadError is null)
+    {
+        <div class="wb-empty">文档不存在或无法读取。</div>
+    }
 }
 else
 {
@@ -31,6 +42,13 @@ else
             }
         </div>
     </div>
+
+    @if (!string.IsNullOrWhiteSpace(CopyFeedback))
+    {
+        <div class="wb-hint" style="margin-bottom:12px">@CopyFeedback</div>
+    }
+
+    <ErrorNotice Error="LoadError" />
 
     <div class="wb-detail-grid">
         <div class="wb-detail-main">
@@ -124,22 +142,38 @@ else
     private ParsedDocDto? Parsed { get; set; }
     private DocumentDto? Document { get; set; }
     private IReadOnlyList<StruckContentDto> Struck { get; set; } = [];
-    private string? Copied { get; set; }
+    private PageError? LoadError { get; set; }
+    private string? CopyFeedback { get; set; }
+    private bool Loading { get; set; } = true;
 
     protected override async Task OnParametersSetAsync() => await ParseAsync(force: false);
 
     private async Task ParseAsync(bool force)
     {
+        Loading = true;
+        CopyFeedback = null;
         try
         {
             Parsed = await Documents.ParseAsync(DocumentId, force);
             Struck = await Documents.ListStruckAsync(DocumentId);
             Document = await Documents.GetAsync(DocumentId);
+            LoadError = null;
+        }
+        catch (NotFoundException)
+        {
+            // 文档确实不存在：给明确的话，别和解析失败混为一谈
+            Parsed = null;
+            LoadError = null;
         }
         catch (Exception ex)
         {
+            // 解析/读取失败：把真实错误露出来，方便定位是文件损坏还是解析器不支持
             Parsed = null;
-            Copied = ex.Message;
+            LoadError = PageError.From(ex, "解析文档");
+        }
+        finally
+        {
+            Loading = false;
         }
     }
 
@@ -151,15 +185,16 @@ else
         }
 
         var absolute = Store.ResolveAbsolutePath(Document.StoredPath);
-        Copied = absolute;
 
         try
         {
             await JS.InvokeVoidAsync("navigator.clipboard.writeText", absolute);
+            CopyFeedback = $"已复制：{absolute}";
         }
         catch (Exception)
         {
-            // 剪贴板不可用时直接显示路径即可
+            // 剪贴板不可用（非安全上下文/权限被拒）：把路径显示出来让用户手动复制
+            CopyFeedback = $"复制失败，请手动复制：{absolute}";
         }
     }
 

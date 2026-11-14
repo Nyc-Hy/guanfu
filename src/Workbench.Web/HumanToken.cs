@@ -32,9 +32,11 @@ public static class HumanTokenPolicy
     /// 判断某个请求是不是「必须有人在场」的端点。
     ///
     /// 覆盖的是「拿到这个能力就能自己给自己放行」的那几个口子：
-    /// 裁决审批、改项目配置（agentCommand / 命令白名单）、启动外部 agent、
-    /// 工作区搬迁、存数据库连接。其余端点一律保持开放 ——
+    /// 裁决 / 撤销审批、改项目配置（agentCommand / 命令白名单）、启动外部 agent、
+    /// 工作区搬迁、存数据库连接、改表级规则（免审批写的门）、探活数据库连接、
+    /// MCP 工具开关。其余端点一律保持开放 ——
     /// agent 走 MCP、CI 走普通任务写，堵死了整套工具就没用了。
+    /// 新增写端点必须在这里或端点对账测试的开放清单里归类，否则测试会红。
     /// </summary>
     public static bool IsSensitiveEndpoint(string? method, string? path)
     {
@@ -66,6 +68,62 @@ public static class HumanTokenPolicy
             && segments[2].Equals("batch-decide", StringComparison.OrdinalIgnoreCase))
         {
             return IsPost(method);
+        }
+
+        // /api/approvals/{id}/revoke —— 人工撤销。
+        // 撤销改变的是「哪条写操作能执行」，和裁决同权，必须有人在场。
+        if (segments.Length == 4
+            && segments[1].Equals("approvals", StringComparison.OrdinalIgnoreCase)
+            && segments[3].Equals("revoke", StringComparison.OrdinalIgnoreCase))
+        {
+            return IsPost(method);
+        }
+
+        // /api/db-connections/{id}/rules —— 表级规则。
+        // 加一条「免审批写」的规则等于给 db_execute 开了一扇不要审批的门，
+        // 删规则同理（改的是门禁本身）。读规则是普通读，放行。
+        if (segments.Length == 4
+            && segments[1].Equals("db-connections", StringComparison.OrdinalIgnoreCase)
+            && segments[3].Equals("rules", StringComparison.OrdinalIgnoreCase))
+        {
+            return IsPost(method) || IsDelete(method);
+        }
+
+        // DELETE /api/db-connections/{id}/rules/{ruleId} —— 带 ruleId 的 5 段路径
+        if (segments.Length == 5
+            && segments[1].Equals("db-connections", StringComparison.OrdinalIgnoreCase)
+            && segments[3].Equals("rules", StringComparison.OrdinalIgnoreCase))
+        {
+            return IsDelete(method);
+        }
+
+        // /api/db-connections/{id}/test —— 拿存好的密码去连数据库。
+        // 连接串与密码只有人配过，探活会暴露内网可达性，归入人工操作。
+        if (segments.Length == 4
+            && segments[1].Equals("db-connections", StringComparison.OrdinalIgnoreCase)
+            && segments[3].Equals("test", StringComparison.OrdinalIgnoreCase))
+        {
+            return IsPost(method);
+        }
+
+        // /api/mcp/tools/reset —— 一键恢复全部工具，同样是改能力面。
+        // 必须排在 tools/{name} 之前：否则 reset 会被那条更宽的规则先接住，
+        // 而那条只认 PUT，POST reset 就漏判了。
+        if (segments.Length == 4
+            && segments[1].Equals("mcp", StringComparison.OrdinalIgnoreCase)
+            && segments[2].Equals("tools", StringComparison.OrdinalIgnoreCase)
+            && segments[3].Equals("reset", StringComparison.OrdinalIgnoreCase))
+        {
+            return IsPost(method);
+        }
+
+        // /api/mcp/tools/{name} —— 工具开关。
+        // 关掉审批类工具或打开危险工具改的是 agent 的能力面，必须有人在场。
+        if (segments.Length == 4
+            && segments[1].Equals("mcp", StringComparison.OrdinalIgnoreCase)
+            && segments[2].Equals("tools", StringComparison.OrdinalIgnoreCase))
+        {
+            return IsPut(method);
         }
 
         // /api/projects/{id}/config —— 改 agentCommand / 命令白名单
@@ -160,6 +218,10 @@ public static class HumanTokenPolicy
         address is not null && address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address;
 
     private static bool IsPost(string method) => method.Equals("POST", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsPut(string method) => method.Equals("PUT", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsDelete(string method) => method.Equals("DELETE", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsRead(string method) =>
         method.Equals("GET", StringComparison.OrdinalIgnoreCase)

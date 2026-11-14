@@ -1,19 +1,26 @@
 ﻿@inherits LayoutComponentBase
 @implements IAsyncDisposable
-@inject IApprovalService Approvals
+@inject IServiceScopeFactory ScopeFactory
 
 <div class="wb-shell">
     <header class="wb-topbar">
         <a class="wb-brand" href="/">开发工作台</a>
         <nav class="wb-nav">
-            <a href="/">项目</a>
+            <a href="/">总览</a>
             <a href="/metrics">度量</a>
-            <a href="/mcp-tools">MCP 工具</a>
-            <a href="/connect">接入 agent</a>
+            <a href="/db-calls">数据库调用</a>
+            <a href="/audit">审计</a>
             <a href="/approvals">审批 @if (PendingCount > 0)
             {
                 <span class="wb-badge">@PendingCount</span>
             }</a>
+            <span class="wb-nav-sep"></span>
+            <a href="/db-connections">连接</a>
+            <a href="/mcp-tools">MCP 工具</a>
+            <span class="wb-nav-sep"></span>
+            <a href="/connect">接入 agent</a>
+            <a href="/workspace">工作区</a>
+            <a href="/search">搜索</a>
         </nav>
     </header>
 
@@ -24,9 +31,9 @@
 </div>
 
 <div id="blazor-error-ui">
-    出错了。
-    <a href="" class="reload">重载</a>
-    <a class="dismiss">🗙</a>
+    页面出错了，刷新一下试试。
+    <a href="" class="reload">重新加载</a>
+    <a class="dismiss">关闭</a>
 </div>
 
 @code {
@@ -85,7 +92,11 @@
     {
         try
         {
-            var pending = await Approvals.ListAsync(ApprovalStatus.Pending);
+            // 每次刷新独立 scope：布局的定时器与页面共用电路级 DbContext 的话，
+            // 页面正在查库时徽章也来查，就是 "A second operation was started"。
+            using var scope = ScopeFactory.CreateScope();
+            var approvals = scope.ServiceProvider.GetRequiredService<IApprovalService>();
+            var pending = await approvals.ListAsync(ApprovalStatus.Pending);
             PendingCount = pending.Count;
             LoadError = null;
         }

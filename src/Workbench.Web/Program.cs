@@ -23,6 +23,10 @@ const int ApiRateWindowMinutes = 1;
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 
+// 会话绑定要读 HTTP 头（X-Workbench-Session / X-Workbench-Repo），
+// 才知道这次 MCP 调用是哪个 agent、哪个仓库发出来的。
+builder.Services.AddHttpContextAccessor();
+
 // 枚举一律输出成字符串（"DocsReady" 而不是 1），
 // agent 与 CLI 读到的字段才有意义
 builder.Services.ConfigureHttpJsonOptions(options =>
@@ -120,9 +124,22 @@ if (!app.Environment.IsDevelopment())
     app.UseWhen(HasHttpsAddress, branch => branch.UseHttpsRedirection());
 }
 
+// 跨站 / DNS rebinding 防护：/api 写方法的 Origin 必须与 Host 同源；
+// Host 头必须在允许清单里（默认回环，Workbench:AllowedHosts 可覆盖）。
+// CLI / MCP 不带 Origin 头，用 localhost 连接不受影响。
+app.UseMiddleware<OriginHostGuardMiddleware>(OriginHostAllowedHosts.Read(builder.Configuration));
+
 app.UseRateLimiter();
 app.UseStaticFiles();
 app.UseAntiforgery();
+
+// 未知路径要重新执行到 /not-found-handler，让 Blazor 渲染中文 404。
+// 直接访问未知 URL 会得到一个空 body（.NET 8 Blazor Web App 的默认行为）。
+// /api 与 /mcp 下的 404 不重执行 —— API 缺失路径应该回 404，不是 HTML 页面。
+app.UseWhen(
+    context => !context.Request.Path.StartsWithSegments("/api")
+                && !context.Request.Path.StartsWithSegments("/mcp"),
+    branch => branch.UseStatusCodePagesWithReExecute("/not-found-handler"));
 
 // 人工凭证门禁：敏感端点（裁决审批 / 改项目配置 / 启动 agent /
 // 工作区搬迁 / 数据库连接）没凭证直接 401，其余端点保持开放。

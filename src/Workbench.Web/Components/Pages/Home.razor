@@ -1,138 +1,418 @@
 ﻿@page "/"
 @rendermode InteractiveServer
-@inject IProjectService Projects
-@inject ITaskService Tasks
+@inject IServiceScopeFactory ScopeFactory
+@implements IAsyncDisposable
 
-<PageTitle>项目 · 开发工作台</PageTitle>
+<PageTitle>总览 · 开发工作台</PageTitle>
 
 <div class="wb-page-head">
-    <h1>项目</h1>
-    <button class="wb-btn wb-btn-primary" @onclick="ToggleCreate">@(ShowCreate ? "取消" : "新建项目")</button>
+    <div>
+        <h1>总览</h1>
+        <p class="wb-muted">
+            工作台做三件事：<strong>追踪任务进度</strong>、<strong>记录开发产出的文件</strong>、
+            <strong>留下数据库调用的记录</strong>。下面就是这三样东西现在的状态。
+        </p>
+    </div>
+    <div class="wb-form-row">
+        <span class="wb-muted">每 15 秒自动刷新</span>
+        <button class="wb-btn" disabled="@Loading" @onclick="() => ReloadAsync()">刷新</button>
+    </div>
 </div>
 
-@if (ShowCreate)
+<ErrorNotice Error="@LoadError" />
+
+@if (Loading && Data is null)
 {
-    <div class="wb-panel">
-        <div class="wb-form-row">
-            <input class="wb-input" placeholder="项目名称" @bind="NewName" @bind:event="oninput" />
-            <input class="wb-input" placeholder="描述（可选）" @bind="NewDescription" @bind:event="oninput" />
-            <button class="wb-btn wb-btn-primary" disabled="@(string.IsNullOrWhiteSpace(NewName) || Creating)" @onclick="CreateAsync">创建</button>
-        </div>
-        <ErrorNotice Error="Error" />
+    <div class="wb-empty">加载中…</div>
+}
+else if (Data is not null && Data.Projects.Count == 0)
+{
+    @* 一个项目都没有的时候，三块空面板全是噪声 —— 直接给上手路标 *@
+    <div class="wb-panel wb-onboard">
+        <h3>三步开始用</h3>
+        <ol class="wb-doc-list">
+            <li>
+                <strong>建个项目，绑上你的本地仓库</strong><br />
+                在下面的「新建项目」里填名字和仓库路径（绝对路径，如
+                <code>/Users/you/code/your-repo</code>）。绑了之后，
+                agent 在这个目录里干活就会自动落到本项目 —— 不用再自己传项目 ID。
+            </li>
+            <li>
+                <strong>把 agent 接进来</strong><br />
+                <a href="/connect">接入 agent</a> 页上有现成的配置，复制到 Claude Code / Codex 里就能用。
+            </li>
+            <li>
+                <strong>agent 领任务干活，要写操作时来审批</strong><br />
+                agent 自己领任务、回写计划、改代码；改数据库、提交代码、推送、执行命令这几类
+                要你点头，审批会出现在 <a href="/approvals">审批</a> 页。
+            </li>
+        </ol>
     </div>
 }
-
-<ErrorNotice Error="LoadError" />
-
-@if (Items.Count == 0)
+else if (Data is not null)
 {
-    <div class="wb-empty">
-        还没有项目。点右上角「新建项目」开始。
-    </div>
-}
-else
-{
-    <div class="wb-grid">
-        @foreach (var project in Items)
+    <!-- ① 要你处理的 -->
+    <div class="wb-panel" style="margin-bottom:16px;">
+        <h3>要你处理的</h3>
+        @if (Data.PendingApprovals.Count == 0)
         {
-            <a class="wb-card" href="/projects/@project.Id">
-                <div class="wb-card-head">
-                    <h2>@project.Name</h2>
-                    @if (project.Stale)
+            <p class="wb-muted">没有等你批的写操作。</p>
+        }
+        else
+        {
+            <p class="wb-muted">这些写操作在等人点头 —— 批了才能执行。</p>
+            <div class="wb-table-scroll">
+                <table class="wb-table">
+                    <thead>
+                    <tr><th>要做什么</th><th>在哪个项目</th><th>等多久了</th><th></th></tr>
+                    </thead>
+                    <tbody>
+                    @foreach (var a in Data.PendingApprovals)
                     {
-                        <span class="wb-tag wb-tag-warn">停滞</span>
+                        <tr>
+                            <td>@a.Summary</td>
+                            <td class="wb-muted">@(a.ProjectName ?? "—")</td>
+                            <td class="wb-muted" title="@Absolute(a.CreatedAt)">@Relative(a.CreatedAt)</td>
+                            <td><a class="wb-btn wb-btn-link" href="/approvals?id=@a.Id">去处理</a></td>
+                        </tr>
                     }
-                    @if (project.BlockedTasks > 0)
-                    {
-                        <span class="wb-tag wb-tag-danger">@project.BlockedTasks 阻塞</span>
-                    }
-                </div>
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
 
-                @if (!string.IsNullOrWhiteSpace(project.Description))
-                {
-                    <p class="wb-muted">@project.Description</p>
-                }
+    <!-- ② 正在发生的 -->
+    <div class="wb-panel" style="margin-bottom:16px;">
+        <h3>正在发生的</h3>
+        @if (Data.ActiveTasks.Count == 0 && Data.ActiveSessions.Count == 0)
+        {
+            <p class="wb-muted">当前没有进行中的任务，也没有 agent 在干活。</p>
+        }
+        else
+        {
+            @if (Data.ActiveSessions.Count > 0)
+            {
+                <p class="wb-muted">
+                    @foreach (var s in Data.ActiveSessions)
+                    {
+                        <span class="wb-chip wb-chip-agent">@s.AgentId</span>
+                        <span class="wb-muted">在 @s.ProjectName@(string.IsNullOrWhiteSpace(s.TaskKey) ? "" : $" · {s.TaskKey}") · </span>
+                    }
+                </p>
+            }
 
-                <div class="wb-progress">
-                    <div class="wb-progress-bar" style="width:@Percent(project.Progress)"></div>
+            @if (Data.ActiveTasks.Count > 0)
+            {
+                <div class="wb-table-scroll">
+                    <table class="wb-table">
+                        <thead>
+                        <tr><th>任务</th><th>项目</th><th>状态</th><th>在谁手上</th><th>最后动静</th></tr>
+                        </thead>
+                        <tbody>
+                        @foreach (var t in Data.ActiveTasks)
+                        {
+                            <tr>
+                                <td><a href="/tasks/@t.Id">@UiText.TaskRef(t.Key, t.Title)</a></td>
+                                <td class="wb-muted">@t.ProjectName</td>
+                                <td><span class="wb-chip">@UiText.Status(t.Status)</span></td>
+                                <td>
+                                    @if (!string.IsNullOrWhiteSpace(t.AgentId))
+                                    {
+                                        <span class="wb-chip wb-chip-agent">@t.AgentId</span>
+                                    }
+                                    else
+                                    {
+                                        <span class="wb-muted">还没人领</span>
+                                    }
+                                </td>
+                                <td class="wb-muted" title="@(t.LastActivityAt is null ? "" : Absolute(t.LastActivityAt.Value))">@(t.LastActivityAt is null ? "—" : Relative(t.LastActivityAt.Value))</td>
+                            </tr>
+                        }
+                        </tbody>
+                    </table>
                 </div>
-                <div class="wb-progress-label">@Percent(project.Progress) · @project.DoneTasks/@project.TotalTasks 完成</div>
+            }
+        }
+    </div>
 
-                <div class="wb-card-meta">
-                    @if (!string.IsNullOrWhiteSpace(project.Branch))
+    <!-- ③ 最近产出 -->
+    <div class="wb-panel" style="margin-bottom:16px;">
+        <div class="wb-card-head">
+            <h3>最近产出</h3>
+            <span class="wb-muted">代码改动是工作台自己从 git 数出来的，不是 agent 自报的</span>
+        </div>
+        @if (Activity.Count == 0)
+        {
+            <p class="wb-muted">还没有产出记录。</p>
+        }
+        else
+        {
+            <div class="wb-table-scroll">
+                <table class="wb-table">
+                    <thead>
+                    <tr><th>时间</th><th>类型</th><th>内容</th><th>任务</th><th>项目</th></tr>
+                    </thead>
+                    <tbody>
+                    @foreach (var item in Activity)
                     {
-                        <span class="wb-chip">⎇ @project.Branch</span>
+                        <tr>
+                            <td class="wb-muted" title="@Absolute(item.At)">@Relative(item.At)</td>
+                            <td><span class="wb-chip @(item.IsFile ? "wb-chip-ok" : "wb-chip-warn")">@(item.IsFile ? "代码改动" : "数据库")</span></td>
+                            <td>@item.Text</td>
+                            <td>
+                                @if (item.TaskId is not null)
+                                {
+                                    <a href="/tasks/@item.TaskId">@item.TaskLabel</a>
+                                }
+                                else
+                                {
+                                    <span class="wb-muted">—</span>
+                                }
+                            </td>
+                            <td class="wb-muted">@item.ProjectName</td>
+                        </tr>
                     }
-                    @if (project.ActiveTasks > 0)
-                    {
-                        <span class="wb-chip">@project.ActiveTasks 进行中</span>
-                    }
-                    @if (project.LastActivityAt is not null)
-                    {
-                        <span class="wb-chip wb-chip-muted">@Relative(project.LastActivityAt.Value)</span>
-                    }
-                </div>
-            </a>
+                    </tbody>
+                </table>
+            </div>
+            <p class="wb-muted" style="margin-top:8px;">
+                <a href="/db-calls">看全部数据库调用</a>
+            </p>
         }
     </div>
 }
 
+<!-- 项目 -->
+<div class="wb-panel">
+    <div class="wb-card-head">
+        <h3>项目</h3>
+        <button class="wb-btn wb-btn-primary" @onclick="ToggleCreate">@(ShowCreate ? "取消" : "新建项目")</button>
+    </div>
+
+    @if (ShowCreate)
+    {
+        <div style="margin:12px 0;">
+            <div class="wb-form-row">
+                <input class="wb-input" placeholder="项目名称" @bind="NewName" @bind:event="oninput" />
+                <input class="wb-input" placeholder="描述（可选）" @bind="NewDescription" @bind:event="oninput" />
+            </div>
+            <div class="wb-form-row">
+                <input class="wb-input" placeholder="本地仓库路径（绝对路径，如 /Users/you/code/your-repo）"
+                       @bind="NewRepoPath" @bind:event="oninput" />
+            </div>
+            <p class="wb-muted">
+                填了仓库路径，agent 在这个目录里干活就会自动落到本项目 —— 不用再自己传项目 ID。
+            </p>
+            <button class="wb-btn wb-btn-primary" disabled="@(string.IsNullOrWhiteSpace(NewName) || Creating)" @onclick="CreateAsync">创建</button>
+        </div>
+        <ErrorNotice Error="@CreateError" />
+    }
+
+    @if (Data is null || Data.Projects.Count == 0)
+    {
+        <p class="wb-muted">还没有项目。</p>
+    }
+    else
+    {
+        <div class="wb-grid" style="margin-top:12px;">
+            @foreach (var project in Data.Projects)
+            {
+                <a class="wb-card" href="/projects/@project.Id">
+                    <div class="wb-card-head">
+                        <h2>@project.Name</h2>
+                        @if (string.IsNullOrWhiteSpace(project.RepoRoot))
+                        {
+                            <span class="wb-tag wb-tag-warn">没绑仓库</span>
+                        }
+                        else
+                        {
+                            <span class="wb-tag wb-tag-ok">已绑仓库</span>
+                        }
+                    </div>
+
+                    @if (!string.IsNullOrWhiteSpace(project.Description))
+                    {
+                        <p class="wb-muted">@project.Description</p>
+                    }
+
+                    <div class="wb-card-meta">
+                        <span class="wb-chip">@project.TotalTasks 个任务</span>
+                        @if (project.TotalTasks == 0)
+                        {
+                            <span class="wb-chip wb-chip-warn">还没有任务</span>
+                        }
+                        @if (!string.IsNullOrWhiteSpace(project.RepoPath))
+                        {
+                            <span class="wb-chip wb-chip-muted">@project.RepoPath</span>
+                        }
+                    </div>
+                </a>
+            }
+        </div>
+    }
+</div>
+
 @code {
-    private IReadOnlyList<ProjectSummaryDto> Items { get; set; } = [];
+    /// <summary>最近产出里的一行。代码改动与数据库调用合成一条流水。</summary>
+    private sealed record ActivityItem(
+        DateTimeOffset At,
+        bool IsFile,
+        string Text,
+        Guid? TaskId,
+        string TaskLabel,
+        string ProjectName);
+
+    private OverviewDto? Data { get; set; }
+    private IReadOnlyList<ActivityItem> Activity { get; set; } = [];
+    private bool Loading { get; set; } = true;
     private bool ShowCreate { get; set; }
+    private bool Creating { get; set; }
     private string NewName { get; set; } = string.Empty;
     private string NewDescription { get; set; } = string.Empty;
-    private PageError? Error { get; set; }
+    private string NewRepoPath { get; set; } = string.Empty;
     private PageError? LoadError { get; set; }
-    private bool Creating { get; set; }
+    private PageError? CreateError { get; set; }
+
+    /// <summary>自动刷新间隔。agent 在干活时页面得自己动起来。</summary>
+    private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(15);
+
+    private CancellationTokenSource? _timerCts;
 
     protected override async Task OnInitializedAsync() => await ReloadAsync();
 
-    private async Task ReloadAsync()
+    protected override Task OnAfterRenderAsync(bool firstRender)
+    {
+        // 只在交互阶段起定时器：预渲染出来的实例用完就扔。
+        if (firstRender)
+        {
+            _timerCts = new CancellationTokenSource();
+            _ = RunRefreshTimerAsync(_timerCts.Token);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// 自动刷新。每 tick 独立 scope —— 定时器与页面上的写操作共用电路级
+    /// DbContext 的话，两个操作撞上就是 "A second operation was started"。
+    /// </summary>
+    private async Task RunRefreshTimerAsync(CancellationToken cancellationToken)
     {
         try
         {
-            Items = await Projects.ListAsync();
+            using var timer = new PeriodicTimer(RefreshInterval);
+
+            while (await timer.WaitForNextTickAsync(cancellationToken))
+            {
+                await InvokeAsync(async () =>
+                {
+                    await ReloadAsync();
+                    StateHasChanged();
+                });
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // 组件被销毁，正常收尾
+        }
+        catch (ObjectDisposedException)
+        {
+            // 电路已经断了
+        }
+    }
+
+    private async Task ReloadAsync()
+    {
+        Loading = true;
+        try
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var overview = scope.ServiceProvider.GetRequiredService<IOverviewService>();
+            Data = await overview.GetAsync();
+            Activity = BuildActivity(Data);
             LoadError = null;
         }
         catch (Exception ex)
         {
-            // 别让异常从初始化方法冒出去 —— 冒出去就是整页白屏
-            LoadError = PageError.From(ex, "加载项目列表");
+            LoadError = PageError.From(ex, "加载总览");
         }
+        finally
+        {
+            Loading = false;
+        }
+    }
+
+    /// <summary>把「代码改动」和「数据库调用」合成一条按时间倒序的流水。</summary>
+    private static IReadOnlyList<ActivityItem> BuildActivity(OverviewDto data)
+    {
+        var items = new List<ActivityItem>();
+
+        foreach (var file in data.RecentFiles)
+        {
+            items.Add(new ActivityItem(
+                file.CreatedAt,
+                true,
+                $"{file.Path}（+{file.LinesAdded} / -{file.LinesDeleted}）",
+                file.TaskId,
+                UiText.TaskRef(file.TaskKey),
+                file.ProjectName));
+        }
+
+        foreach (var call in data.RecentDbCalls)
+        {
+            var target = string.IsNullOrWhiteSpace(call.Database)
+                ? "—"
+                : $"{call.Database}";
+
+            items.Add(new ActivityItem(
+                call.CreatedAt,
+                false,
+                $"{target} · {Truncate(call.Sql, 60)}",
+                call.TaskId,
+                UiText.TaskRef(call.TaskKey),
+                call.ProjectName ?? "—"));
+        }
+
+        return items.OrderByDescending(i => i.At).Take(20).ToList();
     }
 
     private void ToggleCreate()
     {
         ShowCreate = !ShowCreate;
-        Error = null;
+        CreateError = null;
     }
 
     private async Task CreateAsync()
     {
-        // 连点两次：第二个事件到达时第一个可能还没跑完
         if (Creating)
         {
             return;
         }
 
         Creating = true;
-
-        // 立刻把按钮置灰：Blazor 在 await 期间不重绘
         StateHasChanged();
 
         try
         {
-            await Projects.CreateAsync(NewName, string.IsNullOrWhiteSpace(NewDescription) ? null : NewDescription);
+            using var scope = ScopeFactory.CreateScope();
+            var projects = scope.ServiceProvider.GetRequiredService<IProjectService>();
+
+            await projects.CreateAsync(
+                NewName,
+                string.IsNullOrWhiteSpace(NewDescription) ? null : NewDescription,
+                repoPath: string.IsNullOrWhiteSpace(NewRepoPath) ? null : NewRepoPath);
+
             NewName = string.Empty;
             NewDescription = string.Empty;
+            NewRepoPath = string.Empty;
             ShowCreate = false;
-            Error = null;
+            CreateError = null;
             await ReloadAsync();
         }
         catch (Exception ex)
         {
-            Error = PageError.From(ex, "新建项目");
+            CreateError = PageError.From(ex, "新建项目");
         }
         finally
         {
@@ -140,14 +420,35 @@ else
         }
     }
 
-    private static string Percent(double ratio) => $"{ratio * 100:0.#}%";
-
-    private static string Relative(DateTimeOffset time)
-    {
+    private static string Relative(DateTimeOffset time)    {
         var delta = DateTimeOffset.UtcNow - time;
         if (delta.TotalMinutes < 1) return "刚刚";
         if (delta.TotalHours < 1) return $"{(int)delta.TotalMinutes} 分钟前";
         if (delta.TotalDays < 1) return $"{(int)delta.TotalHours} 小时前";
         return $"{(int)delta.TotalDays} 天前";
+    }
+
+    private static string Truncate(string? text, int max = 60)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return "—";
+        }
+
+        return text.Length <= max ? text : text[..max] + "…";
+    }
+
+    /// <summary>绝对时间。相对时间（「3 天前」）看不出是哪天，鼠标停上去要能看到。</summary>
+    private static string Absolute(DateTimeOffset time) =>
+        time.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_timerCts is not null)
+        {
+            await _timerCts.CancelAsync();
+            _timerCts.Dispose();
+            _timerCts = null;
+        }
     }
 }

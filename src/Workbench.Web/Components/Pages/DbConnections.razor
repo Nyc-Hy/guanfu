@@ -1,0 +1,537 @@
+@page "/db-connections"
+@rendermode InteractiveServer
+@inject IDbConnectionService Connections
+@inject IProjectService Projects
+
+<PageTitle>数据库连接 · 开发工作台</PageTitle>
+
+<div class="wb-page-head">
+    <div>
+        <h1>数据库连接</h1>
+        <p class="wb-muted">
+            agent 查询或写数据库时，用这里登记的连接。密码加密存储、不回显；
+            写操作默认要人工审批，只有表级规则明确放开才免。
+        </p>
+    </div>
+</div>
+
+<PageTokenGate @bind-Authorized="Authorized" />
+
+<ErrorNotice Error="LoadError" />
+<ErrorNotice Error="ActionError" />
+<ErrorNotice Error="Notice" />
+
+<div class="wb-filter-bar">
+    <label class="wb-label">项目</label>
+    <select class="wb-input" @bind="SelectedProjectId" @bind:after="OnProjectChangedAsync">
+        <option value="">选择项目…</option>
+        @foreach (var project in ProjectList)
+        {
+            <option value="@project.Id">@project.Name</option>
+        }
+    </select>
+</div>
+
+@if (SelectedProjectId.Length == 0)
+{
+    <div class="wb-empty">先选择一个项目，再管理它的数据库连接。</div>
+}
+else
+{
+    <section class="wb-panel">
+        <h3>新建连接</h3>
+        <div class="wb-form-row">
+            <label class="wb-label">名称</label>
+            <input class="wb-input" placeholder="default" @bind="NewName" @bind:event="oninput" />
+            <label class="wb-label">服务器</label>
+            <input class="wb-input" placeholder="127.0.0.1,1433" @bind="NewServer" @bind:event="oninput" />
+        </div>
+        <div class="wb-form-row">
+            <label class="wb-label">数据库</label>
+            <input class="wb-input" placeholder="MyDb" @bind="NewDatabase" @bind:event="oninput" />
+            <label class="wb-label">用户名</label>
+            <input class="wb-input" placeholder="sa（留空用集成认证）" @bind="NewUserId" @bind:event="oninput" />
+        </div>
+        <div class="wb-form-row">
+            <label class="wb-label">密码</label>
+            @* 不用 @bind：绑定会把密码写回 DOM 的 value 属性。只在事件里收值，创建后抹掉。 *@
+            <input class="wb-input" type="password" placeholder="加密存储，不回显"
+                   @oninput="e => NewPassword = e.Value?.ToString() ?? string.Empty" />
+        </div>
+        <div class="wb-form-row">
+            <label class="wb-label">选项</label>
+            <label class="wb-muted">
+                <input type="checkbox" @bind="NewIsDefault" /> 设为默认连接
+            </label>
+            <label class="wb-muted">
+                <input type="checkbox" @bind="NewTrustServerCertificate" /> 信任服务端证书（TrustServerCertificate）
+            </label>
+        </div>
+        @if (NewTrustServerCertificate)
+        {
+            <p class="wb-hint">
+                信任服务端证书 = 不校验证书链，自签证书能连，但存在中间人风险。生产环境建议关掉。
+            </p>
+        }
+        <div class="wb-form-row">
+            <button class="wb-btn wb-btn-primary" disabled="@(!CanWrite)" @onclick="CreateAsync">
+                @(Creating ? "创建中…" : "创建连接")
+            </button>
+            @if (!Authorized)
+            {
+                <span class="wb-muted">写操作需要先在上方验证人工凭证。</span>
+            }
+        </div>
+    </section>
+
+    @if (Loading)
+    {
+        <div class="wb-loading">加载中…</div>
+    }
+    else if (ConnectionList.Count == 0)
+    {
+        <div class="wb-empty">这个项目还没有数据库连接。</div>
+    }
+    else
+    {
+        @foreach (var conn in ConnectionList)
+        {
+            <section class="wb-panel">
+                <div class="wb-card-head">
+                    <div>
+                        <strong>@conn.Name</strong>
+                        @if (conn.IsDefault)
+                        {
+                            <span class="wb-chip wb-chip-ok">默认</span>
+                        }
+                        @if (conn.TrustServerCertificate)
+                        {
+                            <span class="wb-chip wb-chip-warn">信任服务端证书</span>
+                        }
+                    </div>
+                    <div class="wb-form-row">
+                        <button class="wb-btn" disabled="@TestingIds.Contains(conn.Id)"
+                                @onclick="() => TestAsync(conn.Id)">
+                            @(TestingIds.Contains(conn.Id) ? "测试中…" : "测试连接")
+                        </button>
+                        <button class="wb-btn" @onclick="() => ToggleRulesAsync(conn.Id)">
+                            @(ExpandedRules.Contains(conn.Id) ? "收起规则" : "表级规则")
+                        </button>
+                    </div>
+                </div>
+
+                <p class="wb-muted">
+                    服务器 <code>@conn.Server</code> · 数据库 <code>@conn.Database</code>
+                    @if (!string.IsNullOrWhiteSpace(conn.UserId))
+                    {
+                        <span> · 用户 <code>@conn.UserId</code></span>
+                    }
+                    · 密码 @(string.IsNullOrEmpty(conn.EncryptedPassword) ? "未配置" : "已配置")
+                </p>
+
+                @if (TestResults.TryGetValue(conn.Id, out var test))
+                {
+                    @if (test.Ok)
+                    {
+                        <p class="wb-hint">连接成功（SELECT 1 探活通过）。</p>
+                    }
+                    else
+                    {
+                        <p class="wb-error">连接失败：@test.Error</p>
+                    }
+                }
+
+                @if (ExpandedRules.Contains(conn.Id))
+                {
+                    var form = RuleFormFor(conn.Id);
+                    var rules = RulesFor(conn.Id);
+                    var hasOpenWrite = rules.Any(r => !r.WriteRequiresApproval);
+
+                    <h4>表级规则</h4>
+                    <p class="wb-hint">
+                        没有匹配规则的表：读直通、写要审批。规则按 schema + 表名精确匹配（裸表名按 dbo 解释）。
+                    </p>
+
+                    @if (hasOpenWrite)
+                    {
+                        <div class="wb-alert">
+                            <strong>安全警示：</strong>这个连接上存在「免审批写」规则 ——
+                            agent 对对应表的写操作将<strong>不再经过人工审批</strong>。
+                            只对低敏感、可回滚的表开放，并定期复查。
+                        </div>
+                    }
+
+                    @if (RulesLoading.Contains(conn.Id))
+                    {
+                        <div class="wb-loading">规则加载中…</div>
+                    }
+                    else if (rules.Count == 0)
+                    {
+                        <p class="wb-muted">还没有表级规则。</p>
+                    }
+                    else
+                    {
+                        <div class="wb-table-scroll">
+                            <table class="wb-table">
+                                <thead>
+                                <tr>
+                                    <th>Schema</th>
+                                    <th>表名</th>
+                                    <th>读</th>
+                                    <th>写</th>
+                                    <th></th>
+                                </tr>
+                                </thead>
+                                <tbody>
+                                @foreach (var rule in rules)
+                                {
+                                    <tr class="@(rule.WriteRequiresApproval ? null : "wb-rule-open")">
+                                        <td><code>@rule.SchemaName</code></td>
+                                        <td><code>@rule.TableName</code></td>
+                                        <td>
+                                            @if (rule.AllowRead)
+                                            {
+                                                <span class="wb-tag wb-tag-ok">允许读</span>
+                                            }
+                                            else
+                                            {
+                                                <span class="wb-tag wb-tag-danger">禁止读</span>
+                                            }
+                                        </td>
+                                        <td>
+                                            @if (rule.WriteRequiresApproval)
+                                            {
+                                                <span class="wb-tag wb-tag-ok">需审批</span>
+                                            }
+                                            else
+                                            {
+                                                <span class="wb-tag wb-tag-danger">免审批写</span>
+                                            }
+                                        </td>
+                                        <td>
+                                            <button class="wb-btn wb-btn-danger" disabled="@(!CanWrite)"
+                                                    @onclick="() => DeleteRuleAsync(conn.Id, rule.Id)">删除</button>
+                                        </td>
+                                    </tr>
+                                }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+
+                    <div class="wb-form-row">
+                        <input class="wb-input" placeholder="schema（默认 dbo）" @bind="form.Schema" @bind:event="oninput" />
+                        <input class="wb-input" placeholder="表名，如 Orders" @bind="form.Table" @bind:event="oninput" />
+                        <label class="wb-muted">
+                            <input type="checkbox" @bind="form.AllowRead" /> 允许读
+                        </label>
+                        <label class="wb-muted">
+                            <input type="checkbox" @bind="form.WriteRequiresApproval" /> 写需审批
+                        </label>
+                        <button class="wb-btn wb-btn-primary"
+                                disabled="@(!CanWrite || string.IsNullOrWhiteSpace(form.Table))"
+                                @onclick="() => AddRuleAsync(conn.Id)">添加规则</button>
+                    </div>
+
+                    @if (!form.WriteRequiresApproval)
+                    {
+                        <div class="wb-alert">
+                            <strong>免审批写：</strong>保存后，agent 写 <code>@(form.Schema.Trim().Length == 0 ? "dbo" : form.Schema.Trim()).@form.Table.Trim()</code>
+                            将不再经过人工审批。请确认这张表足够低敏感、写坏可回滚。
+                        </div>
+                    }
+                }
+            </section>
+        }
+    }
+}
+
+@code {
+    private sealed class RuleForm
+    {
+        public string Schema { get; set; } = string.Empty;
+        public string Table { get; set; } = string.Empty;
+        public bool AllowRead { get; set; } = true;
+        public bool WriteRequiresApproval { get; set; } = true;
+    }
+
+    private IReadOnlyList<ProjectSummaryDto> ProjectList { get; set; } = [];
+    private IReadOnlyList<DbConnectionConfig> ConnectionList { get; set; } = [];
+
+    private string SelectedProjectId { get; set; } = string.Empty;
+
+    // 人工凭证门禁（PageTokenGate 回写）
+    private bool Authorized { get; set; }
+
+    private bool Loading { get; set; }
+    private bool Creating { get; set; }
+    private bool RuleBusy { get; set; }
+    private bool CanWrite => Authorized && !Creating && !RuleBusy;
+
+    private PageError? LoadError { get; set; }
+    private PageError? ActionError { get; set; }
+    private PageError? Notice { get; set; }
+
+    // 新建连接表单
+    private string NewName { get; set; } = string.Empty;
+    private string NewServer { get; set; } = string.Empty;
+    private string NewDatabase { get; set; } = string.Empty;
+    private string NewUserId { get; set; } = string.Empty;
+    private string NewPassword { get; set; } = string.Empty;
+    private bool NewIsDefault { get; set; } = true;
+    private bool NewTrustServerCertificate { get; set; } = true;
+
+    // 试连 / 规则展开的按连接状态
+    private readonly HashSet<Guid> TestingIds = [];
+    private readonly Dictionary<Guid, (bool Ok, string? Error)> TestResults = [];
+    private readonly HashSet<Guid> ExpandedRules = [];
+    private readonly HashSet<Guid> RulesLoading = [];
+    private readonly Dictionary<Guid, IReadOnlyList<DbTableRuleDto>> Rules = [];
+    private readonly Dictionary<Guid, RuleForm> RuleForms = [];
+
+    private RuleForm RuleFormFor(Guid connectionId)
+    {
+        if (!RuleForms.TryGetValue(connectionId, out var form))
+        {
+            form = new RuleForm();
+            RuleForms[connectionId] = form;
+        }
+
+        return form;
+    }
+
+    private IReadOnlyList<DbTableRuleDto> RulesFor(Guid connectionId) =>
+        Rules.TryGetValue(connectionId, out var rules) ? rules : [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            ProjectList = await Projects.ListAsync();
+            LoadError = null;
+        }
+        catch (Exception ex)
+        {
+            // 别让异常从初始化方法冒出去 —— 冒出去就是整页白屏
+            LoadError = PageError.From(ex, "加载项目列表");
+        }
+    }
+
+    private async Task OnProjectChangedAsync()
+    {
+        ExpandedRules.Clear();
+        Rules.Clear();
+        TestResults.Clear();
+        ActionError = null;
+        Notice = null;
+        await ReloadConnectionsAsync();
+    }
+
+    private async Task ReloadConnectionsAsync()
+    {
+        if (!Guid.TryParse(SelectedProjectId, out var projectId))
+        {
+            ConnectionList = [];
+            return;
+        }
+
+        Loading = true;
+        StateHasChanged();
+
+        try
+        {
+            ConnectionList = await Connections.ListAsync(projectId);
+            LoadError = null;
+        }
+        catch (Exception ex)
+        {
+            LoadError = PageError.From(ex, "加载数据库连接");
+        }
+        finally
+        {
+            Loading = false;
+        }
+    }
+
+    private async Task CreateAsync()
+    {
+        if (!CanWrite || !Guid.TryParse(SelectedProjectId, out var projectId))
+        {
+            return;
+        }
+
+        Creating = true;
+        ActionError = null;
+        Notice = null;
+        StateHasChanged();
+
+        try
+        {
+            var created = await Connections.CreateAsync(
+                projectId,
+                NewName,
+                NewServer,
+                NewDatabase,
+                string.IsNullOrWhiteSpace(NewUserId) ? null : NewUserId.Trim(),
+                string.IsNullOrEmpty(NewPassword) ? null : NewPassword,
+                NewIsDefault,
+                trustServerCertificate: NewTrustServerCertificate);
+
+            // 密码用完即抹，别留在电路状态里
+            NewPassword = string.Empty;
+            NewName = string.Empty;
+            NewServer = string.Empty;
+            NewDatabase = string.Empty;
+            NewUserId = string.Empty;
+
+            Notice = PageError.Notice($"已创建连接「{created.Name}」。建议立刻点「测试连接」确认能连上。");
+            await ReloadConnectionsAsync();
+        }
+        catch (WorkbenchException ex)
+        {
+            // 业务错误显示原文（「服务器与数据库名不能为空。」这类）
+            ActionError = PageError.Simple(ex.Message);
+        }
+        catch (Exception ex)
+        {
+            ActionError = PageError.From(ex, "创建数据库连接");
+        }
+        finally
+        {
+            Creating = false;
+        }
+    }
+
+    /// <summary>试连是只读探活（SELECT 1），不是写操作，不需要人工凭证。</summary>
+    private async Task TestAsync(Guid connectionId)
+    {
+        if (!TestingIds.Add(connectionId))
+        {
+            return;
+        }
+
+        TestResults.Remove(connectionId);
+        StateHasChanged();
+
+        try
+        {
+            var (ok, error) = await Connections.TestAsync(connectionId);
+            TestResults[connectionId] = (ok, error);
+        }
+        catch (WorkbenchException ex)
+        {
+            TestResults[connectionId] = (false, ex.Message);
+        }
+        catch (Exception ex)
+        {
+            TestResults[connectionId] = (false, ex.Message);
+        }
+        finally
+        {
+            TestingIds.Remove(connectionId);
+        }
+    }
+
+    private async Task ToggleRulesAsync(Guid connectionId)
+    {
+        if (!ExpandedRules.Remove(connectionId))
+        {
+            ExpandedRules.Add(connectionId);
+            await ReloadRulesAsync(connectionId);
+        }
+    }
+
+    private async Task ReloadRulesAsync(Guid connectionId)
+    {
+        RulesLoading.Add(connectionId);
+        StateHasChanged();
+
+        try
+        {
+            Rules[connectionId] = await Connections.ListRulesAsync(connectionId);
+        }
+        catch (Exception ex)
+        {
+            ActionError = PageError.From(ex, "加载表级规则");
+        }
+        finally
+        {
+            RulesLoading.Remove(connectionId);
+        }
+    }
+
+    private async Task AddRuleAsync(Guid connectionId)
+    {
+        var form = RuleFormFor(connectionId);
+
+        if (!CanWrite || string.IsNullOrWhiteSpace(form.Table))
+        {
+            return;
+        }
+
+        RuleBusy = true;
+        ActionError = null;
+        Notice = null;
+        StateHasChanged();
+
+        try
+        {
+            var rule = await Connections.AddRuleAsync(
+                connectionId, form.Schema, form.Table, form.AllowRead, form.WriteRequiresApproval);
+
+            Notice = PageError.Notice(rule.WriteRequiresApproval
+                ? $"已添加规则 {rule.SchemaName}.{rule.TableName}（写需审批）。"
+                : $"已添加规则 {rule.SchemaName}.{rule.TableName} —— 免审批写，请确认这是有意为之。");
+
+            form.Table = string.Empty;
+            form.AllowRead = true;
+            form.WriteRequiresApproval = true;
+
+            await ReloadRulesAsync(connectionId);
+        }
+        catch (WorkbenchException ex)
+        {
+            ActionError = PageError.Simple(ex.Message);
+        }
+        catch (Exception ex)
+        {
+            ActionError = PageError.From(ex, "添加表级规则");
+        }
+        finally
+        {
+            RuleBusy = false;
+        }
+    }
+
+    private async Task DeleteRuleAsync(Guid connectionId, Guid ruleId)
+    {
+        if (!CanWrite)
+        {
+            return;
+        }
+
+        RuleBusy = true;
+        ActionError = null;
+        Notice = null;
+        StateHasChanged();
+
+        try
+        {
+            await Connections.DeleteRuleAsync(connectionId, ruleId);
+            Notice = PageError.Notice("已删除规则。该表回到默认策略：读直通、写要审批。");
+            await ReloadRulesAsync(connectionId);
+        }
+        catch (WorkbenchException ex)
+        {
+            ActionError = PageError.Simple(ex.Message);
+        }
+        catch (Exception ex)
+        {
+            ActionError = PageError.From(ex, "删除表级规则");
+        }
+        finally
+        {
+            RuleBusy = false;
+        }
+    }
+}

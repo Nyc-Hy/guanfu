@@ -1,0 +1,428 @@
+@page "/search"
+@rendermode InteractiveServer
+@inject ITaskService Tasks
+@inject IProjectService Projects
+@inject IDocumentService Documents
+@inject IFileChangeService FileChanges
+@inject IDbCallService DbCalls
+
+<PageTitle>全局搜索 · 开发工作台</PageTitle>
+
+<div class="wb-page-head">
+    <div>
+        <h1>全局搜索</h1>
+        <p class="wb-muted">
+            搜任务（编号 + 标题）、项目、文档、产出文件与数据库调用。
+            编号不认写法差异：<code>req001</code> 和 <code>REQ-001</code> 是同一个。
+        </p>
+    </div>
+</div>
+
+<div class="wb-filter-bar">
+    <input class="wb-input" placeholder="输入编号、标题、项目名、文件路径或 SQL 关键词…"
+           @bind="Query" @bind:event="oninput" @onkeyup="OnKeyUpAsync" />
+    <button class="wb-btn wb-btn-primary" disabled="@Searching" @onclick="SearchAsync">
+        @(Searching ? "搜索中…" : "搜索")
+    </button>
+</div>
+
+@foreach (var error in GroupErrors)
+{
+    <ErrorNotice Error="error" />
+}
+
+@if (Searching)
+{
+    <div class="wb-loading">搜索中…</div>
+}
+else if (!Searched)
+{
+    <div class="wb-empty">输入关键词开始搜索。任务按编号精确匹配（归一化）与标题包含匹配；文件和 SQL 按内容包含匹配。</div>
+}
+else if (TaskHits.Count == 0 && ProjectHits.Count == 0 && DocHits.Count == 0 && FileHits.Count == 0 && DbHits.Count == 0)
+{
+    <div class="wb-empty">没有找到匹配「@LastQuery」的结果。</div>
+}
+else
+{
+    @if (TaskHits.Count > 0)
+    {
+        <section class="wb-panel">
+            <div class="wb-card-head">
+                <h3>任务</h3>
+                <span class="wb-muted">@TaskHits.Count 条</span>
+            </div>
+            @foreach (var task in TaskHits)
+            {
+                <a class="wb-task" href="/tasks/@task.Id">
+                    <div class="wb-task-title">@task.Title</div>
+                    <div class="wb-task-meta">
+                        @if (!string.IsNullOrWhiteSpace(task.Key))
+                        {
+                            <span class="wb-tag">@task.Key</span>
+                        }
+                        <span class="wb-tag">@StatusLabel(task.Status)</span>
+                        <span class="wb-tag">@task.ProjectName</span>
+                        @if (task.IsArchived)
+                        {
+                            <span class="wb-tag wb-tag-warn">已归档</span>
+                        }
+                    </div>
+                </a>
+            }
+        </section>
+    }
+
+    @if (ProjectHits.Count > 0)
+    {
+        <section class="wb-panel">
+            <div class="wb-card-head">
+                <h3>项目</h3>
+                <span class="wb-muted">@ProjectHits.Count 条</span>
+            </div>
+            @foreach (var project in ProjectHits)
+            {
+                <a class="wb-task" href="/projects/@project.Id">
+                    <div class="wb-task-title">@project.Name</div>
+                    @if (!string.IsNullOrWhiteSpace(project.Description))
+                    {
+                        <div class="wb-muted">@project.Description</div>
+                    }
+                </a>
+            }
+        </section>
+    }
+
+    @if (DocHits.Count > 0)
+    {
+        <section class="wb-panel">
+            <div class="wb-card-head">
+                <h3>文档</h3>
+                <span class="wb-muted">@DocHits.Count 条</span>
+            </div>
+            @foreach (var hit in DocHits)
+            {
+                <a class="wb-task" href="/documents/@hit.Doc.Id">
+                    <div class="wb-task-title">@hit.Doc.FileName</div>
+                    <div class="wb-task-meta">
+                        <span class="wb-tag">@hit.TaskLabel</span>
+                        <span class="wb-tag">@(hit.Snippet is null ? "文件名匹配" : "内容匹配")</span>
+                    </div>
+                    @if (hit.Snippet is not null)
+                    {
+                        <div class="wb-muted wb-search-snippet">@hit.Snippet</div>
+                    }
+                </a>
+            }
+        </section>
+    }
+
+    @if (FileHits.Count > 0)
+    {
+        <section class="wb-panel">
+            <div class="wb-card-head">
+                <h3>产出文件</h3>
+                <span class="wb-muted">@FileHits.Count 条</span>
+            </div>
+            @foreach (var hit in FileHits)
+            {
+                <a class="wb-task" href="/tasks/@hit.TaskId">
+                    <div class="wb-task-title"><code>@hit.Path</code></div>
+                    <div class="wb-task-meta">
+                        <span class="wb-tag">@hit.ChangeKind</span>
+                        <span class="wb-tag">@UiText.TaskRef(hit.TaskKey, hit.TaskTitle)</span>
+                        <span class="wb-tag">@hit.ProjectName</span>
+                        <span class="wb-tag">+@hit.LinesAdded / -@hit.LinesDeleted</span>
+                    </div>
+                </a>
+            }
+        </section>
+    }
+
+    @if (DbHits.Count > 0)
+    {
+        <section class="wb-panel">
+            <div class="wb-card-head">
+                <h3>数据库调用</h3>
+                <span class="wb-muted">@DbHits.Count 条</span>
+                <a class="wb-btn wb-btn-link" href="/db-calls?sql=@Uri.EscapeDataString(LastQuery)">在数据库调用页看全部</a>
+            </div>
+            @foreach (var hit in DbHits)
+            {
+                <div class="wb-task">
+                    <div class="wb-task-title">
+                        @if (hit.TaskId is not null)
+                        {
+                            <a href="/tasks/@hit.TaskId"><code>@ShortSql(hit.Sql)</code></a>
+                        }
+                        else
+                        {
+                            <code>@ShortSql(hit.Sql)</code>
+                        }
+                    </div>
+                    <div class="wb-task-meta">
+                        <span class="wb-tag">@(string.IsNullOrWhiteSpace(hit.Database) ? "—" : hit.Database)</span>
+                        @if (hit.TaskId is not null)
+                        {
+                            <span class="wb-tag">@UiText.TaskRef(hit.TaskKey)</span>
+                        }
+                        <span class="wb-tag">@hit.ProjectName</span>
+                        @if (!string.IsNullOrWhiteSpace(hit.CallerId))
+                        {
+                            <span class="wb-tag wb-chip-agent">@hit.CallerId</span>
+                        }
+                    </div>
+                </div>
+            }
+        </section>
+    }
+
+    <p class="wb-hint">
+        结果上限：任务 @TaskLimit 条、项目 @ProjectLimit 条、文档 @DocLimit 条、
+        产出文件 @FileLimit 条、数据库调用 @DbCallLimit 条。
+        文档最多扫描 @DocScanTaskLimit 个任务下的文件，内容匹配最多解析 @DocContentScanLimit 个文档。
+        @if (SkippedDocs > 0)
+        {
+            <span>有 @SkippedDocs 个文档解析失败，已跳过。</span>
+        }
+    </p>
+}
+
+@code {
+    private const int TaskLimit = 20;
+    private const int ProjectLimit = 10;
+    private const int DocLimit = 20;
+    private const int FileLimit = 20;
+    private const int DbCallLimit = 20;
+    private const int DocScanTaskLimit = 100;
+    private const int DocContentScanLimit = 20;
+
+    private sealed record DocHit(DocumentDto Doc, string TaskLabel, string? Snippet);
+
+    private string Query { get; set; } = string.Empty;
+    private string LastQuery { get; set; } = string.Empty;
+    private bool Searching { get; set; }
+    private bool Searched { get; set; }
+    private int SkippedDocs { get; set; }
+
+    private IReadOnlyList<TaskSummaryDto> TaskHits { get; set; } = [];
+    private IReadOnlyList<ProjectSummaryDto> ProjectHits { get; set; } = [];
+    private IReadOnlyList<DocHit> DocHits { get; set; } = [];
+    private IReadOnlyList<FileChangeHitDto> FileHits { get; set; } = [];
+    private IReadOnlyList<DbCallHitDto> DbHits { get; set; } = [];
+    private List<PageError> GroupErrors { get; set; } = [];
+
+    private async Task OnKeyUpAsync(KeyboardEventArgs args)
+    {
+        if (args.Key == "Enter")
+        {
+            await SearchAsync();
+        }
+    }
+
+    private async Task SearchAsync()
+    {
+        var query = Query.Trim();
+
+        if (Searching || query.Length == 0)
+        {
+            return;
+        }
+
+        Searching = true;
+        LastQuery = query;
+        TaskHits = [];
+        ProjectHits = [];
+        DocHits = [];
+        FileHits = [];
+        DbHits = [];
+        GroupErrors = [];
+        SkippedDocs = 0;
+        StateHasChanged();
+
+        try
+        {
+            // 分组各查各的：一组挂了不影响其它组，错误单独报
+            await SearchProjectsAsync(query);
+            await SearchTasksAsync(query);
+            await SearchDocumentsAsync(query);
+            await SearchFilesAsync(query);
+            await SearchDbCallsAsync(query);
+            Searched = true;
+        }
+        finally
+        {
+            Searching = false;
+        }
+    }
+
+    /// <summary>
+    /// 搜产出文件。工作台自己从 git 数出来的改动 ——
+    /// 「哪个任务动过这个文件」是复盘时最常问的问题之一。
+    /// </summary>
+    private async Task SearchFilesAsync(string query)
+    {
+        try
+        {
+            FileHits = await FileChanges.SearchAsync(query, FileLimit);
+        }
+        catch (Exception ex)
+        {
+            GroupErrors.Add(PageError.From(ex, "搜索产出文件"));
+        }
+    }
+
+    /// <summary>
+    /// 搜数据库调用。SQL 原文、库名、目标表任一命中都算数 ——
+    /// 「谁跑过这条 SQL」「哪个任务动过这张表」都能一次问出来。
+    /// </summary>
+    private async Task SearchDbCallsAsync(string query)
+    {
+        try
+        {
+            DbHits = await DbCalls.SearchAsync(query, DbCallLimit);
+        }
+        catch (Exception ex)
+        {
+            GroupErrors.Add(PageError.From(ex, "搜索数据库调用"));
+        }
+    }
+
+    private async Task SearchProjectsAsync(string query)
+    {
+        try
+        {
+            var all = await Projects.ListAsync();
+            ProjectHits = all
+                .Where(p => SearchMatcher.Contains(p.Name, query) || SearchMatcher.Contains(p.Description, query))
+                .Take(ProjectLimit)
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            GroupErrors.Add(PageError.From(ex, "搜索项目"));
+        }
+    }
+
+    private async Task SearchTasksAsync(string query)
+    {
+        try
+        {
+            // 编号走服务端的归一化匹配（内存里做，规矩 11/19），标题走服务端关键词。
+            // 两路合并去重：编号命中排前面。
+            var byKey = await Tasks.ListAsync(key: query, limit: TaskLimit, includeArchived: true);
+            var byKeyword = await Tasks.ListAsync(keyword: query, limit: TaskLimit, includeArchived: true);
+            TaskHits = SearchMatcher.MergeById(byKey, byKeyword, t => t.Id, TaskLimit);
+        }
+        catch (Exception ex)
+        {
+            GroupErrors.Add(PageError.From(ex, "搜索任务"));
+        }
+    }
+
+    private async Task SearchDocumentsAsync(string query)
+    {
+        try
+        {
+            // 没有跨文档的全局检索接口：先按文件名匹配，再对有限个文档做内容检索
+            // （DocumentService.SearchAsync 是单文档的，解析有缓存，但仍要限量）。
+            var tasks = await Tasks.ListAsync(limit: DocScanTaskLimit, includeArchived: true);
+            var byId = new Dictionary<Guid, DocHit>();
+            var contentCandidates = new List<(DocumentDto Doc, string TaskLabel)>();
+
+            foreach (var task in tasks)
+            {
+                if (byId.Count >= DocLimit && contentCandidates.Count >= DocContentScanLimit)
+                {
+                    break;
+                }
+
+                var label = string.IsNullOrWhiteSpace(task.Key) ? task.Title : $"{task.Key} {task.Title}";
+                var docs = await Documents.ListAsync(task.Id);
+
+                foreach (var doc in docs)
+                {
+                    if (byId.Count >= DocLimit && contentCandidates.Count >= DocContentScanLimit)
+                    {
+                        break;
+                    }
+
+                    if (SearchMatcher.Contains(doc.FileName, query) && !byId.ContainsKey(doc.Id))
+                    {
+                        byId[doc.Id] = new DocHit(doc, label, null);
+                    }
+
+                    if (contentCandidates.Count < DocContentScanLimit)
+                    {
+                        contentCandidates.Add((doc, label));
+                    }
+                }
+            }
+
+            foreach (var (doc, label) in contentCandidates)
+            {
+                IReadOnlyList<SearchHitDto> hits;
+                try
+                {
+                    hits = await Documents.SearchAsync(doc.Id, query);
+                }
+                catch (Exception)
+                {
+                    // 单个文档解析失败不拖垮整组搜索
+                    SkippedDocs++;
+                    continue;
+                }
+
+                if (hits.Count == 0)
+                {
+                    continue;
+                }
+
+                var snippet = hits[0].Text;
+                if (snippet.Length > 200)
+                {
+                    snippet = snippet[..200] + "…";
+                }
+
+                // 内容命中比文件名命中信息量大：覆盖掉只有文件名的那条
+                if (byId.Count < DocLimit || byId.ContainsKey(doc.Id))
+                {
+                    byId[doc.Id] = new DocHit(doc, label, snippet);
+                }
+            }
+
+            DocHits = byId.Values.Take(DocLimit).ToList();
+        }
+        catch (Exception ex)
+        {
+            GroupErrors.Add(PageError.From(ex, "搜索文档"));
+        }
+    }
+
+    /// <summary>SQL 预览：压掉空白再截断，免得一行撑爆卡片。</summary>
+    private static string ShortSql(string? sql)
+    {
+        if (string.IsNullOrWhiteSpace(sql))
+        {
+            return "—";
+        }
+
+        var collapsed = string.Join(' ', sql.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+
+        return collapsed.Length <= 120 ? collapsed : string.Concat(collapsed.AsSpan(0, 119), "…");
+    }
+
+    private static string StatusLabel(TaskStatus status) => status switch
+    {
+        TaskStatus.Draft => "草稿",
+        TaskStatus.DocsReady => "文档就绪",
+        TaskStatus.Planned => "已规划",
+        TaskStatus.InDev => "开发中",
+        TaskStatus.Testing => "测试中",
+        TaskStatus.Review => "待评审",
+        TaskStatus.Done => "已完成",
+        TaskStatus.Blocked => "阻塞",
+        TaskStatus.Cancelled => "已取消",
+        _ => status.ToString()
+    };
+}

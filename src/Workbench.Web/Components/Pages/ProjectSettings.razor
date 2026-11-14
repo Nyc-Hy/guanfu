@@ -1,13 +1,22 @@
 @page "/projects/{ProjectId:guid}/settings"
 @rendermode InteractiveServer
+@using Microsoft.AspNetCore.Http
 @inject IProjectService Projects
+@inject IMilestoneService Milestones
+@inject HumanTokenAccessor Tokens
+@inject IJSRuntime JS
 @inject NavigationManager Nav
 
 <PageTitle>项目设置 · 开发工作台</PageTitle>
 
-@if (Config is null)
+@if (Loading && Config is null)
 {
-    <div class="wb-empty">项目不存在。<a href="/">返回</a></div>
+    <div class="wb-empty">加载中…</div>
+}
+else if (Config is null)
+{
+    <ErrorNotice Error="LoadError" />
+    <div class="wb-empty">@(NotFound ? "项目不存在。" : "项目配置加载失败。")<a href="/">返回</a></div>
 }
 else
 {
@@ -17,17 +26,34 @@ else
             <h1>项目设置</h1>
             <p class="wb-muted">仓库路径、agent 启动命令、命令白名单、审批通知。</p>
         </div>
-        <button class="wb-btn wb-btn-primary" disabled="@Saving" @onclick="SaveAsync">
+        <button class="wb-btn wb-btn-primary" disabled="@(Saving || !Gate.Authorized)" @onclick="SaveAsync">
             @(Saving ? "保存中…" : "保存")
         </button>
     </div>
 
-    @if (!string.IsNullOrWhiteSpace(Message))
-    {
-        <p class="@(IsError ? "wb-error" : "wb-hint")">@Message</p>
-    }
-
+    <ErrorNotice Error="ActionError" />
     <ErrorNotice Error="LoadError" />
+
+    @if (!Gate.Authorized)
+    {
+        <div class="wb-panel">
+            <p class="wb-error">修改项目配置需要人工凭证 —— 这里能改 agent 启动命令与命令白名单。</p>
+            <p class="wb-muted">
+                在本机打开工作台时会自动获取；远程访问请从启动工作台的控制台复制人工 token，粘贴到下面。
+            </p>
+            <div class="wb-form-row">
+                <input class="wb-input" type="password" placeholder="人工 token（控制台里那串）"
+                       @oninput="OnTokenInputChanged" />
+                <button class="wb-btn wb-btn-primary"
+                        disabled="@string.IsNullOrWhiteSpace(TokenInput)"
+                        @onclick="VerifyToken">验证</button>
+            </div>
+            @if (!string.IsNullOrWhiteSpace(Gate.Hint))
+            {
+                <p class="wb-hint">@Gate.Hint</p>
+            }
+        </div>
+    }
 
     <div class="wb-detail-grid">
         <div class="wb-detail-main">
@@ -58,7 +84,7 @@ else
                     <input class="wb-input" @bind="DefaultBranch" @bind:event="oninput" />
                 </div>
                 <p class="wb-hint">
-                    仓库路径是 fs_list / fs_read / shell_run / git 工具的作用范围根目录，留空则这些工具不可用。
+                    仓库路径是「看目录、读文件、跑命令、提交代码」这些操作的作用范围，留空则它们不可用。
                 </p>
             </section>
 
@@ -83,9 +109,64 @@ else
                               @bind="AllowedCommandsText" @bind:event="oninput"></textarea>
                 </div>
                 <p class="wb-hint">
-                    shell_run 只能执行命中白名单的命令，且每次都要人工审批。
+                    跑命令只能执行命中白名单的命令，且每次都要人工审批。
                     命令不走 shell 解析，不支持管道与重定向。
                 </p>
+            </section>
+
+            <section class="wb-panel">
+                <h3>迭代版本 / 里程碑</h3>
+                @if (MilestoneItems.Count == 0)
+                {
+                    <p class="wb-muted">还没有迭代版本，去看板页添加。</p>
+                }
+                else
+                {
+                    <div class="wb-form-row">
+                        <label class="wb-label">选择要编辑的</label>
+                        <select class="wb-input" @bind="EditMilestoneId" @bind:after="LoadMilestoneInputs">
+                            <option value="">（选择）</option>
+                            @foreach (var m in MilestoneItems)
+                            {
+                                <option value="@m.Id">@m.Name（@m.DoneTasks/@m.TotalTasks）</option>
+                            }
+                        </select>
+                    </div>
+
+                    @if (EditingMilestone is { } editing)
+                    {
+                        <div class="wb-form-row">
+                            <label class="wb-label">名称</label>
+                            <input class="wb-input" @bind="EditName" @bind:event="oninput" />
+                        </div>
+                        <div class="wb-form-row">
+                            <label class="wb-label">截止日</label>
+                            <input class="wb-input" type="datetime-local" value="@EditDue"
+                                   @onchange="e => EditDue = e.Value?.ToString() ?? string.Empty" />
+                        </div>
+                        <div class="wb-form-row">
+                            <label class="wb-label">上级</label>
+                            <select class="wb-input" @bind="EditParentId">
+                                <option value="">无（顶层）</option>
+                                @foreach (var m in MilestoneItems.Where(m => m.Id != editing.Id))
+                                {
+                                    <option value="@m.Id">@m.Name</option>
+                                }
+                            </select>
+                        </div>
+                        <div class="wb-form-row">
+                            <button class="wb-btn wb-btn-primary" disabled="@(Busy || !Gate.Authorized)"
+                                    @onclick="() => SaveMilestoneAsync(false, false)">保存修改</button>
+                            <button class="wb-btn" disabled="@(Busy || !Gate.Authorized || editing.ParentId is null)"
+                                    @onclick="() => SaveMilestoneAsync(true, false)">清除上级</button>
+                            <button class="wb-btn" disabled="@(Busy || !Gate.Authorized || editing.DueAt is null)"
+                                    @onclick="() => SaveMilestoneAsync(false, true)">清除截止日</button>
+                        </div>
+                        <p class="wb-hint">
+                            「清除」是显式操作：留空保存只表示「不改」，要把上级 / 截止日真的去掉，点对应按钮。
+                        </p>
+                    }
+                }
             </section>
         </div>
 
@@ -133,6 +214,7 @@ else
     [Parameter] public Guid ProjectId { get; set; }
 
     private ProjectConfigDto? Config { get; set; }
+    private IReadOnlyList<MilestoneDto> MilestoneItems { get; set; } = [];
 
     private string Name { get; set; } = string.Empty;
     private string Description { get; set; } = string.Empty;
@@ -144,15 +226,89 @@ else
     private string NotificationWebhookUrl { get; set; } = string.Empty;
     private string NotificationFormat { get; set; } = "generic";
 
+    // ---- 里程碑编辑 ----
+    private string EditMilestoneId { get; set; } = string.Empty;
+    private string EditName { get; set; } = string.Empty;
+    private string EditDue { get; set; } = string.Empty;
+    private string EditParentId { get; set; } = string.Empty;
+
+    private MilestoneDto? EditingMilestone =>
+        Guid.TryParse(EditMilestoneId, out var id)
+            ? MilestoneItems.FirstOrDefault(m => m.Id == id)
+            : null;
+
     private bool Saving { get; set; }
-    private string? Message { get; set; }
-    private bool IsError { get; set; }
+    private bool Busy { get; set; }
+    private bool Loading { get; set; }
+    private bool NotFound { get; set; }
+    private PageError? ActionError { get; set; }
     private PageError? LoadError { get; set; }
 
-    protected override async Task OnParametersSetAsync() => await ReloadAsync();
+    // ---- 人工凭证（改配置 = 改 agent 的能力面，必须有人在场）----
+    private UiTokenGate Gate { get; set; } = default!;
+    private string TokenInput { get; set; } = string.Empty;
+
+    [CascadingParameter] public HttpContext? RequestContext { get; set; }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        Gate ??= new UiTokenGate(Tokens.Token);
+        Gate.AuthorizeFromRequest(RequestContext?.Request);
+        await ReloadAsync();
+    }
+
+    protected override Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _ = AcquireTokenAsync();
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private async Task AcquireTokenAsync()
+    {
+        if (Gate.Authorized)
+        {
+            return;
+        }
+
+        string? payload = null;
+
+        try
+        {
+            payload = await JS.InvokeAsync<string>("eval", ApprovalUiGuard.FetchTokenScript);
+        }
+        catch (JSException)
+        {
+            // 取不到就走粘贴流程
+        }
+        catch (InvalidOperationException)
+        {
+            // 预渲染阶段没有 JS 运行时
+        }
+
+        Gate.ApplyFetchResult(payload);
+        StateHasChanged();
+    }
+
+    private void OnTokenInputChanged(ChangeEventArgs args) =>
+        TokenInput = args.Value?.ToString() ?? string.Empty;
+
+    private void VerifyToken()
+    {
+        if (Gate.TryVerify(TokenInput))
+        {
+            TokenInput = string.Empty;
+            ActionError = null;
+        }
+    }
 
     private async Task ReloadAsync()
     {
+        Loading = true;
+
         try
         {
             Config = await Projects.GetConfigAsync(ProjectId);
@@ -166,13 +322,25 @@ else
             AllowedCommandsText = string.Join(Environment.NewLine, Config.AllowedCommands);
             NotificationWebhookUrl = Config.NotificationWebhookUrl ?? string.Empty;
             NotificationFormat = Config.NotificationFormat ?? "generic";
+
+            MilestoneItems = await Milestones.ListAsync(ProjectId);
+            NotFound = false;
             LoadError = null;
+        }
+        catch (NotFoundException)
+        {
+            Config = null;
+            NotFound = true;
         }
         catch (Exception ex)
         {
             // 别让异常从初始化方法冒出去 —— 冒出去就是整页白屏
             Config = null;
             LoadError = PageError.From(ex, "加载项目配置");
+        }
+        finally
+        {
+            Loading = false;
         }
     }
 
@@ -181,6 +349,13 @@ else
         // 连点两次：第二个事件到达时第一个可能还没跑完
         if (Saving)
         {
+            return;
+        }
+
+        // 改配置是敏感操作：没有人工凭证不放行（REST 那道门管不到直调服务的 UI）
+        if (!Gate.Authorized)
+        {
+            ActionError = PageError.Simple(ApprovalUiGuard.MissingTokenMessage);
             return;
         }
 
@@ -209,17 +384,94 @@ else
                 NotificationFormat);
 
             AllowedCommandsText = string.Join(Environment.NewLine, Config.AllowedCommands);
-            Message = "已保存。";
-            IsError = false;
+            ActionError = PageError.Notice("已保存。");
         }
         catch (Exception ex)
         {
-            Message = ex.Message;
-            IsError = true;
+            // 业务异常原文展示（PageError.From 区分业务 / 未知），不再甩裸 ex.Message
+            ActionError = PageError.From(ex, "保存项目配置");
         }
         finally
         {
             Saving = false;
+        }
+    }
+
+    // ---- 里程碑编辑 ----
+
+    private void LoadMilestoneInputs()
+    {
+        if (EditingMilestone is { } m)
+        {
+            EditName = m.Name;
+            EditDue = m.DueAt?.ToLocalTime().ToString("yyyy-MM-ddTHH:mm") ?? string.Empty;
+            EditParentId = m.ParentId?.ToString() ?? string.Empty;
+        }
+        else
+        {
+            EditName = string.Empty;
+            EditDue = string.Empty;
+            EditParentId = string.Empty;
+        }
+    }
+
+    private async Task SaveMilestoneAsync(bool clearParent, bool clearDue)
+    {
+        if (Busy || EditingMilestone is not { } m)
+        {
+            return;
+        }
+
+        if (!Gate.Authorized)
+        {
+            ActionError = PageError.Simple(ApprovalUiGuard.MissingTokenMessage);
+            return;
+        }
+
+        DateTimeOffset? dueAt = null;
+        if (!clearDue && !string.IsNullOrWhiteSpace(EditDue))
+        {
+            if (!DateTimeOffset.TryParse(EditDue, out var parsedDue))
+            {
+                ActionError = PageError.Simple($"截止日格式不对: {EditDue}");
+                return;
+            }
+
+            dueAt = parsedDue;
+        }
+
+        Guid? parentId = null;
+        if (!clearParent && Guid.TryParse(EditParentId, out var parsedParent))
+        {
+            parentId = parsedParent;
+        }
+
+        Busy = true;
+        StateHasChanged();
+
+        try
+        {
+            await Milestones.UpdateAsync(
+                m.Id,
+                string.IsNullOrWhiteSpace(EditName) ? null : EditName.Trim(),
+                dueAt: dueAt,
+                parentId: parentId,
+                clearParent: clearParent,
+                clearDue: clearDue);
+
+            MilestoneItems = await Milestones.ListAsync(ProjectId);
+            LoadMilestoneInputs();
+            ActionError = PageError.Notice(clearParent
+                ? "已清除上级。"
+                : clearDue ? "已清除截止日。" : "里程碑已保存。");
+        }
+        catch (Exception ex)
+        {
+            ActionError = PageError.From(ex, "保存里程碑");
+        }
+        finally
+        {
+            Busy = false;
         }
     }
 }

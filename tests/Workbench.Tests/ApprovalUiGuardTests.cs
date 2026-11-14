@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Http;
+using Workbench.Domain;
 using Workbench.Web;
 using Workbench.Web.Components;
 
@@ -134,6 +135,164 @@ public class ApprovalUiGuardTests
 
         Assert.Equal("已拉起外部 agent", notice.Message);
         Assert.False(notice.IsError);
+    }
+
+    // ---- 业务异常原文直出（自我纠正需要的信息不能吞）----
+
+    [Fact]
+    public void 业务异常消息原文展示()
+    {
+        var error = PageError.From(new WorkbenchException("审批已过期，不能再裁决。"), "裁决审批");
+
+        Assert.Contains("裁决审批失败", error.Message);
+        Assert.Contains("审批已过期，不能再裁决。", error.Message);
+        // 业务异常不附带堆栈
+        Assert.True(string.IsNullOrEmpty(error.Details));
+    }
+
+    [Fact]
+    public void 资源不存在异常原文展示()
+    {
+        var error = PageError.From(new NotFoundException("任务", "T-1"), "加载任务");
+
+        Assert.Contains("任务 未找到: T-1", error.Message);
+        Assert.True(string.IsNullOrEmpty(error.Details));
+    }
+
+    [Fact]
+    public void 非法迁移异常带允许列表原文展示()
+    {
+        var ex = new InvalidStatusTransitionException(
+            TaskStatus.Done, TaskStatus.InDev, new[] { TaskStatus.Cancelled });
+
+        var error = PageError.From(ex, "改状态");
+
+        // 允许列表是 agent 自我纠正的关键，必须露出来
+        Assert.Contains("非法状态迁移", error.Message);
+        Assert.Contains("Cancelled", error.Message);
+        Assert.True(string.IsNullOrEmpty(error.Details));
+    }
+
+    [Fact]
+    public void 未知异常仍然泛化并保留细节()
+    {
+        var error = PageError.From(new InvalidOperationException("boom"), "加载");
+
+        Assert.DoesNotContain("boom", error.Message);
+        Assert.Contains("InvalidOperationException", error.Details);
+        Assert.Contains("boom", error.Details);
+    }
+
+    // ---- 浏览器取 token 的返回解析 ----
+
+    [Fact]
+    public void 从成功返回里抠出token()
+    {
+        var payload = "{\"ok\":true,\"status\":200,\"body\":\"{\\\"token\\\":\\\"" + Token + "\\\"}\"}";
+
+        Assert.Equal(Token, ApprovalUiGuard.ExtractToken(payload));
+    }
+
+    [Fact]
+    public void 取token失败的各种返回都当没有()
+    {
+        // 远程访问 403
+        Assert.Null(ApprovalUiGuard.ExtractToken("{\"ok\":false,\"status\":403,\"body\":\"\"}"));
+        // 网络错误
+        Assert.Null(ApprovalUiGuard.ExtractToken("{\"ok\":false,\"status\":0,\"body\":\"\"}"));
+        // body 里没有 token
+        Assert.Null(ApprovalUiGuard.ExtractToken("{\"ok\":true,\"status\":200,\"body\":\"{}\"}"));
+        // 坏 JSON / 空
+        Assert.Null(ApprovalUiGuard.ExtractToken("not json"));
+        Assert.Null(ApprovalUiGuard.ExtractToken(null));
+        Assert.Null(ApprovalUiGuard.ExtractToken(""));
+    }
+
+    // ---- 页面级门禁状态机（审批 / 设置 / 启动 agent / MCP 共用）----
+
+    [Fact]
+    public void 门禁初始未授权()
+    {
+        var gate = new UiTokenGate(Token);
+
+        Assert.False(gate.Authorized);
+    }
+
+    [Fact]
+    public void 粘贴正确token后放行()
+    {
+        var gate = new UiTokenGate(Token);
+
+        Assert.True(gate.TryVerify(Token));
+        Assert.True(gate.Authorized);
+        Assert.Null(gate.Hint);
+    }
+
+    [Fact]
+    public void 粘贴错误token不放行且给提示()
+    {
+        var gate = new UiTokenGate(Token);
+
+        Assert.False(gate.TryVerify("wrong"));
+        Assert.False(gate.Authorized);
+        Assert.Equal(ApprovalUiGuard.InvalidTokenMessage, gate.Hint);
+    }
+
+    [Fact]
+    public void 请求带凭证时服务端渲染阶段就放行()
+    {
+        var gate = new UiTokenGate(Token);
+
+        gate.AuthorizeFromRequest(BuildRequest(cookieToken: Token));
+
+        Assert.True(gate.Authorized);
+    }
+
+    [Fact]
+    public void 请求不带凭证不放行()
+    {
+        var gate = new UiTokenGate(Token);
+
+        gate.AuthorizeFromRequest(BuildRequest());
+        gate.AuthorizeFromRequest(null);
+
+        Assert.False(gate.Authorized);
+    }
+
+    [Fact]
+    public void 浏览器自动取到正确token后放行()
+    {
+        var gate = new UiTokenGate(Token);
+        var payload = "{\"ok\":true,\"status\":200,\"body\":\"{\\\"token\\\":\\\"" + Token + "\\\"}\"}";
+
+        gate.ApplyFetchResult(payload);
+
+        Assert.True(gate.Authorized);
+        Assert.Null(gate.Hint);
+    }
+
+    [Fact]
+    public void 自动取token失败给回退提示()
+    {
+        var gate = new UiTokenGate(Token);
+
+        gate.ApplyFetchResult("{\"ok\":false,\"status\":403,\"body\":\"\"}");
+
+        Assert.False(gate.Authorized);
+        Assert.False(string.IsNullOrEmpty(gate.Hint));
+    }
+
+    [Fact]
+    public void 已授权时自动取token结果不再改动状态()
+    {
+        var gate = new UiTokenGate(Token);
+        gate.TryVerify(Token);
+
+        // 即便随后拿到一个失败返回，也不该把已授权状态打回去
+        gate.ApplyFetchResult("{\"ok\":false,\"status\":403,\"body\":\"\"}");
+
+        Assert.True(gate.Authorized);
+        Assert.Null(gate.Hint);
     }
 
     // ---- 防重复提交 ----
