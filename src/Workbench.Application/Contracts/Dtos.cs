@@ -62,7 +62,15 @@ public sealed record ProjectConfigDto(
     string? NotificationWebhookUrl,
     string? NotificationFormat,
     /// <summary>规范化后的仓库根（绑定键）。为空表示项目还没绑仓库。</summary>
-    string? RepoRoot = null);
+    string? RepoRoot = null,
+    /// <summary>
+    /// 仓库绑定的提醒：有别的项目也绑了同一个仓库时，这里写清楚会出什么事。
+    ///
+    /// 同一个仓库绑两个项目是允许的（前后端同仓可以各绑各的子目录），
+    /// 但**完全相同**的目录会让「agent 按目录认项目」分不出来 ——
+    /// 那时必须显式指定 projectId。这条提醒让人在绑定的那一刻就知道。
+    /// </summary>
+    string? RepoBindingWarning = null);
 
 public sealed record StatusEventDto(
     Guid Id,

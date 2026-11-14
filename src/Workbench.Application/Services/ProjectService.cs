@@ -127,6 +127,51 @@ public sealed class ProjectService(IAppDbContext db, IClock clock) : IProjectSer
         project.RepoRoot = canonical;
     }
 
+    /// <summary>
+    /// 找出也绑了同一个仓库的其它项目。
+    ///
+    /// 同一个仓库绑两个项目是**允许**的（前后端同仓就绑各的子目录，
+    /// 反查时按「取最具体的那个」能分开）。但**完全相同**的目录会让
+    /// 「agent 按目录认项目」分不出来 —— 那时必须显式指定 projectId。
+    ///
+    /// 所以这里不拦，只把这件事在绑定的那一刻讲清楚，
+    /// 免得等到 agent 绑会话失败才发现。
+    /// </summary>
+    private async Task<string?> BuildRepoBindingWarningAsync(
+        Project project,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrEmpty(project.RepoRoot))
+        {
+            return null;
+        }
+
+        // 精确比较放内存里：路径大小写的口径跟 PathBoundary 一致（Windows 不敏感）。
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+
+        var others = await db.Projects.AsNoTracking()
+            .Where(p => p.Id != project.Id && p.RepoRoot != null)
+            .Select(p => new { p.Id, p.Name, p.RepoRoot })
+            .ToListAsync(cancellationToken);
+
+        var owners = others
+            .Where(p => string.Equals(p.RepoRoot, project.RepoRoot, comparison))
+            .Select(p => p.Name)
+            .Distinct()
+            .ToList();
+
+        if (owners.Count == 0)
+        {
+            return null;
+        }
+
+        return $"这个仓库也绑在项目「{string.Join("、", owners)}」上。" +
+            "agent 按工作目录自动认项目时会分不出来（得显式指定项目），" +
+            "前后端同仓的话，各绑各的子目录就行。";
+    }
+
     private async Task<Workspace> CreateDefaultWorkspaceAsync(CancellationToken cancellationToken)
     {
         var workspace = new Workspace { Name = "默认工作区", CreatedAt = clock.UtcNow };
@@ -223,7 +268,7 @@ public sealed class ProjectService(IAppDbContext db, IClock clock) : IProjectSer
         var project = await db.Projects.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id, cancellationToken)
                       ?? throw new NotFoundException("项目", id);
 
-        return BuildConfig(project);
+        return BuildConfig(project, await BuildRepoBindingWarningAsync(project, cancellationToken));
     }
 
     public async Task<ProjectConfigDto> UpdateConfigAsync(
@@ -305,7 +350,7 @@ public sealed class ProjectService(IAppDbContext db, IClock clock) : IProjectSer
         project.UpdatedAt = clock.UtcNow;
         await db.SaveChangesAsync(cancellationToken);
 
-        return BuildConfig(project);
+        return BuildConfig(project, await BuildRepoBindingWarningAsync(project, cancellationToken));
     }
 
     /// <summary>空字符串清空字段；仓库路径统一存绝对路径。</summary>
@@ -320,7 +365,7 @@ public sealed class ProjectService(IAppDbContext db, IClock clock) : IProjectSer
         return trimmed;
     }
 
-    private static ProjectConfigDto BuildConfig(Project project) => new(
+    private static ProjectConfigDto BuildConfig(Project project, string? repoBindingWarning = null) => new(
         project.Id,
         project.Name,
         project.Description,
@@ -331,7 +376,8 @@ public sealed class ProjectService(IAppDbContext db, IClock clock) : IProjectSer
         project.AgentCommand,
         project.NotificationWebhookUrl,
         project.NotificationFormat,
-        project.RepoRoot);
+        project.RepoRoot,
+        repoBindingWarning);
 
     private ProjectSummaryDto BuildSummary(
         Project project,

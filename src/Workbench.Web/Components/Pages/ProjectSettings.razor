@@ -86,6 +86,12 @@ else
                 <p class="wb-hint">
                     仓库路径是「看目录、读文件、跑命令、提交代码」这些操作的作用范围，留空则它们不可用。
                 </p>
+                @* 同一个仓库被两个项目绑上时，agent 按目录认项目会分不出来 ——
+                   这条提醒要在绑定的那一刻就摆出来，别等 agent 撞墙才发现。 *@
+                @if (!string.IsNullOrWhiteSpace(Config.RepoBindingWarning))
+                {
+                    <p class="wb-alert wb-alert-warn">@Config.RepoBindingWarning</p>
+                }
             </section>
 
             <section class="wb-panel">

@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using Workbench.Application.Services;
 using Workbench.Domain;
 
@@ -67,7 +68,18 @@ public sealed class SessionBindingTests
         var repo = NewTempDir();
 
         var first = await host.Projects.CreateAsync("甲项目", repoPath: repo);
-        var second = await host.Projects.CreateAsync("乙项目", repoPath: repo);
+
+        // 直接写库造出「两个项目绑同一个仓库」——
+        // 现在建项目时会拦（ProjectService.EnsureRepoBindingIsUniqueAsync），
+        // 但老库、导入的数据里可能有这种重复绑定，会话层仍要兜住。
+        var second = await host.Projects.CreateAsync("乙项目");
+        var firstRow = await host.Db.Projects.AsNoTracking().FirstAsync(p => p.Id == first.Id);
+        await host.Db.Projects
+            .Where(p => p.Id == second.Id)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(p => p.RepoRoot, firstRow.RepoRoot)
+                .SetProperty(p => p.RepoPath, repo));
+
         var sessions = new AgentSessionService(host.Db, host.Clock);
 
         var bound = await sessions.BindRepoAsync(repo, "agent-x");
