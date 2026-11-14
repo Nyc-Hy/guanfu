@@ -416,7 +416,7 @@ else
                                             <div class="wb-muted">原：@change.OldPath</div>
                                         }
                                     </td>
-                                    <td><span class="wb-chip">@change.ChangeKind</span></td>
+                                    <td><span class="wb-chip">@UiText.ChangeKind(change.ChangeKind)</span></td>
                                     <td class="wb-muted">+@change.LinesAdded / -@change.LinesDeleted</td>
                                     <td class="wb-muted">
                                         @(change.CommitSha is null ? "未提交" : change.CommitSha[..Math.Min(8, change.CommitSha.Length)])

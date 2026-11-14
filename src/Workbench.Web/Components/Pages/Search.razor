@@ -129,7 +129,7 @@ else
                 <a class="wb-task" href="/tasks/@hit.TaskId">
                     <div class="wb-task-title"><code>@hit.Path</code></div>
                     <div class="wb-task-meta">
-                        <span class="wb-tag">@hit.ChangeKind</span>
+                        <span class="wb-tag">@UiText.ChangeKind(hit.ChangeKind)</span>
                         <span class="wb-tag">@UiText.TaskRef(hit.TaskKey, hit.TaskTitle)</span>
                         <span class="wb-tag">@hit.ProjectName</span>
                         <span class="wb-tag">+@hit.LinesAdded / -@hit.LinesDeleted</span>
@@ -199,6 +199,15 @@ else
 
     private sealed record DocHit(DocumentDto Doc, string TaskLabel, string? Snippet);
 
+    /// <summary>
+    /// 深链带来的搜索词（`/search?q=...`）。
+    ///
+    /// 搜索结果要能**转给别人**：查到了什么，把链接发出去，对方看到的就该是同一个结果，
+    /// 而不是空白的搜索框。
+    /// </summary>
+    [SupplyParameterFromQuery(Name = "q")]
+    public string? QueryFromUrl { get; set; }
+
     private string Query { get; set; } = string.Empty;
     private string LastQuery { get; set; } = string.Empty;
     private bool Searching { get; set; }
@@ -216,6 +225,16 @@ else
     {
         if (args.Key == "Enter")
         {
+            await SearchAsync();
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        // 深链带来的关键词直接填进去并搜一次 —— 链接要能复现结果。
+        if (!string.IsNullOrWhiteSpace(QueryFromUrl))
+        {
+            Query = QueryFromUrl.Trim();
             await SearchAsync();
         }
     }

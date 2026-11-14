@@ -112,6 +112,13 @@ body {
 
 .wb-page-head h1 { margin: 4px 0 6px; font-size: 22px; }
 
+/* 页头右侧的操作按钮：别被左边那段长描述挤成竖排。
+   flex 子项默认 min-width:auto，窄一点就把「刷新」竖着断成两行。 */
+.wb-page-head > .wb-btn {
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+
 .wb-back { color: var(--wb-muted); text-decoration: none; font-size: 13px; }
 .wb-back:hover { color: var(--wb-accent); }
 
@@ -306,6 +313,10 @@ body {
 }
 
 .wb-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+
+/* 工具说明里有 dependsOnTaskId 这类长标识，不给断词的话
+   表格的最小宽度会被撑得比视口还宽，整页横向滚动。 */
+.wb-tool-desc { overflow-wrap: anywhere; }
 .wb-table th, .wb-table td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--wb-border); }
 .wb-table th { color: var(--wb-muted); font-weight: 500; font-size: 12px; }
 
