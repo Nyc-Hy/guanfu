@@ -30,6 +30,11 @@
    **当前允许的迁移列表**带回给调用方（agent 靠这个自我纠正）。
 3. **MCP 工具不要抛异常**：SDK 会把异常吞成一句 "An error occurred invoking ..."，
    agent 就看不到原因了。要返回带 `error` 字段的结构化结果。
+   **结果形状全局统一**：所有工具都返回 `ok` + `error`（成功时 `error` 为空），
+   agent 只用一套规则读所有工具。别返回裸字符串 / 裸 bool / `object` ——
+   `false` 是「结果是 false」还是「失败了」，agent 分不出来。
+   工具真抛异常时，全局 `CallTool` 兜底过滤器会转成 `{ok:false,error}`（`isError=true`），
+   但工具自己判出来的失败也要给同样的形状。契约由 `McpToolContractTests` 钉住。
 4. **写操作必须审批**：读直通，写走 `db_execute` / `git_commit` / `git_push` /
    `shell_run` → 审批 → 批准后带 `approvalId` 续跑执行。这几个工具共用同一套
    闸门（`IApprovalGate`），别各写各的。
@@ -37,6 +42,12 @@
    + `ProjectId`，一条审批换个命令、换个工具、换个项目都用不了；
    状态流转是 `Approved → Executing → Executed`，靠条件更新原子消费，
    一条审批只执行一次。别改回「只看 Status == Approved」。
+   **指纹要把「执行对象」一起算进去**：`db_execute` 绑 `connectionId + server +
+   database + sql`（换个库执行就对不上）；`git_commit` 绑**待提交内容的指纹**，
+   而且批准之后、执行之前要**再算一次**——等审批期间工作区变了就拒。
+   人批的是「那些内容」，不是「提交这个动作」。
+   **改闸门必须跑 `tests/e2e/approval_e2e.py`**（链路 D）——单测测不到「不批不执行」
+   这条真正的闸门语义，只能靠端到端守。
 5. **SQLite 不能对 `DateTimeOffset` 列排序**：所有 DateTimeOffset 一律经
    `UtcDateTimeOffsetConverter` 转成 UTC DateTime 存储，别绕过这个约定。
 6. **shell 不走 shell 解析**：`shell_run` 的命令被拆成可执行文件 + 参数直接 exec，
@@ -50,6 +61,9 @@
    关键区别：`WITH c AS (...) SELECT` 与 `WITH c AS (...) UPDATE` 首关键字都是 WITH，
    `SELECT ... INTO` 首关键字是 SELECT 但会建表，只有看 AST 才分得开。
    别退回「剥注释取首关键字」那套 —— 那是上一版的实现，漏过。
+   **判定是逐语句的**：一个批处理里只要有一条写（或认不出来），整条就不是只读。
+   `OPENROWSET` / `OPENQUERY` / `OPENDATASOURCE` / `OPENXML` 这类远端执行通道
+   一律判 `Unknown` —— 外层看着是 SELECT，实质能跑任意 SQL。
 7. **外部命令只在白名单里跑**：git 命令走 `IGitWriter`（同样不走 shell），
    agent 启动命令走 `IAgentLauncher`。工作台不提供 AI，只执行用户配置好的外部命令。
 8. **CLI 用应用层的 DTO，别自己抄一份**：CLI 引用 `Workbench.Application`，
@@ -96,10 +110,99 @@
 20. **事件账本要机器可读**：`StatusEvent.EventType` 是固定标识
     （`TaskEventTypes`），`Payload` 是结构化 JSON。消费方按 `EventType` 判定，
     不要去猜 `Note` 的自由文本。
+    **每条事件都要带 `Payload`**（note 事件也要），自由文本只留在 `Note` 里当人看的补充。
+21. **Blazor 电路里别共用一个 DbContext**：`InteractiveServer` 注入进来的服务是
+    **电路级**的（电路一直活到连接断开），那个 DbContext 会被「定时自动刷新」
+    「人工点裁决」共用。两个操作撞上就是
+    "A second operation was started on this context instance"。
+    每个操作单开一个 scope（`ScopeFactory.CreateScope()`）。
+    **页面上新增的定时刷新也一样**：总览、看板的 15 秒自动刷新若跟页面上的
+    写操作共用电路级 DbContext，人正拖拽流转状态时定时器来查库，就是同一个错。
+    测试里同理：`WorkbenchTestHost` 的审批服务每次给新的 DbContext，
+    别让「等审批」的轮询和「裁决」的写共用一个。
+22. **REST 端点的敏感分类有测试兜底**：`EndpointClassificationTests` 会枚举所有
+    `/api` 写端点，断言该要人工凭证的要、读端点别误伤。
+    新增写端点要在 `HumanTokenPolicy.IsSensitiveEndpoint` 补规则（漏一条 = 开一扇门）。
+23. **跨站与 DNS rebinding 要挡**：`OriginHostGuardMiddleware` 做两道检查 ——
+    `/api` 写方法的 `Origin` 必须与 `Host` 同源；`Host` 头必须在允许清单里
+    （默认回环）。只监听回环挡不住 rebinding，浏览器发出来的 `Host` 就是攻击者的域名。
+    内网部署用 `Workbench:AllowedHosts` 显式放行。
+24. **架构约定要靠测试钉住，不能只写在文档里**：
+    `McpToolContractTests`（工具名 / 结果形状 / 写工具的审批标记）、
+    `EventLedgerContractTests`（事件必带 Payload）、
+    `EndpointClassificationTests`（端点分类）。
+    加新工具、新事件类型、新 REST 端点时，对应的测试要跟着过。
+
+25. **绑定键是仓库目录，不是项目 GUID**：
+    项目创建时绑定本地仓库（`Project.RepoPath` + 规范化后的 `Project.RepoRoot`），
+    agent 的工作目录落在哪个项目绑定的仓库范围内，就绑到哪个项目。
+    用**包含关系**而不是字符串相等 —— agent 在仓库子目录里干活也算同一个项目。
+    反查时取**最具体**的那个（路径最长）；一样长就是两个项目绑了同一个仓库，
+    **分不出来就不绑**，让调用方显式指定，别猜。
+    `RepoPath` 存人填的路径（绝对化），`RepoRoot` 存规范化的绑定键（解符号链接）——
+    macOS 上 `/tmp` 其实是 `/private/tmp`，不改写用户填的路径，但绑定键必须规范化。
+
+26. **会话归属要跟显式参数对账**：
+    工具的 `projectId` 变成可选（会话绑了就省掉），但**显式传了 projectId
+    就要跟会话比**：不一致直接拒。否则 agent 拿着 A 项目的会话能改 B 项目，
+    审计里的归属就成了 agent 自己说了算。
+    认领（`claim`）成功后把任务挂到会话上，之后的调用自动带 taskId。
+
+27. **产出文件靠采集，不靠 agent 自报**：
+    采集点只有两个，都在 agent 绕不过去的地方 ——
+    ① `git_commit` 审批通过、真正提交之后；② 推进到 `Review` 时快照工作区。
+    `workbench_add_artifact` 只登记非代码产物，代码文件不靠它。
+
+28. **审计用哈希链串起来**：
+    每条工具审计带 `prevHash` + `hash`（内容 + 上一条的哈希）。
+    改一条内容、删一条记录，链都会断，「审计」页面上点「验哈希链」能验出断点。
+    序号用 `Sequence`（单调递增）定序，**不能靠时间戳** —— 同一时钟刻里写的记录
+    时间戳一样，按时间排序先后就不确定，链会误报断裂。
+    这是「可发现」不是「不可篡改」：能连哈希一起重算的人照样骗得过。
+
+29. **别把接口名或方法名撞上框架约定**：
+    ASP.NET Core 的 minimal API 会把服务类型上的 `BindAsync` 方法当成自定义绑定器
+    （`ISessionService` 就这么炸过）；DI 也认 `ISession*` 这类命名约定。
+    服务接口叫 `IAgentSessionService`、方法叫 `BindRepoAsync` —— 名字撞约定时
+    报出来的错很难指向真因，改名比加特判省事。
+
+30. **界面上不许露代码标识**：
+    用户看到的是「提交代码」「开发中」「文档就绪」，不是 `git_commit`、`InDev`。
+    中文说法统一走 `UiText`（`src/Workbench.Application/Contracts/UiText.cs`），
+    **别在页面里各写各的映射**。GUID 同样不许出现在界面上 ——
+    任务给编号（`REQ-001`），项目给名字，给不出名字就写「未命名」。
+    两个例外：`/connect` 与 `/mcp-tools` 这两页是给开发者按名字调 agent 用的，
+    原始工具名可以出现在那里，但要用中文说法兜底（名字在次要位置或折叠区）。
+    页面区块别一铺十几块 —— 任务详情用**精简视图**（`wb-compact`）把次要区块收起来。
+
+31. **列表接口必须有上限**：
+    审批、看板、审计这些列表要一次拉进浏览器的，全都要限量 + 客户端翻页 ——
+    用久了每个项目几千条任务、每次审批留一条记录，不设上限页面直接卡死。
+    `ApprovalService.ListAsync` 的 `limit` 放在 `CancellationToken` 之后（不破坏位置参数调用），
+    看板用 `Tasks.ListAsync(limit:)`。单测 `ListLimitTests` 钉住这条。
+    **翻页与自动刷新要分开**：定时刷新不能把页码拨回第一页（`RefreshAsync(resetPage:)`），
+    只有换筛选条件才重置。
+
+32. **跨页链接要能定位到具体那一条**：
+    「去处理」「已审批」这类入口**别把人丢到一个要自己翻的列表页**。
+    深链带 id（`/approvals?id=xxx`）或带筛选词（`/db-calls?sql=xxx`），
+    落地页负责切页签、翻到那一页、描边高亮、滚进视野。
+    目标不在当前筛选里（已被批过 → 在历史页签下）就先切页签，
+    否则人点过来只看到一片空白，反而以为坏了。
+    审批 DTO 要带**任务编号与项目名**（`ApprovalDto.TaskKey/TaskTitle/ProjectName`）——
+    人判断该不该批的依据是「这是哪个需求的活」，界面上又不许露 GUID。
+
+33. **读数方向不能反**：
+    「已过多久」和「还剩多久」是**两个数**，别拿一个充另一个。
+    以前审批卡上写「等待 N 分钟」，算的却是 `ExpiresAt - now`（剩余有效期）——
+    刚发起的显示「等待 30 分钟」，快过期的显示「等待 0 分钟」，跟字面意思正好相反。
+    现在写成「已等 X · 剩余 Y」，两个数都摆出来，快过期的染红。
+    相对时间（「3 天前」）后面要跟 `title` 给绝对时间。
 
 ## 常用命令
 
 ```bash
+./tests/verify.sh                               # 一键验收：编译 → 单测 → 端到端，给总账
 ./.dotnet/dotnet build Workbench.sln     # 用仓库里隔离的 .NET 8 SDK
 ./.dotnet/dotnet test Workbench.sln
 dotnet run --project src/Workbench.Web          # 起服务（UI + REST + /mcp）
@@ -108,10 +211,19 @@ dotnet run --project src/Workbench.Cli -- --help # CLI
 ./tests/e2e/run.sh                              # 端到端验证（自起临时服务，跑完即收）
 ```
 
-端到端脚本 `tests/e2e/mcp_e2e.py` 走 MCP 全链路：按编号找任务 → claim → 取上下文 →
-回写计划 → 推进到 Review → 开评审轮 → 取评审包 → 逐维度回写 → 结项，
-以及两条拦截链路（只评 6 个维度、有一个维度不通过）。
-改完 MCP 工具或状态机后跑一遍，比只看单测靠谱。
+端到端有**六条链路**，都在 `tests/e2e/` 下，`run.sh` 一次跑完：
+
+| 链路 | 脚本 | 验什么 |
+|---|---|---|
+| A/B/C | `mcp_e2e.py` | MCP 主链路（按编号找任务 → claim → 上下文 → 回写计划 →推进到 Review → 开评审轮 → 取评审包 → 逐维度回写 → 结项）、评审拦截（只评 6 个维度 / 有一个维度不通过）、类型编号与分支守卫 |
+| D | `approval_e2e.py` | **写操作的人工审批门禁**：白名单外的直接拒 / 没批准不执行 / 批准后续跑 / 一条审批只能执行一次 / 换命令换项目都用不了 / 撤销是后悔药 / 只读通道不许写 / db_execute 也要审批 / 全程审计留痕 |
+| E | `cli_smoke.py` | CLI 常用命令、敏感命令没凭证是 401、`wb mcp` 的 stdio 桥接真能转发 JSON-RPC |
+| F | `session_e2e.py` | **会话绑定链路**：项目绑仓库 → 不传 projectId 也能干活 → 跨项目被拒 → 按编号认领 → 审计自动带任务 → 提交后产出文件自动落库 |
+
+改完 MCP 工具、状态机**或审批闸门**后跑一遍，比只看单测靠谱。
+新增写工具时，`approval_e2e.py` 里要跟着加一条「不批就不执行」的断言。
+
+企业验收看 `docs/ENTERPRISE.md`（逐条能力 → 落地位置 → 自动化证据 + 诚实的缺口清单）。
 
 数据目录由 `WORKBENCH_HOME` 决定（默认 `~/.workbench`），里面是 SQLite、文档原件、密钥文件、
 外部 agent 的运行日志（`runs/`）、人工凭证（`.human-token`）与定时备份（`backups/`）。
