@@ -373,4 +373,86 @@ public class ApprovalLifecycleTests
         Assert.False(consume.Ok);
         Assert.Contains(nameof(ApprovalStatus.Expired), consume.Status);
     }
+
+    // ---- 13. 重启对账：结果未知 ----
+
+    [Fact]
+    public async Task 重启时上个进程遗留的执行被标成结果未知()
+    {
+        var (host, projectId) = await SetupAsync();
+        using var scope = host;
+
+        var request = await host.Approvals.RequestAsync(Tool, Kind, Payload, "改订单", projectId: projectId);
+        await host.Approvals.DecideAsync(request.Id, true, "张三");
+        await host.Approvals.TryConsumeAsync(request.Id, Tool, Kind, Payload, projectId);
+
+        // 十分钟后进程崩了，重启
+        host.Clock.Advance(TimeSpan.FromMinutes(10));
+        var marked = await host.Approvals.ReconcileInterruptedAsync(host.Clock.UtcNow);
+
+        Assert.Equal(1, marked);
+
+        var row = await host.Db.Approvals.AsNoTracking().FirstAsync(a => a.Id == request.Id);
+        Assert.Equal(ApprovalStatus.Expired, row.Status);
+        Assert.True(row.OutcomeUnknown);
+        Assert.Equal("system", row.DecidedBy);
+        // 理由要说清「可能已经生效」—— 跟执行失败不是一回事
+        Assert.Contains("结果未知", row.DecisionReason);
+        Assert.Contains("可能已经生效", row.DecisionReason);
+    }
+
+    [Fact]
+    public async Task 重启后本进程正在跑的审批不被对账收走()
+    {
+        var (host, projectId) = await SetupAsync();
+        using var scope = host;
+
+        // 进程启动时刻
+        var processStartedAt = host.Clock.UtcNow;
+
+        host.Clock.Advance(TimeSpan.FromMinutes(1));
+        var request = await host.Approvals.RequestAsync(Tool, Kind, Payload, "改订单", projectId: projectId);
+        await host.Approvals.DecideAsync(request.Id, true, "张三");
+        await host.Approvals.TryConsumeAsync(request.Id, Tool, Kind, Payload, projectId);
+
+        Assert.Equal(0, await host.Approvals.ReconcileInterruptedAsync(processStartedAt));
+
+        var row = await host.Db.Approvals.AsNoTracking().FirstAsync(a => a.Id == request.Id);
+        Assert.Equal(ApprovalStatus.Executing, row.Status);
+        Assert.False(row.OutcomeUnknown);
+    }
+
+    [Fact]
+    public async Task 待审的审批不因重启被标成结果未知()
+    {
+        var (host, projectId) = await SetupAsync();
+        using var scope = host;
+
+        var request = await host.Approvals.RequestAsync(Tool, Kind, Payload, "改订单", projectId: projectId);
+
+        host.Clock.Advance(TimeSpan.FromMinutes(10));
+        Assert.Equal(0, await host.Approvals.ReconcileInterruptedAsync(host.Clock.UtcNow));
+
+        var row = await host.Db.Approvals.AsNoTracking().FirstAsync(a => a.Id == request.Id);
+        Assert.Equal(ApprovalStatus.Pending, row.Status);
+        Assert.False(row.OutcomeUnknown);
+    }
+
+    [Fact]
+    public async Task 结果未知的审批在列表里带得出来()
+    {
+        var (host, projectId) = await SetupAsync();
+        using var scope = host;
+
+        var request = await host.Approvals.RequestAsync(Tool, Kind, Payload, "改订单", projectId: projectId);
+        await host.Approvals.DecideAsync(request.Id, true, "张三");
+        await host.Approvals.TryConsumeAsync(request.Id, Tool, Kind, Payload, projectId);
+
+        host.Clock.Advance(TimeSpan.FromMinutes(10));
+        await host.Approvals.ReconcileInterruptedAsync(host.Clock.UtcNow);
+
+        var list = await host.Approvals.ListAsync();
+        var row = Assert.Single(list.Where(a => a.Id == request.Id));
+        Assert.True(row.OutcomeUnknown);
+    }
 }

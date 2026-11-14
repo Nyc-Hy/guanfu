@@ -154,6 +154,13 @@ else
                         {
                             <a class="wb-chip wb-chip-muted" href="/projects/@approval.ProjectId">@approval.ProjectName</a>
                         }
+                        @* 结果未知：服务重启把执行打断了，那次写操作可能已经生效。
+                           跟「执行失败」不是一回事，得让人先确认再让 agent 重来。 *@
+                        @if (approval.OutcomeUnknown)
+                        {
+                            <span class="wb-chip wb-chip-warn"
+                                  title="服务重启时这次执行被中断，写操作可能已经生效。请人工确认后再让 agent 重新申请。">结果未知</span>
+                        }
                         @if (ShowHistory)
                         {
                             <span class="wb-tag @StatusTagClass(status)">@StatusLabel(status)</span>
@@ -164,8 +171,9 @@ else
                         var wait = WaitInfoOf(approval);
                         <span class="wb-chip @wait.Css" title="@wait.Title">@wait.Text</span>
                     }
-                    else
+                    else if (!ShowHistory)
                     {
+                        // 历史页签的状态标签在上面那个 wb-tag 里，这里再画一遍就成了重复
                         <span class="wb-chip wb-chip-muted">@StatusLabel(status)</span>
                     }
                 </div>

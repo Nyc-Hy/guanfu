@@ -348,6 +348,16 @@ public class Approval
     /// 为空表示老数据，回收时退回 <see cref="DecidedAt"/> 判定。
     /// </summary>
     public DateTimeOffset? ExecutingStartedAt { get; set; }
+
+    /// <summary>
+    /// 执行结果未知（服务重启导致执行中断）。
+    ///
+    /// 这条审批在被中断时，那次写操作**可能已经生效**了 ——
+    /// 比如 git commit 已经写进仓库，只是执行方没来得及回写状态。
+    /// 标记出来，人在审批页上一眼能看见「这条的结果要人工确认」，
+    /// 别让它跟「执行失败」混为一谈：失败的可以重试，未知的要先查。
+    /// </summary>
+    public bool OutcomeUnknown { get; set; }
 }
 
 /// <summary>工具调用审计（append-only）。</summary>

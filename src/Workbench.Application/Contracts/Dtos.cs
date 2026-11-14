@@ -147,7 +147,12 @@ public sealed record ApprovalDto(
     string? TaskKey = null,
     string? TaskTitle = null,
     /// <summary>关联项目名。同理：项目给名字，给不出名字就空着。</summary>
-    string? ProjectName = null);
+    string? ProjectName = null,
+    /// <summary>
+    /// 执行结果未知（服务重启导致执行中断，那次写操作可能已经生效）。
+    /// 跟「执行失败」不是一回事：失败的可以重试，未知的要先人工确认。
+    /// </summary>
+    bool OutcomeUnknown = false);
 
 public sealed record ProjectContextDto(
     Guid Id,

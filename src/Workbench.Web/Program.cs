@@ -103,6 +103,10 @@ builder.Services.AddRateLimiter(options =>
     });
 });
 
+// 进程启动时刻。重启对账要用它找出「上次崩在执行中间」的审批 ——
+// 那些写操作可能已经生效了，状态却停在 Executing。
+var processStartedAt = DateTimeOffset.UtcNow;
+
 var app = builder.Build();
 
 // 先记下转发之前的真实对端地址：人工 token 的「本机引导」靠它判断请求是不是
@@ -160,7 +164,8 @@ app.MapGet("/health", () => Results.Ok(new { ok = true, status = "ok" }));
 // 初始化数据库（建表 + 默认工作区）
 using (var scope = app.Services.CreateScope())
 {
-    await scope.ServiceProvider.GetRequiredService<WorkbenchInitializer>().InitializeAsync();
+    await scope.ServiceProvider.GetRequiredService<WorkbenchInitializer>()
+        .InitializeAsync(processStartedAt);
 }
 
 // 启动横幅：人工 token 必须让人看得见 —— 敏感端点的钥匙不能只躺在文件里。

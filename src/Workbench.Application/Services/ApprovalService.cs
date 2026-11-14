@@ -64,6 +64,21 @@ public interface IApprovalService
     Task<int> ExpireOverdueAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// 对账「服务重启时被中断的执行」。
+    ///
+    /// <paramref name="processStartedAt"/> 是**本次进程**启动的时刻。
+    /// 凡是还在 Executing、且开始时间早于它的审批，都是上一个进程留下的 ——
+    /// 那次写操作可能已经生效了（commit 写进仓库了，只是没来得及回写状态），
+    /// 也可能压根没跑。系统判不出来，就别假装判得出来：
+    /// 标记成「结果未知」交人工确认，而不是悄悄重跑一遍。
+    ///
+    /// 返回被标记的条数。
+    /// </summary>
+    Task<int> ReconcileInterruptedAsync(
+        DateTimeOffset processStartedAt,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// 原子消费一条审批。
     ///
     /// 校验它批的确实是「这个工具 + 这个操作 + 这个项目」，而且没过期；
@@ -498,6 +513,31 @@ public sealed class ApprovalService(IAppDbContext db, IClock clock, INotifier? n
         return expiredPending + interrupted;
     }
 
+    public async Task<int> ReconcileInterruptedAsync(
+        DateTimeOffset processStartedAt,
+        CancellationToken cancellationToken = default)
+    {
+        var now = clock.UtcNow;
+
+        // 只认「开始时间早于本进程启动」的 Executing —— 那一定是上一个进程留下的。
+        // 本进程里正在跑的（开始时间晚于进程启动）不能碰。
+        // 老数据没有 ExecutingStartedAt，退回 DecidedAt 判定。
+        var interrupted = await db.Approvals
+            .Where(a => a.Status == ApprovalStatus.Executing
+                        && (a.ExecutingStartedAt ?? a.DecidedAt) != null
+                        && (a.ExecutingStartedAt ?? a.DecidedAt) < processStartedAt)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(a => a.Status, ApprovalStatus.Expired)
+                .SetProperty(a => a.OutcomeUnknown, true)
+                .SetProperty(a => a.DecidedAt, now)
+                .SetProperty(a => a.DecidedBy, "system")
+                .SetProperty(a => a.DecisionReason,
+                    "服务重启导致执行中断：这次写操作可能已经生效，结果未知，请人工确认后再重新申请"),
+                cancellationToken);
+
+        return interrupted;
+    }
+
     public async Task<ApprovalConsumeResult> TryConsumeAsync(
         Guid id,
         string toolName,
@@ -625,5 +665,6 @@ public sealed class ApprovalService(IAppDbContext db, IClock clock, INotifier? n
         a.DecidedByCredential,
         a.Task?.Key,
         a.Task?.Title,
-        a.Project?.Name);
+        a.Project?.Name,
+        a.OutcomeUnknown);
 }
