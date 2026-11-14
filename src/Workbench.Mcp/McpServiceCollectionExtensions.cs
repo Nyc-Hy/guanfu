@@ -22,6 +22,10 @@ public static class McpServiceCollectionExtensions
         services.AddSingleton<McpToolState>();
         services.AddScoped<IMcpToolService, McpToolSettingsService>();
 
+        // 当前会话：从 HTTP 头认出「这次调用属于哪个 agent / 项目 / 任务」。
+        // 绑上之后工具调用不用再自己背项目 GUID。
+        services.AddScoped<IAgentSessionAccessor, AgentSessionAccessor>();
+
         services.AddMcpServer(options =>
             {
                 options.ServerInfo = new Implementation

@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Workbench.Application;
 using Workbench.Application.Contracts;
@@ -21,8 +22,98 @@ public sealed class WorkbenchMcpTools(
     IApprovalService approvals,
     IToolAuditService audit,
     ITaskDependencyService dependencies,
-    IExportService exports)
+    IExportService exports,
+    IAppDbContext? db = null,
+    IProjectScopeResolver? scopeResolver = null,
+    IAgentSessionService? sessions = null,
+    IFileChangeService? fileChanges = null)
 {
+    /// <summary>
+    /// 算出这次调用算在哪个项目上。
+    ///
+    /// 优先用会话绑定的项目（agent 在哪个仓库干活就落到哪个项目），
+    /// 没有会话时才看调用方显式传的 projectId。两边都对不上就拒 ——
+    /// 不能让 agent 拿着 A 项目的会话去改 B 项目。
+    /// </summary>
+    private async Task<ProjectScope> ResolveScopeAsync(
+        Guid? projectId,
+        CancellationToken cancellationToken)
+    {
+        if (scopeResolver is not null)
+        {
+            return await scopeResolver.ResolveAsync(projectId, cancellationToken);
+        }
+
+        if (projectId is Guid pid)
+        {
+            return new ProjectScope(pid, string.Empty, null, null, null);
+        }
+
+        throw new WorkbenchException(
+            "当前调用没有绑定项目，也没有传 projectId。请先调用 workbench_bind_session。");
+    }
+
+    /// <summary>
+    /// 「项目本来就可以不指定」的工具用这个：解析不出就返回 null，调用方保持不过滤。
+    /// 显式传了 projectId 但跟会话冲突时仍然抛异常 —— 对账的规矩不能松。
+    /// </summary>
+    private async Task<Guid?> ResolveOptionalProjectIdAsync(
+        Guid? projectId,
+        CancellationToken cancellationToken)
+    {
+        if (scopeResolver is null)
+        {
+            return projectId;
+        }
+
+        var scope = await scopeResolver.ResolveOrNullAsync(projectId, cancellationToken);
+        return scope?.ProjectId;
+    }
+
+    /// <summary>
+    /// 任务 id 二选一：直接给 id，或者给编号（如 REQ-001）在会话绑定的项目里找。
+    ///
+    /// agent 只知道人嘴里的编号（「把 REQ-001 做了」），不知道数据库里的 GUID。
+    /// 逼它先查一次再传 GUID 是白折腾 —— 编号能直接落到任务上才对。
+    /// </summary>
+    private async Task<Guid> ResolveTaskIdAsync(
+        Guid? taskId,
+        string? taskKey,
+        CancellationToken cancellationToken)
+    {
+        if (taskId is Guid id)
+        {
+            return id;
+        }
+
+        if (string.IsNullOrWhiteSpace(taskKey))
+        {
+            throw new WorkbenchException("taskId 和 taskKey 至少要给一个。");
+        }
+
+        var scope = scopeResolver is null
+            ? null
+            : await scopeResolver.ResolveOrNullAsync(null, cancellationToken);
+
+        if (scope is null)
+        {
+            throw new WorkbenchException(
+                "只给了 taskKey，但当前调用没有绑定项目，无法确定在哪个项目里找这个编号。" +
+                "先调 workbench_bind_session 绑定你所在的仓库，或者直接给 taskId。");
+        }
+
+        var found = await tasks.ListAsync(
+            scope.ProjectId, null, null, null, taskKey, null, cancellationToken);
+
+        var task = found.FirstOrDefault();
+        if (task is null)
+        {
+            throw new WorkbenchException($"项目「{scope.ProjectName}」里没有编号为 {taskKey} 的任务。");
+        }
+
+        return task.Id;
+    }
+
     [McpServerTool(Name = "workbench_list_projects")]
     [Description("列出工作台里所有项目，含进度、任务统计、停滞标记与 git 分支")]
     public async Task<IReadOnlyList<ProjectSummaryDto>> ListProjectsAsync(CancellationToken cancellationToken)
@@ -30,8 +121,13 @@ public sealed class WorkbenchMcpTools(
 
     [McpServerTool(Name = "workbench_get_project")]
     [Description("获取单个项目的详情与配置")]
-    public async Task<ProjectSummaryDto?> GetProjectAsync(Guid projectId, CancellationToken cancellationToken)
-        => await projects.GetAsync(projectId, cancellationToken);
+    public async Task<ProjectSummaryDto?> GetProjectAsync(
+        Guid? projectId = null,
+        CancellationToken cancellationToken = default)
+    {
+        var scope = await ResolveScopeAsync(projectId, cancellationToken);
+        return await projects.GetAsync(scope.ProjectId, cancellationToken);
+    }
 
     [McpServerTool(Name = "workbench_create_task")]
     [Description(
@@ -41,8 +137,8 @@ public sealed class WorkbenchMcpTools(
         "key 不给就自动分配下一个。milestoneId 把任务挂到某个迭代版本（如「12月版本」）下。" +
         "branch 是绑定的开发分支 —— 绑了分支的任务，只有仓库当前就在那个分支上才会运行")]
     public async Task<TaskSummaryDto> CreateTaskAsync(
-        Guid projectId,
-        string title,
+        Guid? projectId = null,
+        string? title = null,
         string? description = null,
         Guid? parentTaskId = null,
         Guid? milestoneId = null,
@@ -51,6 +147,11 @@ public sealed class WorkbenchMcpTools(
         string? key = null,
         CancellationToken cancellationToken = default)
     {
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            throw new WorkbenchException("任务标题不能为空。");
+        }
+
         // 不给类型就是需求；给了但认不出来要报错，不能默默当需求处理
         var parsedType = TaskType.Requirement;
         if (!string.IsNullOrWhiteSpace(type) && !TaskTypes.TryParse(type, out parsedType))
@@ -59,8 +160,10 @@ public sealed class WorkbenchMcpTools(
                 $"未知任务类型: {type}。合法值: {string.Join("、", TaskTypes.Names)}");
         }
 
+        var scope = await ResolveScopeAsync(projectId, cancellationToken);
+
         return await tasks.CreateAsync(
-            projectId, title, description, parentTaskId, milestoneId, parsedType, branch, key, cancellationToken);
+            scope.ProjectId, title!, description, parentTaskId, milestoneId, parsedType, branch, key, cancellationToken);
     }
 
     [McpServerTool(Name = "workbench_list_tasks")]
@@ -85,9 +188,9 @@ public sealed class WorkbenchMcpTools(
         TaskStatus? parsed = null;
         if (!string.IsNullOrWhiteSpace(status))
         {
-            if (!Enum.TryParse<TaskStatus>(status, ignoreCase: true, out var value))
+            if (!UiText.TryParseStatus(status, out var value))
             {
-                throw new WorkbenchException($"未知状态: {status}。合法值: {string.Join(", ", Enum.GetNames<TaskStatus>())}");
+                throw new WorkbenchException($"未知状态「{status}」。合法值: {string.Join(", ", Enum.GetNames<TaskStatus>())}");
             }
 
             parsed = value;
@@ -105,8 +208,11 @@ public sealed class WorkbenchMcpTools(
             parsedType = value;
         }
 
+        // 有会话就按会话绑定的项目过滤（这正是绑定的价值）；没会话时保持「列全部」。
+        var effectiveProjectId = await ResolveOptionalProjectIdAsync(projectId, cancellationToken);
+
         return await tasks.ListAsync(
-            projectId, parsed, keyword, milestoneId, key, parsedType, cancellationToken,
+            effectiveProjectId, parsed, keyword, milestoneId, key, parsedType, cancellationToken,
             branch, limit, offset, includeArchived);
     }
 
@@ -140,21 +246,24 @@ public sealed class WorkbenchMcpTools(
         "按编号找任务（如 REQ-001，或人嘴里说的 req001 —— 连字符可有可无）。" +
         "人说话是「看下 req001」，agent 得能落到具体任务上。找不到时 ok=false 且 error 说明。")]
     public async Task<TaskLookupResult> GetTaskByKeyAsync(
-        Guid projectId,
-        string key,
+        Guid? projectId = null,
+        string? key = null,
         CancellationToken cancellationToken = default)
     {
-        var found = await tasks.ListAsync(projectId, null, null, null, key, null, cancellationToken);
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            throw new WorkbenchException("任务编号不能为空。");
+        }
+
+        var scope = await ResolveScopeAsync(projectId, cancellationToken);
+
+        var found = await tasks.ListAsync(scope.ProjectId, null, null, null, key, null, cancellationToken);
 
         if (found.Count == 0)
         {
-            // 把项目里现有的编号列出来，agent 能自己改对，而不是卡在这
-            var available = await tasks.ListAsync(projectId, null, null, null, null, null, cancellationToken);
-            var keys = available
-                .Select(t => t.Key)
-                .Where(k => !string.IsNullOrWhiteSpace(k))
-                .Select(k => k!)
-                .ToList();
+            // 把项目里现有的编号列出来，agent 能自己改对，而不是卡在这。
+            // 用 SQL 粗筛（只取 Key 列 + 字母前缀 Like），不再把整个项目的任务全量加载进内存。
+            var keys = await ListAvailableKeysAsync(scope.ProjectId, key!, cancellationToken);
 
             return TaskLookupResult.Fail(
                 $"项目里没有编号为 {key} 的任务。", keys);
@@ -163,22 +272,82 @@ public sealed class WorkbenchMcpTools(
         return new TaskLookupResult(true, null, found);
     }
 
+    /// <summary>
+    /// 找不到编号时，列出可供纠正的现有编号。
+    /// 有 db 就走 SQL 粗筛：按编号的字母前缀（REQ / BUG / OPT）过滤，只 Select Key 列，
+    /// 避免「为了列几个编号把全项目任务连同 DTO 全量 ToList」的开销。
+    /// 没有 db（旧宿主）退回原来的全量列举。
+    /// </summary>
+    private async Task<IReadOnlyList<string>> ListAvailableKeysAsync(
+        Guid projectId, string key, CancellationToken cancellationToken)
+    {
+        if (db is not null)
+        {
+            var prefix = new string(key.TakeWhile(char.IsLetter).ToArray()).ToUpperInvariant();
+
+            var query = db.Tasks.AsNoTracking()
+                .Where(t => t.ProjectId == projectId && t.Key != null);
+
+            if (prefix.Length > 0)
+            {
+                query = query.Where(t => t.Key!.StartsWith(prefix));
+            }
+
+            return await query
+                .Select(t => t.Key!)
+                .OrderBy(k => k)
+                .ToListAsync(cancellationToken);
+        }
+
+        var available = await tasks.ListAsync(projectId, null, null, null, null, null, cancellationToken);
+        return available
+            .Select(t => t.Key)
+            .Where(k => !string.IsNullOrWhiteSpace(k))
+            .Select(k => k!)
+            .ToList();
+    }
+
     [McpServerTool(Name = "workbench_claim_task")]
-    [Description("领取一个待认领任务，带租约；已被他人持有且租约未过期时返回 ok=false 而不是报错")]
+    [Description(
+        "领取一个待认领任务，带租约。taskId 不给就用 taskKey（如 REQ-001）——在会话绑定的项目里找；" +
+        "agentId 不给就用当前会话的 agent。已被他人持有且租约未过期时返回 ok=false 而不是报错。" +
+        "认领成功后任务自动挂到本次会话上，之后的调用都归属到这个任务。")]
     public async Task<ClaimResult> ClaimTaskAsync(
-        Guid taskId,
-        string agentId,
+        Guid? taskId = null,
+        string? agentId = null,
         int leaseMinutes = 30,
+        string? taskKey = null,
         CancellationToken cancellationToken = default)
     {
         try
         {
-            var task = await tasks.ClaimAsync(taskId, agentId, leaseMinutes, cancellationToken);
+            var scope = scopeResolver is null
+                ? null
+                : await scopeResolver.ResolveOrNullAsync(null, cancellationToken);
+
+            var resolvedId = await ResolveTaskIdAsync(taskId, taskKey, cancellationToken);
+
+            var resolvedAgentId = agentId ?? scope?.AgentId;
+            if (string.IsNullOrWhiteSpace(resolvedAgentId))
+            {
+                throw new WorkbenchException(
+                    "agentId 不能为空：当前没有会话可以继承 agent 身份，请显式传 agentId。");
+            }
+
+            var task = await tasks.ClaimAsync(resolvedId, resolvedAgentId, leaseMinutes, cancellationToken);
+
+            // 认领成功 → 任务挂到本次会话上。之后这个会话的所有调用都自动归属这个任务，
+            // 审计与事件账本不用 agent 自己填 taskId。
+            if (scope?.SessionId is Guid sessionId && sessions is not null)
+            {
+                await sessions.AttachTaskAsync(sessionId, task.Id, cancellationToken);
+            }
+
             return new ClaimResult(true, task, null, null);
         }
         catch (WorkbenchException ex)
         {
-            var current = await tasks.GetAsync(taskId, cancellationToken);
+            var current = taskId is Guid id ? await tasks.GetAsync(id, cancellationToken) : null;
             return new ClaimResult(false, current, ex.Message, current?.ClaimedBy);
         }
     }
@@ -186,12 +355,17 @@ public sealed class WorkbenchMcpTools(
     [McpServerTool(Name = "workbench_get_context")]
     [Description(
         "一次性取回干活所需的全部上下文：任务信息、关联文档、已有计划、产物、最近事件、当前允许的状态迁移、git 分支与 HEAD。" +
-        "先调这个，再决定做什么，避免反复零散调用。")]
+        "先调这个，再决定做什么，避免反复零散调用。" +
+        "taskId 不给就用 taskKey（如 REQ-001）——在会话绑定的项目里找。")]
     public async Task<TaskContextDto> GetContextAsync(
-        Guid taskId,
+        Guid? taskId = null,
         int eventLimit = 20,
+        string? taskKey = null,
         CancellationToken cancellationToken = default)
-        => await tasks.GetContextAsync(taskId, eventLimit, cancellationToken);
+    {
+        var id = await ResolveTaskIdAsync(taskId, taskKey, cancellationToken);
+        return await tasks.GetContextAsync(id, eventLimit, cancellationToken);
+    }
 
     [McpServerTool(Name = "workbench_set_plan")]
     [Description("回写需求理解与开发计划（由 agent 生成，工作台只存不生成）")]
@@ -221,10 +395,10 @@ public sealed class WorkbenchMcpTools(
         string source = "Agent",
         CancellationToken cancellationToken = default)
     {
-        if (!Enum.TryParse<TaskStatus>(status, ignoreCase: true, out var target))
+        if (!UiText.TryParseStatus(status, out var target))
         {
             return StatusChangeResult.Failed(
-                $"未知状态: {status}",
+                $"未知状态「{status}」。合法值: {string.Join(", ", Enum.GetNames<TaskStatus>())}",
                 Enum.GetNames<TaskStatus>().ToList());
         }
 
@@ -235,6 +409,14 @@ public sealed class WorkbenchMcpTools(
         try
         {
             var task = await tasks.ChangeStatusAsync(taskId, target, note, eventSource, actor, cancellationToken);
+
+            // 进评审之前，把「已产出但还没提交」的那部分也采下来。
+            // 不然任务看起来像是啥也没干 —— 评审看到的产出清单是空的。
+            if (target == TaskStatus.Review)
+            {
+                await CaptureWorkingTreeFilesAsync(taskId, actor, cancellationToken);
+            }
+
             return StatusChangeResult.Succeeded(task);
         }
         catch (InvalidStatusTransitionException ex)
@@ -245,6 +427,82 @@ public sealed class WorkbenchMcpTools(
         catch (WorkbenchException ex)
         {
             return StatusChangeResult.Failed(ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// 把工作区里改了但还没提交的文件采下来，落到任务名下。
+    ///
+    /// 采集失败（项目没配仓库 / 读不到 git）**不抛异常** ——
+    /// 状态已经推进成功了，不能因为「顺手记个流水」失败就把 agent 的活带崩。
+    /// </summary>
+    private async Task CaptureWorkingTreeFilesAsync(
+        Guid taskId,
+        string? actor,
+        CancellationToken cancellationToken)
+    {
+        if (fileChanges is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var task = await tasks.GetAsync(taskId, cancellationToken);
+            if (task is null)
+            {
+                return;
+            }
+
+            var config = await projects.GetConfigAsync(task.ProjectId, cancellationToken);
+            if (string.IsNullOrWhiteSpace(config.RepoPath))
+            {
+                // 项目没配仓库 —— 没有「产出文件」这回事
+                return;
+            }
+
+            // 会话能查到就记上，审计里能顺着会话查到人。
+            // 查不到也不影响采集 —— 会话只是「附加信息」，不是采集的前提。
+            var sessionId = await ResolveSessionIdAsync(cancellationToken);
+
+            await fileChanges.CaptureWorkingTreeAsync(
+                taskId,
+                task.ProjectId,
+                config.RepoPath!,
+                sessionId,
+                actor,
+                cancellationToken);
+        }
+        catch (Exception)
+        {
+            // 采集是「锦上添花」，失败就算了 —— 状态已经推进。
+            //
+            // 这里连取消也不往上抛：状态迁移已经成功了，再抛异常的话工具会返回
+            // ok=false，agent 会以为迁移失败而重试 —— 那是真的把事情搞坏。
+        }
+    }
+
+    /// <summary>
+    /// 当前调用属于哪个会话。查不到就返回 null。
+    ///
+    /// 会话只是「附加信息」（顺着它能查到是谁干的），不是采集的前提 ——
+    /// 所以这里自己吞异常，不让它影响采集。
+    /// </summary>
+    private async Task<Guid?> ResolveSessionIdAsync(CancellationToken cancellationToken)
+    {
+        if (scopeResolver is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            var scope = await scopeResolver.ResolveOrNullAsync(null, cancellationToken);
+            return scope?.SessionId;
+        }
+        catch (Exception)
+        {
+            return null;
         }
     }
 
@@ -316,7 +574,29 @@ public sealed class WorkbenchMcpTools(
             parsed = value;
         }
 
-        return await approvals.ListAsync(parsed, projectId, cancellationToken);
+        // projectId 本来就是可选筛选项：绑了会话就按会话的项目过滤，没会话就不过滤（全列）。
+        var effectiveProjectId = await ResolveOptionalProjectIdAsync(projectId, cancellationToken);
+
+        return await approvals.ListAsync(parsed, effectiveProjectId, cancellationToken);
+    }
+
+    [McpServerTool(Name = "workbench_verify_audit_chain")]
+    [Description(
+        "验审计哈希链：检查工具调用审计有没有被人在数据库文件层面改过。" +
+        "链是每条审计串起来的哈希 —— 改一条内容、删一条记录，链都会断，" +
+        "这个工具能把断在哪一条指出来。")]
+    public async Task<AuditChainResult> VerifyAuditChainAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var report = await audit.VerifyChainAsync(cancellationToken);
+
+        return new AuditChainResult(
+            true,
+            report.Intact,
+            report.Total,
+            report.Chained,
+            report.FirstBrokenId,
+            report.Intact ? null : report.Reason);
     }
 
     [McpServerTool(Name = "workbench_list_audit")]
@@ -329,7 +609,12 @@ public sealed class WorkbenchMcpTools(
         Guid? projectId = null,
         int limit = 100,
         CancellationToken cancellationToken = default)
-        => await audit.ListAsync(toolName, taskId, projectId, limit, cancellationToken);
+    {
+        // projectId 本来就是可选筛选项：绑了会话就按会话的项目过滤，没会话就不过滤（全列）。
+        var effectiveProjectId = await ResolveOptionalProjectIdAsync(projectId, cancellationToken);
+
+        return await audit.ListAsync(toolName, taskId, effectiveProjectId, limit, cancellationToken);
+    }
 
     [McpServerTool(Name = "workbench_get_approval")]
     [Description("获取单个审批请求的详情（含 SQL 原文）")]
@@ -343,6 +628,28 @@ public sealed class WorkbenchMcpTools(
         int timeoutSeconds = 60,
         CancellationToken cancellationToken = default)
         => await approvals.AwaitAsync(approvalId, timeoutSeconds, cancellationToken);
+
+    [McpServerTool(Name = "approval_revoke")]
+    [Description(
+        "撤销一条还没执行的审批（Pending / Approved 可撤；已 Executing / Executed 的撤不回——操作已落地）。" +
+        "误批了、或情况变了不想让 agent 拿这条审批续跑时用它。reason 会记进审批的撤销原因。" +
+        "返回 ok=true 与撤销后的审批；失败时 error 说明原因（审批不存在 / 已执行 / 刚被占用），据此判断下一步。")]
+    public async Task<ApprovalRevokeResult> RevokeApprovalAsync(
+        Guid approvalId,
+        string? reason = null,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var dto = await approvals.RevokeAsync(approvalId, reason, cancellationToken);
+            return new ApprovalRevokeResult(true, dto);
+        }
+        catch (Exception ex)
+        {
+            // 不抛异常：MCP 会把异常吞成一句泛化信息，agent 就看不到「为什么撤不掉」了。
+            return new ApprovalRevokeResult(false, null, ex.Message);
+        }
+    }
 
     [McpServerTool(Name = "workbench_assign_task")]
     [Description(
@@ -409,44 +716,47 @@ public sealed class WorkbenchMcpTools(
     }
 
     [McpServerTool(Name = "workbench_remove_task_dependency")]
-    [Description("移除一条任务依赖（两个方向都试）。")]
-    public async Task<bool> RemoveDependencyAsync(
+    [Description("移除一条任务依赖（两个方向都试）。返回 ok 与 removed；依赖不存在时 ok=false 且 error 给出原因。")]
+    public async Task<DependencyRemoveResult> RemoveDependencyAsync(
         Guid taskId,
         Guid dependsOnTaskId,
         CancellationToken cancellationToken = default)
     {
-        await dependencies.RemoveAsync(taskId, dependsOnTaskId, cancellationToken);
-        return true;
+        try
+        {
+            await dependencies.RemoveAsync(taskId, dependsOnTaskId, cancellationToken);
+            return new DependencyRemoveResult(true, true);
+        }
+        catch (Exception ex)
+        {
+            return new DependencyRemoveResult(false, false, ex.Message);
+        }
     }
 
     [McpServerTool(Name = "workbench_export_events")]
     [Description(
         "导出任务的事件流水（账本）。format 传 markdown（默认）/ csv / json。" +
         "format=json 时返回结构化对象，其余返回文本。")]
-    public async Task<object> ExportEventsAsync(
+    public async Task<ExportToolResult> ExportEventsAsync(
         Guid taskId,
         string format = "markdown",
         CancellationToken cancellationToken = default)
     {
         var text = await exports.ExportTaskEventsAsync(taskId, format, cancellationToken);
-
-        return format.Equals("json", StringComparison.OrdinalIgnoreCase)
-            ? new { ok = true, format = "json", content = text }
-            : new { ok = true, format, content = text };
+        return new ExportToolResult(true, format, text);
     }
 
     [McpServerTool(Name = "workbench_export_review")]
     [Description(
         "导出评审报告。round 不给就是最新一轮。format 传 markdown（默认）/ json。")]
-    public async Task<object> ExportReviewAsync(
+    public async Task<ExportToolResult> ExportReviewAsync(
         Guid taskId,
         int? round = null,
         string format = "markdown",
         CancellationToken cancellationToken = default)
     {
         var text = await exports.ExportReviewReportAsync(taskId, round, format, cancellationToken);
-
-        return new { ok = true, format, round, content = text };
+        return new ExportToolResult(true, format, text, round);
     }
 }
 
@@ -486,3 +796,36 @@ public sealed record TaskLookupResult(
     public static TaskLookupResult Fail(string error, IReadOnlyList<string>? available = null) =>
         new(false, error, null, available);
 }
+
+/// <summary>撤销审批的结果。撤不掉时不抛异常，带上原因让 agent 能判断下一步。</summary>
+public sealed record ApprovalRevokeResult(
+    bool Ok,
+    ApprovalDto? Approval,
+    string? Error = null);
+
+/// <summary>
+/// 移除依赖的结果。
+///
+/// 原来这里返回裸 bool —— agent 拿到 false 分不清是「没删掉」还是「压根没有这条依赖」。
+/// </summary>
+public sealed record DependencyRemoveResult(
+    bool Ok,
+    bool Removed,
+    string? Error = null);
+
+/// <summary>导出结果。格式与内容都带回来，agent 不用再猜拿到的是哪种形态。</summary>
+public sealed record ExportToolResult(
+    bool Ok,
+    string Format,
+    string Content,
+    int? Round = null,
+    string? Error = null);
+
+/// <summary>审计哈希链的校验结果。</summary>
+public sealed record AuditChainResult(
+    bool Ok,
+    bool Intact,
+    int Total,
+    int Chained,
+    Guid? FirstBrokenId,
+    string? Error = null);
