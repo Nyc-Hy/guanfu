@@ -1,0 +1,50 @@
+name: verify
+
+# 每次推送与每个 PR 都跑一遍「编译 → 单测 → 端到端」。
+#
+# 为什么要进 CI：本机全绿不等于交付前全绿。这条流水线只做一件事 ——
+# 让「验收通过」这句话有外部可复现的证据，而不是某个人的本机状态。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: 取代码
+        uses: actions/checkout@v4
+
+      - name: 装 .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: 装 python3（端到端脚本用）
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # 端到端的会话链路会真的提交一次 git commit。
+      # CI 里没有全局身份，提交会失败 —— 先把身份定死。
+      - name: 定 git 身份
+        run: |
+          git config --global user.email "ci@workbench.local"
+          git config --global user.name "Workbench CI"
+
+      # 一键验收：编译 → 单测 → 端到端，末尾给总账。
+      # 没有仓库自带的隔离 SDK 时，脚本会用 PATH 上的 dotnet（版本已固定在 8.0.x）。
+      - name: 一键验收
+        run: ./tests/verify.sh
+
+      - name: 上传端到端明细
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-log
+          path: /tmp/wb-verify-e2e.*
+          if-no-files-found: ignore

@@ -211,6 +211,10 @@ dotnet run --project src/Workbench.Cli -- --help # CLI
 ./tests/e2e/run.sh                              # 端到端验证（自起临时服务，跑完即收）
 ```
 
+CI（`.github/workflows/verify.yml`）每次推送与 PR 都跑 `verify.sh`。
+仓库里没有 `.dotnet/` 时脚本会退回用 PATH 上的 dotnet（CI 里版本固定在 8.0.x）——
+**别把 SDK 重新塞回仓库**。
+
 端到端有**六条链路**，都在 `tests/e2e/` 下，`run.sh` 一次跑完：
 
 | 链路 | 脚本 | 验什么 |

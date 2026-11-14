@@ -13,9 +13,15 @@ HOME_DIR="$(mktemp -d /tmp/wb-e2e-home.XXXXXX)"
 LOG="$HOME_DIR/server.log"
 
 if [[ ! -x "$DOTNET" ]]; then
-  echo "找不到隔离 SDK: $DOTNET" >&2
-  echo "先跑: curl -sSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 8.0 --quality ga --install-dir \"$ROOT/.dotnet\"" >&2
-  exit 1
+  # CI 里没有仓库自带的隔离 SDK，退回用 PATH 上的 dotnet
+  # （CI 把版本固定在 8.0.x，与目标框架一致）。
+  if command -v dotnet >/dev/null 2>&1; then
+    DOTNET="$(command -v dotnet)"
+  else
+    echo "找不到 dotnet：$DOTNET 不存在，PATH 上也没有。" >&2
+    echo "先跑: curl -sSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 8.0 --quality ga --install-dir \"$ROOT/.dotnet\"" >&2
+    exit 1
+  fi
 fi
 
 cleanup() {
