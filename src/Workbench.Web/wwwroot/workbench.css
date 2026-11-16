@@ -269,6 +269,18 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--wb-accent); }
 
 .wb-side-link .wb-badge { margin-left: auto; margin-right: 0; }
 
+/* 新建项目的入口：虚线框，跟已有的项目区分开 —— 它是个动作，不是项目 */
+.wb-side-link-new {
+    margin-top: var(--wb-gap-1);
+    border: 1px dashed var(--wb-border-strong);
+    color: var(--wb-muted);
+}
+.wb-side-link-new:hover {
+    color: var(--wb-accent);
+    border-color: var(--wb-accent-line);
+    background: var(--wb-accent-soft);
+}
+
 .wb-side-empty {
     padding: var(--wb-gap-1) var(--wb-gap-2);
     font-size: var(--wb-fs-sm);
@@ -785,6 +797,7 @@ input[type="file"]::file-selector-button:hover {
 .wb-tag-ok { color: var(--wb-ok); border-color: var(--wb-ok); background: var(--wb-ok-soft); }
 .wb-tag-warn { color: var(--wb-warn); border-color: var(--wb-warn); background: var(--wb-warn-soft); }
 .wb-tag-danger { color: var(--wb-danger); border-color: var(--wb-danger); background: var(--wb-danger-soft); }
+.wb-tag-info { color: var(--wb-accent); border-color: var(--wb-accent-line); background: var(--wb-accent-soft); }
 
 .wb-chip {
     display: inline-flex;
@@ -824,12 +837,6 @@ a.wb-chip:hover { text-decoration: none; border-color: var(--wb-accent-line); ba
 /* 搜索结果的任务表：首列是编号，短得很。
    跟着 .wb-task-table 的 60% 走会把标题挤到天边。 */
 .wb-hit-table th:first-child, .wb-hit-table td:first-child { width: 120px; }
-
-/* 总览页的项目表：项目名 / 绑定状态 / 任务数 / 路径 / 描述。
-   路径不许折行 —— 折了就成一条竖杠；描述给个下限，不然一个字一行。 */
-.wb-project-table th:first-child, .wb-project-table td:first-child { width: 26%; }
-.wb-project-table .wb-col-path { white-space: nowrap; }
-.wb-project-table .wb-col-desc { min-width: 150px; }
 
 /* 任务状态的展示色。映射在 UiText.StatusClass —— 各页面别各写一套。
    放在 .wb-chip 之后：同特异度下后者才生效，放前面会被 .wb-chip 的颜色盖掉。 */
@@ -1061,26 +1068,119 @@ a.wb-chip:hover { text-decoration: none; border-color: var(--wb-accent-line); ba
     box-shadow: 0 0 0 3px var(--wb-accent-soft);
 }
 
-/* ---------- 17. 度量 ---------- */
+/* ---------- 17. 项目仪表盘 ---------- */
 
-.wb-metric-grid {
+/* 全工作台汇总：一条数字带，扫一眼就知道整体什么状态。
+   每格自己带边框 —— 靠 1px 间隙拼成整条的话，最后一行没填满会露出底色。 */
+.wb-dash-summary {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-    gap: var(--wb-gap-3);
-    margin: var(--wb-gap-3) 0;
+    grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+    gap: var(--wb-gap-2);
+    margin-bottom: var(--wb-gap-4);
 }
-
-.wb-metric {
-    background: var(--wb-bg);
+.wb-dash-summary-item {
+    background: var(--wb-surface);
     border: 1px solid var(--wb-border);
-    border-radius: var(--wb-r);
-    padding: var(--wb-gap-3);
+    border-radius: var(--wb-r-sm);
+    padding: var(--wb-gap-3) var(--wb-gap-4);
     display: flex;
     flex-direction: column;
-    gap: var(--wb-gap-1);
+    gap: 2px;
+    min-width: 0;
 }
-.wb-metric-label { font-size: var(--wb-fs-xs); color: var(--wb-muted); }
-.wb-metric-value { font-size: var(--wb-fs-xl); font-weight: 600; line-height: 1.2; }
+.wb-dash-summary-label {
+    font-size: var(--wb-fs-xs);
+    color: var(--wb-muted);
+    white-space: nowrap;
+}
+.wb-dash-summary-value {
+    font-size: var(--wb-fs-xl);
+    font-weight: 600;
+    line-height: 1.15;
+    font-variant-numeric: tabular-nums;
+}
+/* 有数才染色 —— 待审 / 阻塞 / 停滞是零的时候不值得多看一眼 */
+.wb-dash-summary-warn .wb-dash-summary-value { color: var(--wb-warn); }
+.wb-dash-summary-danger .wb-dash-summary-value { color: var(--wb-danger); }
+
+/* 一个项目一块 */
+.wb-dash-project { margin-bottom: var(--wb-gap-4); }
+
+.wb-dash-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--wb-gap-3);
+    flex-wrap: wrap;
+}
+.wb-dash-name {
+    display: flex;
+    align-items: center;
+    gap: var(--wb-gap-2);
+    flex-wrap: wrap;
+    min-width: 0;
+}
+.wb-dash-name .wb-task-title { font-size: var(--wb-fs-lg); }
+.wb-dash-percent {
+    font-size: 26px;
+    font-weight: 600;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    color: var(--wb-text);
+}
+
+/* 细进度条：数字给准确度，条给趋势 */
+.wb-dash-bar {
+    height: 6px;
+    margin: var(--wb-gap-3) 0;
+    background: var(--wb-surface-3);
+    border-radius: var(--wb-r-full);
+    overflow: hidden;
+}
+.wb-dash-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--wb-accent), var(--wb-ok));
+    border-radius: var(--wb-r-full);
+    transition: width .3s ease;
+}
+
+/* 指标格 */
+.wb-dash-metrics {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: var(--wb-gap-2);
+}
+.wb-dash-metric {
+    background: var(--wb-surface-2);
+    border: 1px solid var(--wb-border);
+    border-radius: var(--wb-r-sm);
+    padding: var(--wb-gap-2) var(--wb-gap-3);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+.wb-dash-metric-label {
+    font-size: var(--wb-fs-xs);
+    color: var(--wb-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.wb-dash-metric-value {
+    font-size: var(--wb-fs-lg);
+    font-weight: 600;
+    line-height: 1.25;
+    font-variant-numeric: tabular-nums;
+}
+
+/* 小节标题（状态分布 / 流速） */
+.wb-dash-sub {
+    font-size: var(--wb-fs-xs);
+    color: var(--wb-faint);
+    letter-spacing: .05em;
+    margin: var(--wb-gap-4) 0 var(--wb-gap-2);
+}
 
 .wb-bars {
     display: flex;
@@ -1089,24 +1189,19 @@ a.wb-chip:hover { text-decoration: none; border-color: var(--wb-accent-line); ba
     height: 140px;
     padding: var(--wb-gap-2) 0 0;
 }
+/* 仪表盘里的流速图矮一截：它是一眼扫的，不是拿来量高度的 */
+.wb-bars-compact { height: 96px; gap: var(--wb-gap-2); }
 .wb-bar-col { display: flex; flex-direction: column; align-items: center; gap: var(--wb-gap-1); flex: 1; }
 .wb-bar {
     width: 100%;
     max-width: 44px;
-    background: linear-gradient(180deg, var(--wb-accent), rgba(91, 141, 239, .3));
+    background: linear-gradient(180deg, var(--wb-accent), var(--wb-accent-line));
     border-radius: var(--wb-r-xs) var(--wb-r-xs) 0 0;
 }
 /* 这一周是 0：画一条灰底条，别拿蓝色渐变假装有数据 */
 .wb-bar-zero { background: var(--wb-border-strong); border-radius: var(--wb-r-xs); }
 .wb-bar-label { font-size: var(--wb-fs-xs); color: var(--wb-text); }
 .wb-bar-week { font-size: 10px; color: var(--wb-faint); }
-
-/* 项目表里展开的体检行：内容比别行长，给个底色跟上面那行分开 */
-.wb-metric-row > td {
-    background: var(--wb-surface-2);
-    padding: var(--wb-gap-4) var(--wb-gap-3);
-}
-.wb-metric-row .wb-metric-grid { margin-top: 0; }
 
 /* ---------- 18. 提示条 ---------- */
 

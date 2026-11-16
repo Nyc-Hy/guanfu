@@ -51,6 +51,9 @@
                            title="@project.Name">@project.Name</a>
                     }
                 }
+                @* 建项目的入口挨着项目列表 —— 总览页现在是仪表盘，不摆表单了。 *@
+                <a class="wb-side-link wb-side-link-new" href="/?tab=projects&amp;new=1"
+                   @onclick="GoNewProject" @onclick:preventDefault="true">＋ 新建项目</a>
             </div>
 
             <div class="wb-side-group">
@@ -194,6 +197,12 @@
     }
 
     /// <summary>
+    /// 跳到总览页的「项目」页签并打开新建表单。
+    /// preventDefault 挡掉了 href 的整页跳转 —— 走应用内导航，不用重连电路。
+    /// </summary>
+    private void GoNewProject() => Nav.NavigateTo("/?tab=projects&new=1");
+
+    /// <summary>
     /// 当前路由是不是这一项（用于侧边栏高亮）。
     /// 项目页是 /projects/{id}，按前缀匹配；根路径要精确匹配。
     /// </summary>
@@ -201,9 +210,16 @@
     {
         var relative = Nav.ToBaseRelativePath(Nav.Uri);
 
+        // 查询串不算路径 —— 「/?tab=projects」还是总览页，不能因为带参数就不高亮。
+        var mark = relative.IndexOf('?');
+        if (mark >= 0)
+        {
+            relative = relative[..mark];
+        }
+
         if (path == "/")
         {
-            return string.IsNullOrEmpty(relative);
+            return relative.Length == 0;
         }
 
         return relative.StartsWith(path.TrimStart('/'), StringComparison.OrdinalIgnoreCase);

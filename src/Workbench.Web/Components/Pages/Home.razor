@@ -12,7 +12,7 @@
         <h1>总览</h1>
         <p class="wb-muted">
             工作台做三件事：<strong>追踪任务进度</strong>、<strong>记录开发产出的文件</strong>、
-            <strong>留下数据库调用的记录</strong>。「现在」是此刻的局面，「项目」是每个项目的体检。
+            <strong>留下数据库调用的记录</strong>。「现在」是此刻的局面，「项目」是每个项目的体检仪表盘。
         </p>
     </div>
     <div class="wb-form-row">
@@ -48,7 +48,7 @@ else
                 <ol class="wb-doc-list">
                     <li>
                         <strong>建个项目，绑上你的本地仓库</strong><br />
-                        切到「项目」页签新建，填名字和仓库路径（绝对路径，如
+                        侧边栏「项目」组里点「＋ 新建项目」，填名字和仓库路径（绝对路径，如
                         <code>/Users/you/code/your-repo</code>）。绑了之后，
                         agent 在这个目录里干活就会自动落到本项目 —— 不用再自己传项目 ID。
                     </li>
@@ -200,157 +200,168 @@ else
     }
     else
     {
-        <!-- 项目：清单 + 每个项目的体检 -->
-        <div class="wb-panel">
-            <div class="wb-card-head">
-                <h3>项目</h3>
-                <button class="wb-btn wb-btn-primary" @onclick="ToggleCreate">@(ShowCreate ? "取消" : "新建项目")</button>
+        @* 建项目的表单从侧边栏「＋ 新建项目」进来（?new=1）。
+           仪表盘本身只展示数据 —— 管理入口归侧边栏。 *@
+        @if (ShowCreate)
+        {
+            <div class="wb-panel wb-my-3">
+                <div class="wb-card-head">
+                    <h3>新建项目</h3>
+                    <button class="wb-btn" @onclick="CancelCreate">取消</button>
+                </div>
+                <div class="wb-form-row">
+                    <input class="wb-input" placeholder="项目名称" @bind="NewName" @bind:event="oninput" />
+                    <input class="wb-input" placeholder="描述（可选）" @bind="NewDescription" @bind:event="oninput" />
+                </div>
+                <div class="wb-form-row">
+                    <input class="wb-input" placeholder="本地仓库路径（绝对路径，如 /Users/you/code/your-repo）"
+                           @bind="NewRepoPath" @bind:event="oninput" />
+                </div>
+                <p class="wb-muted">
+                    填了仓库路径，agent 在这个目录里干活就会自动落到本项目 —— 不用再自己传项目 ID。
+                </p>
+                <button class="wb-btn wb-btn-primary" disabled="@(string.IsNullOrWhiteSpace(NewName) || Creating)" @onclick="CreateAsync">创建</button>
+                <ErrorNotice Error="@CreateError" />
+            </div>
+        }
+
+        @if (Data is null || Data.Projects.Count == 0)
+        {
+            <div class="wb-empty">还没有项目。侧边栏「项目」组里可以新建一个。</div>
+        }
+        else
+        {
+            @* 一眼看全局：项目、任务、在跑的、在等的、出问题的。
+               只汇总计数 —— 完成率是加权口径，跨项目相加会漂。 *@
+            <div class="wb-dash-summary">
+                <div class="wb-dash-summary-item">
+                    <span class="wb-dash-summary-label">项目</span>
+                    <span class="wb-dash-summary-value">@Data.Projects.Count</span>
+                </div>
+                <div class="wb-dash-summary-item">
+                    <span class="wb-dash-summary-label">任务</span>
+                    <span class="wb-dash-summary-value">@SumTasks</span>
+                </div>
+                <div class="wb-dash-summary-item">
+                    <span class="wb-dash-summary-label">进行中</span>
+                    <span class="wb-dash-summary-value">@SumActive</span>
+                </div>
+                <div class="wb-dash-summary-item@(SumApprovals > 0 ? " wb-dash-summary-warn" : "")">
+                    <span class="wb-dash-summary-label">待审</span>
+                    <span class="wb-dash-summary-value">@SumApprovals</span>
+                </div>
+                <div class="wb-dash-summary-item@(SumBlocked > 0 ? " wb-dash-summary-danger" : "")">
+                    <span class="wb-dash-summary-label">阻塞</span>
+                    <span class="wb-dash-summary-value">@SumBlocked</span>
+                </div>
+                <div class="wb-dash-summary-item@(SumStale > 0 ? " wb-dash-summary-warn" : "")">
+                    <span class="wb-dash-summary-label">停滞</span>
+                    <span class="wb-dash-summary-value">@SumStale</span>
+                </div>
             </div>
 
-            @if (ShowCreate)
+            @foreach (var project in Data.Projects)
             {
-                <div class="wb-my-3">
-                    <div class="wb-form-row">
-                        <input class="wb-input" placeholder="项目名称" @bind="NewName" @bind:event="oninput" />
-                        <input class="wb-input" placeholder="描述（可选）" @bind="NewDescription" @bind:event="oninput" />
-                    </div>
-                    <div class="wb-form-row">
-                        <input class="wb-input" placeholder="本地仓库路径（绝对路径，如 /Users/you/code/your-repo）"
-                               @bind="NewRepoPath" @bind:event="oninput" />
-                    </div>
-                    <p class="wb-muted">
-                        填了仓库路径，agent 在这个目录里干活就会自动落到本项目 —— 不用再自己传项目 ID。
-                    </p>
-                    <button class="wb-btn wb-btn-primary" disabled="@(string.IsNullOrWhiteSpace(NewName) || Creating)" @onclick="CreateAsync">创建</button>
-                </div>
-                <ErrorNotice Error="@CreateError" />
-            }
-
-            @if (Data is null || Data.Projects.Count == 0)
-            {
-                <p class="wb-muted">还没有项目。</p>
-            }
-            else
-            {
-                <p class="wb-muted">点进度看这个项目的体检 —— 流速、周期、测试通过率、阻塞与停滞。</p>
-                <div class="wb-table-scroll wb-mt-3">
-                    <table class="wb-table wb-project-table">
-                        <thead>
-                        <tr>
-                            <th>项目</th><th>进度</th><th>仓库绑定</th><th>任务</th>
-                            <th class="wb-col-path">仓库路径</th><th class="wb-col-desc">描述</th>
-                        </tr>
-                        </thead>
-                        <tbody>
-                        @foreach (var project in Data.Projects)
-                        {
-                            var metrics = MetricsFor(project.Id);
-                            <tr>
-                                <td><a class="wb-task-title" href="/projects/@project.Id">@project.Name</a></td>
-                                <td>
-                                    @if (metrics is { } m)
-                                    {
-                                        <button class="wb-btn wb-btn-link" @onclick="() => ToggleExpand(project.Id)">
-                                            @Percent(m.Progress)
-                                            <span class="wb-caret">@(_expandedProject == project.Id ? "▴" : "▾")</span>
-                                        </button>
-                                    }
-                                    else
-                                    {
-                                        <span class="wb-muted">—</span>
-                                    }
-                                </td>
-                                <td>
-                                    @if (string.IsNullOrWhiteSpace(project.RepoRoot))
-                                    {
-                                        <span class="wb-tag wb-tag-warn">没绑仓库</span>
-                                    }
-                                    else
-                                    {
-                                        <span class="wb-tag wb-tag-ok">已绑仓库</span>
-                                    }
-                                </td>
-                                <td>
-                                    <span class="wb-chip">@project.TotalTasks 个任务</span>
-                                    @if (project.TotalTasks == 0)
-                                    {
-                                        <span class="wb-chip wb-chip-warn">还没有任务</span>
-                                    }
-                                </td>
-                                <td class="wb-muted wb-col-path">@(string.IsNullOrWhiteSpace(project.RepoPath) ? "—" : project.RepoPath)</td>
-                                <td class="wb-muted wb-col-desc">@(string.IsNullOrWhiteSpace(project.Description) ? "—" : project.Description)</td>
-                            </tr>
-                            @if (_expandedProject == project.Id && metrics is { } open)
+                var metrics = MetricsFor(project.Id);
+                <div class="wb-panel wb-dash-project">
+                    <div class="wb-dash-head">
+                        <div class="wb-dash-name">
+                            <a class="wb-task-title" href="/projects/@project.Id">@project.Name</a>
+                            @if (string.IsNullOrWhiteSpace(project.RepoRoot))
                             {
-                                <tr class="wb-metric-row">
-                                    <td colspan="6">
-                                        <div class="wb-metric-grid">
-                                            <div class="wb-metric">
-                                                <span class="wb-metric-label">完成 / 总数</span>
-                                                <span class="wb-metric-value">@open.DoneTasks / @open.TotalTasks</span>
-                                            </div>
-                                            <div class="wb-metric">
-                                                <span class="wb-metric-label">平均周期</span>
-                                                <span class="wb-metric-value">@(open.AvgCycleHours is null ? "—" : Hours(open.AvgCycleHours.Value))</span>
-                                            </div>
-                                            <div class="wb-metric">
-                                                <span class="wb-metric-label">测试通过率</span>
-                                                <span class="wb-metric-value">@(open.TestPassRate is null ? "—" : Percent(open.TestPassRate.Value))</span>
-                                            </div>
-                                            <div class="wb-metric">
-                                                <span class="wb-metric-label">平均覆盖率</span>
-                                                <span class="wb-metric-value">@(open.AvgTestCoverage is null ? "—" : Percent(open.AvgTestCoverage.Value))</span>
-                                            </div>
-                                            <div class="wb-metric">
-                                                <span class="wb-metric-label">进行中</span>
-                                                <span class="wb-metric-value">@open.ActiveTasks</span>
-                                            </div>
-                                            <div class="wb-metric">
-                                                <span class="wb-metric-label">阻塞 / 停滞</span>
-                                                <span class="wb-metric-value">@open.BlockedTasks / @open.StaleTasks</span>
-                                            </div>
-                                        </div>
-
-                                        <h4>状态分布</h4>
-                                        <div class="wb-form-row">
-                                            @foreach (var s in open.StatusCounts)
-                                            {
-                                                <span class="wb-chip">@UiText.Status(s.Status) @s.Count</span>
-                                            }
-                                        </div>
-
-                                        <h4>近 8 周流速</h4>
-                                        @if (open.Throughput.Count == 0 || open.Throughput.Max(p => p.Completed) <= 0)
-                                        {
-                                            @* 八周全是 0 时画一排贴底的横杠，看着像「有一点点数据」—— 直接说没有 *@
-                                            <p class="wb-muted">近 8 周没有完成的任务。</p>
-                                        }
-                                        else
-                                        {
-                                            <div class="wb-bars">
-                                                @foreach (var point in open.Throughput)
-                                                {
-                                                    var max = open.Throughput.Max(p => p.Completed);
-                                                    var height = point.Completed <= 0
-                                                        ? 2
-                                                        : Math.Max(4, (int)Math.Round(point.Completed * 100d / max));
-                                                    <div class="wb-bar-col" title="@(point.Week) 完成 @point.Completed">
-                                                        <div class="wb-bar @(point.Completed <= 0 ? "wb-bar-zero" : "")" style="height:@(height)px"></div>
-                                                        <span class="wb-bar-label">@point.Completed</span>
-                                                        <span class="wb-bar-week">@point.Week[5..]</span>
-                                                    </div>
-                                                }
-                                            </div>
-                                        }
-                                    </td>
-                                </tr>
+                                <span class="wb-tag wb-tag-warn">没绑仓库</span>
                             }
+                            @if (metrics is { } flags)
+                            {
+                                @if (flags.BlockedTasks > 0)
+                                {
+                                    <span class="wb-tag wb-tag-danger">@flags.BlockedTasks 阻塞</span>
+                                }
+                                @if (flags.StaleTasks > 0)
+                                {
+                                    <span class="wb-tag wb-tag-warn">@flags.StaleTasks 停滞</span>
+                                }
+                                @if (flags.OpenApprovals > 0)
+                                {
+                                    <span class="wb-tag wb-tag-info">@flags.OpenApprovals 待审</span>
+                                }
+                            }
+                        </div>
+                        @if (metrics is { } pct)
+                        {
+                            <span class="wb-dash-percent">@Percent(pct.Progress)</span>
                         }
-                        </tbody>
-                    </table>
+                    </div>
+
+                    @if (metrics is { } pm)
+                    {
+                        <div class="wb-dash-bar">
+                            <div class="wb-dash-bar-fill" style="width:@BarWidth(pm.Progress)"></div>
+                        </div>
+
+                        <div class="wb-dash-metrics">
+                            <div class="wb-dash-metric">
+                                <span class="wb-dash-metric-label">完成 / 总数</span>
+                                <span class="wb-dash-metric-value">@pm.DoneTasks / @pm.TotalTasks</span>
+                            </div>
+                            <div class="wb-dash-metric">
+                                <span class="wb-dash-metric-label">进行中</span>
+                                <span class="wb-dash-metric-value">@pm.ActiveTasks</span>
+                            </div>
+                            <div class="wb-dash-metric">
+                                <span class="wb-dash-metric-label">待审</span>
+                                <span class="wb-dash-metric-value">@pm.OpenApprovals</span>
+                            </div>
+                            <div class="wb-dash-metric">
+                                <span class="wb-dash-metric-label">平均周期</span>
+                                <span class="wb-dash-metric-value">@(pm.AvgCycleHours is null ? "—" : Hours(pm.AvgCycleHours.Value))</span>
+                            </div>
+                            <div class="wb-dash-metric">
+                                <span class="wb-dash-metric-label">测试通过率</span>
+                                <span class="wb-dash-metric-value">@(pm.TestPassRate is null ? "—" : Percent(pm.TestPassRate.Value))</span>
+                            </div>
+                            <div class="wb-dash-metric">
+                                <span class="wb-dash-metric-label">平均覆盖率</span>
+                                <span class="wb-dash-metric-value">@(pm.AvgTestCoverage is null ? "—" : Percent(pm.AvgTestCoverage.Value))</span>
+                            </div>
+                        </div>
+
+                        <div class="wb-dash-sub">状态分布</div>
+                        <div class="wb-form-row">
+                            @foreach (var s in pm.StatusCounts)
+                            {
+                                <span class="wb-chip @UiText.StatusClass(s.Status)">@UiText.Status(s.Status) @s.Count</span>
+                            }
+                        </div>
+
+                        <div class="wb-dash-sub">近 8 周流速</div>
+                        @if (pm.Throughput.Count == 0 || pm.Throughput.Max(p => p.Completed) <= 0)
+                        {
+                            @* 八周全是 0 时画一排贴底的横杠，看着像「有一点点数据」—— 直接说没有 *@
+                            <p class="wb-muted">近 8 周没有完成的任务。</p>
+                        }
+                        else
+                        {
+                            var max = pm.Throughput.Max(p => p.Completed);
+                            <div class="wb-bars wb-bars-compact">
+                                @foreach (var point in pm.Throughput)
+                                {
+                                    <div class="wb-bar-col" title="@(point.Week) 完成 @point.Completed">
+                                        <div class="wb-bar@(point.Completed <= 0 ? " wb-bar-zero" : "")" style="height:@(FlowBarHeight(point.Completed, max))px"></div>
+                                        <span class="wb-bar-label">@point.Completed</span>
+                                        <span class="wb-bar-week">@point.Week[5..]</span>
+                                    </div>
+                                }
+                            </div>
+                        }
+                    }
+                    else
+                    {
+                        <p class="wb-muted">这个项目还没有度量数据。</p>
+                    }
                 </div>
             }
-        </div>
+        }
     }
 }
 
@@ -368,11 +379,17 @@ else
     [SupplyParameterFromQuery(Name = "tab")]
     public string? Tab { get; set; }
 
+    /// <summary>
+    /// 「?new=1」打开新建项目的表单。入口在侧边栏，总览页本身只展示数据。
+    /// 表单状态跟着 URL 走 —— 取消就是去掉这个参数，不用另存一份开关。
+    /// </summary>
+    [SupplyParameterFromQuery(Name = "new")]
+    public string? NewFlag { get; set; }
+
     private OverviewDto? Data { get; set; }
     private IReadOnlyList<ActivityItem> Activity { get; set; } = [];
     private IReadOnlyList<ProjectMetricsDto> Metrics { get; set; } = [];
     private bool Loading { get; set; } = true;
-    private bool ShowCreate { get; set; }
     private bool Creating { get; set; }
     private string NewName { get; set; } = string.Empty;
     private string NewDescription { get; set; } = string.Empty;
@@ -380,10 +397,17 @@ else
     private PageError? LoadError { get; set; }
     private PageError? CreateError { get; set; }
 
-    /// <summary>展开体检详情的那一行。只展开一个 —— 展开两个会让人不知道在看谁。</summary>
-    private Guid? _expandedProject;
+    /// <summary>全工作台的汇总。只加计数 —— 完成率是加权口径，跨项目相加会漂。</summary>
+    private int SumTasks => Metrics.Sum(m => m.TotalTasks);
+    private int SumActive => Metrics.Sum(m => m.ActiveTasks);
+    private int SumApprovals => Metrics.Sum(m => m.OpenApprovals);
+    private int SumBlocked => Metrics.Sum(m => m.BlockedTasks);
+    private int SumStale => Metrics.Sum(m => m.StaleTasks);
 
-    private string ActiveTab => Tab == "projects" ? "projects" : "now";
+    private bool ShowCreate => NewFlag == "1";
+
+    /// <summary>带 ?new=1 时落在「项目」页签 —— 直奔表单。</summary>
+    private string ActiveTab => (Tab == "projects" || NewFlag == "1") ? "projects" : "now";
 
     /// <summary>自动刷新间隔。agent 在干活时页面得自己动起来。</summary>
     private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(15);
@@ -413,8 +437,12 @@ else
     private ProjectMetricsDto? MetricsFor(Guid projectId) =>
         Metrics.FirstOrDefault(m => m.ProjectId == projectId);
 
-    private void ToggleExpand(Guid projectId) =>
-        _expandedProject = _expandedProject == projectId ? null : projectId;
+    /// <summary>关掉表单 —— 去掉 URL 上的 new=1 就没了。</summary>
+    private void CancelCreate()
+    {
+        CreateError = null;
+        Nav.NavigateTo("/?tab=projects", replace: true);
+    }
 
     /// <summary>
     /// 自动刷新。每 tick 独立 scope —— 定时器与页面上的写操作共用电路级
@@ -505,12 +533,6 @@ else
         return items.OrderByDescending(i => i.At).Take(20).ToList();
     }
 
-    private void ToggleCreate()
-    {
-        ShowCreate = !ShowCreate;
-        CreateError = null;
-    }
-
     private async Task CreateAsync()
     {
         if (Creating)
@@ -534,9 +556,11 @@ else
             NewName = string.Empty;
             NewDescription = string.Empty;
             NewRepoPath = string.Empty;
-            ShowCreate = false;
             CreateError = null;
             await ReloadAsync();
+
+            // 建好了就把表单收起来 —— 留着 URL 上的 new=1 会让人以为还没建完。
+            Nav.NavigateTo("/?tab=projects", replace: true);
         }
         catch (Exception ex)
         {
@@ -570,7 +594,26 @@ else
     private static string Absolute(DateTimeOffset time) =>
         time.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
 
-    private static string Percent(double ratio) => $"{ratio * 100:0.#}%";
+    private static string Percent(double ratio) =>
+        $"{ratio * 100:0.#}%";
+
+    /// <summary>进度条的宽度。写死的小数点会让某些区域设置下的百分比变成 "42,5%" —— CSS 不认。</summary>
+    private static string BarWidth(double ratio)
+    {
+        var pct = Math.Clamp(ratio, 0d, 1d) * 100d;
+        return pct.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) + "%";
+    }
+
+    /// <summary>流速柱的高度。0 不画成 0 高 —— 一根贴底的细杠更诚实。</summary>
+    private static int FlowBarHeight(int completed, int max)
+    {
+        if (completed <= 0)
+        {
+            return 2;
+        }
+
+        return Math.Max(4, (int)Math.Round(completed * 44d / Math.Max(1, max)));
+    }
 
     private static string Hours(double hours) => hours < 24
         ? $"{hours:0.#} 小时"
