@@ -227,6 +227,10 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--wb-accent); }
 .wb-side-group { margin-bottom: var(--wb-gap-5); }
 .wb-side-group:last-child { margin-bottom: 0; }
 
+/* 首屏入口（总览）：它是这个工作台的门，字重比同组其他项重一点。 */
+.wb-side-link-lead { font-weight: 600; color: var(--wb-text); }
+.wb-side-link-lead.active { color: var(--wb-accent); }
+
 .wb-side-group-label {
     font-size: var(--wb-fs-xs);
     font-weight: 600;
@@ -1096,6 +1100,13 @@ a.wb-chip:hover { text-decoration: none; border-color: var(--wb-accent-line); ba
 .wb-bar-zero { background: var(--wb-border-strong); border-radius: var(--wb-r-xs); }
 .wb-bar-label { font-size: var(--wb-fs-xs); color: var(--wb-text); }
 .wb-bar-week { font-size: 10px; color: var(--wb-faint); }
+
+/* 项目表里展开的体检行：内容比别行长，给个底色跟上面那行分开 */
+.wb-metric-row > td {
+    background: var(--wb-surface-2);
+    padding: var(--wb-gap-4) var(--wb-gap-3);
+}
+.wb-metric-row .wb-metric-grid { margin-top: 0; }
 
 /* ---------- 18. 提示条 ---------- */
 
