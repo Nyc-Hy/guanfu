@@ -40,32 +40,36 @@ else
 {
     <section class="wb-panel">
         <h3>新建连接</h3>
-        <div class="wb-form-row">
+        @* 四格网格：左半右半各自成列。密码单独一行时跟「名称 / 数据库」同列，
+           不会被拉成横跨整行的宽框。 *@
+        <div class="wb-field-row-2">
             <label class="wb-label">名称</label>
             <input class="wb-input" placeholder="default" @bind="NewName" @bind:event="oninput" />
             <label class="wb-label">服务器</label>
             <input class="wb-input" placeholder="127.0.0.1,1433" @bind="NewServer" @bind:event="oninput" />
         </div>
-        <div class="wb-form-row">
+        <div class="wb-field-row-2">
             <label class="wb-label">数据库</label>
             <input class="wb-input" placeholder="MyDb" @bind="NewDatabase" @bind:event="oninput" />
             <label class="wb-label">用户名</label>
             <input class="wb-input" placeholder="sa（留空用集成认证）" @bind="NewUserId" @bind:event="oninput" />
         </div>
-        <div class="wb-form-row">
+        <div class="wb-field-row-2">
             <label class="wb-label">密码</label>
             @* 不用 @bind：绑定会把密码写回 DOM 的 value 属性。只在事件里收值，创建后抹掉。 *@
             <input class="wb-input" type="password" placeholder="加密存储，不回显"
                    @oninput="e => NewPassword = e.Value?.ToString() ?? string.Empty" />
         </div>
-        <div class="wb-form-row">
+        <div class="wb-field-row">
             <label class="wb-label">选项</label>
-            <label class="wb-muted">
-                <input type="checkbox" @bind="NewIsDefault" /> 设为默认连接
-            </label>
-            <label class="wb-muted">
-                <input type="checkbox" @bind="NewTrustServerCertificate" /> 信任服务端证书（TrustServerCertificate）
-            </label>
+            <div class="wb-field-ctl">
+                <label class="wb-muted">
+                    <input type="checkbox" @bind="NewIsDefault" /> 设为默认连接
+                </label>
+                <label class="wb-muted">
+                    <input type="checkbox" @bind="NewTrustServerCertificate" /> 信任服务端证书（TrustServerCertificate）
+                </label>
+            </div>
         </div>
         @if (NewTrustServerCertificate)
         {
@@ -73,14 +77,16 @@ else
                 信任服务端证书 = 不校验证书链，自签证书能连，但存在中间人风险。生产环境建议关掉。
             </p>
         }
-        <div class="wb-form-row">
-            <button class="wb-btn wb-btn-primary" disabled="@(!CanWrite)" @onclick="CreateAsync">
-                @(Creating ? "创建中…" : "创建连接")
-            </button>
-            @if (!Authorized)
-            {
-                <span class="wb-muted">写操作需要先在上方验证人工凭证。</span>
-            }
+        <div class="wb-field-row">
+            <div class="wb-field-ctl">
+                <button class="wb-btn wb-btn-primary" disabled="@(!CanWrite)" @onclick="CreateAsync">
+                    @(Creating ? "创建中…" : "创建连接")
+                </button>
+                @if (!Authorized)
+                {
+                    <span class="wb-muted">写操作需要先在上方验证人工凭证。</span>
+                }
+            </div>
         </div>
     </section>
 
