@@ -70,9 +70,6 @@ else
             </p>
         </div>
         <div class="wb-form-row">
-            <button class="wb-btn" @onclick="() => Compact = !Compact">
-                @(Compact ? "展开全部细节" : "收起细节")
-            </button>
             <button class="wb-btn" disabled="@Loading" @onclick="() => ReloadAsync(syncInputs: true)">刷新</button>
             <button class="wb-btn wb-btn-primary" disabled="@(Launching || Launched || !Gate.Authorized)"
                     @onclick="LaunchAgentAsync">
@@ -105,10 +102,39 @@ else
         </div>
     }
 
-    @* 精简视图下侧栏整列都是次要区块 —— 留着就是右边空 340px，
-       主栏反而被挤窄。让主栏占满，展开后侧栏再回来。 *@
-    <div class="wb-detail-grid @(Compact ? "wb-detail-single" : "")">
-        <div class="wb-detail-main @(Compact ? "wb-compact" : "")">
+    <div class="wb-detail-grid">
+        <div class="wb-detail-main">
+            @* 十一块面板一次铺开谁也看不过来 —— 按用途分页签，
+               一屏只留当前要看的那几块。页签跟着 URL 走，链接能直接发人。 *@
+            <div class="wb-tabs" role="tablist">
+                <button class="wb-tab @(ActiveTab == "plan" ? "wb-tab-active" : "")" role="tab"
+                        aria-selected="@(ActiveTab == "plan")" @onclick='() => GoTab("plan")'>
+                    进展
+                </button>
+                <button class="wb-tab @(ActiveTab == "docs" ? "wb-tab-active" : "")" role="tab"
+                        aria-selected="@(ActiveTab == "docs")" @onclick='() => GoTab("docs")'>
+                    文档 <span class="wb-count">@Context.Documents.Count</span>
+                </button>
+                <button class="wb-tab @(ActiveTab == "review" ? "wb-tab-active" : "")" role="tab"
+                        aria-selected="@(ActiveTab == "review")" @onclick='() => GoTab("review")'>
+                    评审
+                    @if (CurrentReview is not null)
+                    {
+                        <span class="wb-count">第 @CurrentReview.Round 轮</span>
+                    }
+                </button>
+                <button class="wb-tab @(ActiveTab == "deliver" ? "wb-tab-active" : "")" role="tab"
+                        aria-selected="@(ActiveTab == "deliver")" @onclick='() => GoTab("deliver")'>
+                    产出 <span class="wb-count">@(Context.Artifacts.Count + FileChangeItems.Count)</span>
+                </button>
+                <button class="wb-tab @(ActiveTab == "log" ? "wb-tab-active" : "")" role="tab"
+                        aria-selected="@(ActiveTab == "log")" @onclick='() => GoTab("log")'>
+                    流水 <span class="wb-count">@Events.Count</span>
+                </button>
+            </div>
+
+            @if (ActiveTab == "plan")
+            {
             <section class="wb-panel">
                 <h3>状态流转</h3>
                 <div class="wb-form-row">
@@ -159,8 +185,10 @@ else
                     }
                 }
             </section>
-
-            <section class="wb-panel wb-secondary">
+            }
+            else if (ActiveTab == "docs")
+            {
+            <section class="wb-panel">
                 <h3>文档</h3>
                 <div class="wb-form-row">
                     <InputFile OnChange="UploadAsync" disabled="@Uploading" />
@@ -237,7 +265,9 @@ else
                     </div>
                 }
             </section>
-
+            }
+            else if (ActiveTab == "review")
+            {
             <section class="wb-panel">
                 <div class="wb-card-head">
                     <h3>评审</h3>
@@ -351,8 +381,10 @@ else
                     }
                 }
             </section>
-
-            <section class="wb-panel wb-secondary">
+            }
+            else if (ActiveTab == "deliver")
+            {
+            <section class="wb-panel">
                 <h3>登记的产物</h3>
                 @if (Context.Artifacts.Count == 0)
                 {
@@ -435,7 +467,9 @@ else
                     </div>
                 }
             </section>
-
+            }
+            else
+            {
             <section class="wb-panel">
                 <div class="wb-card-head">
                     <h3>会话</h3>
@@ -524,11 +558,15 @@ else
                     </ul>
                 }
             </section>
+            }
         </div>
 
-        <aside class="@(Compact ? "wb-detail-collapsed" : "wb-detail-side")">
-            <section class="wb-panel wb-secondary">
-                <h3>迭代版本</h3>
+        <aside class="wb-detail-side">
+            @* 侧栏三块合成一块 —— 都是任务属性，分成三个面板只是多两道框。 *@
+            <section class="wb-panel">
+                <h3>任务属性</h3>
+
+                <h4>迭代版本</h4>
                 <div class="wb-form-row">
                     <select class="wb-input" @bind="SelectedMilestoneId" @bind:after="AssignMilestoneAsync">
                         <option value="">不在任何迭代版本</option>
@@ -542,10 +580,8 @@ else
                 {
                     <p class="wb-muted">项目还没有迭代版本，去项目页的「迭代版本」页签添加。</p>
                 }
-            </section>
 
-            <section class="wb-panel wb-secondary">
-                <h3>分派与归档</h3>
+                <h4>分派与归档</h4>
                 <div class="wb-form-row">
                     <label class="wb-label">负责人</label>
                     <input class="wb-input" placeholder="人名或 agent id" @bind="AssigneeInput" @bind:event="oninput" />
@@ -579,10 +615,8 @@ else
                     }
                 </p>
                 <p class="wb-hint">归档不是删除：流水、产物、评审全都留着，只是默认不在列表里出现。</p>
-            </section>
 
-            <section class="wb-panel wb-secondary">
-                <h3>任务属性</h3>
+                <h4>类型与分支</h4>
                 <div class="wb-form-row">
                     <label class="wb-label">类型</label>
                     <select class="wb-input" @bind="SelectedType" @bind:after="ChangeTypeAsync">
@@ -622,11 +656,23 @@ else
 
 @code {
     /// <summary>
-    /// 精简视图：只留「现在用得上的」几块，文档 / 登记产物 / 迭代版本 /
-    /// 分派归档 / 任务属性这些平时不看的先藏起来。默认开着 ——
-    /// 十二块区块一次铺开，谁都看不过来。
+    /// 页签跟着 URL 走 —— 「/tasks/{id}?tab=review」能直接落到评审那一页，
+    /// 链接也能发给人。默认是「进展」。
     /// </summary>
-    private bool Compact { get; set; } = true;
+    [SupplyParameterFromQuery(Name = "tab")]
+    public string? Tab { get; set; }
+
+    private string ActiveTab => Tab switch
+    {
+        "docs" => "docs",
+        "review" => "review",
+        "deliver" => "deliver",
+        "log" => "log",
+        _ => "plan"
+    };
+
+    /// <summary>已经加载过的任务。切页签也是参数变化，别顺手把数据重拉一遍。</summary>
+    private Guid? _loadedTaskId;
 
     private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(15);
 
@@ -684,7 +730,25 @@ else
     {
         Gate ??= new UiTokenGate(Tokens.Token);
         Gate.AuthorizeFromRequest(RequestContext?.Request);
-        await ReloadAsync(syncInputs: true);
+
+        // 只在任务换了才重载：切页签也会重新 supply 参数，
+        // 顺手重拉会浪费六路查询，还会把人正在填的分派草稿冲掉。
+        if (_loadedTaskId != TaskId)
+        {
+            _loadedTaskId = TaskId;
+            await ReloadAsync(syncInputs: true);
+        }
+    }
+
+    /// <summary>切页签。URL 是唯一真相 —— 深链能直接落到某一页。</summary>
+    private void GoTab(string tab)
+    {
+        if (tab == ActiveTab)
+        {
+            return;
+        }
+
+        Nav.NavigateTo($"/tasks/{TaskId}?tab={tab}", replace: true);
     }
 
     protected override Task OnAfterRenderAsync(bool firstRender)

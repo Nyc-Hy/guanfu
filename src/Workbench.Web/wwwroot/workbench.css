@@ -994,6 +994,7 @@ a.wb-chip:hover { text-decoration: none; border-color: var(--wb-accent-line); ba
 
 /* ---------- 13. 详情页 ---------- */
 
+/* 详情页：主栏 + 侧栏。窄屏堆成一列。 */
 .wb-detail-grid {
     display: grid;
     grid-template-columns: minmax(0, 1fr) 340px;
@@ -1002,10 +1003,6 @@ a.wb-chip:hover { text-decoration: none; border-color: var(--wb-accent-line); ba
 }
 .wb-detail-side .wb-panel { position: sticky; top: calc(var(--wb-top-h) + var(--wb-gap-4)); }
 .wb-detail-main { min-width: 0; }
-
-/* 精简视图：侧栏整列都是次要区块，主栏占满宽度 */
-.wb-detail-single { grid-template-columns: minmax(0, 1fr); }
-.wb-detail-collapsed { display: none; }
 
 @media (max-width: 1000px) {
     .wb-detail-grid { grid-template-columns: 1fr; }
@@ -1244,9 +1241,6 @@ a.wb-chip:hover { text-decoration: none; border-color: var(--wb-accent-line); ba
 .wb-onboard ol { margin: 0; padding-left: 22px; }
 .wb-onboard li { margin-bottom: var(--wb-gap-3); line-height: 1.8; }
 .wb-onboard li:last-child { margin-bottom: 0; }
-
-/* 精简视图：次要区块先藏起来，页头一个按钮切回来 */
-.wb-compact .wb-secondary { display: none; }
 
 /* 搜索结果里的文档内容摘要 */
 .wb-search-snippet {
