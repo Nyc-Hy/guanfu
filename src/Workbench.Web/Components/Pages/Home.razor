@@ -12,7 +12,7 @@
         <h1>总览</h1>
         <p class="wb-muted">
             工作台做三件事：<strong>追踪任务进度</strong>、<strong>记录开发产出的文件</strong>、
-            <strong>留下数据库调用的记录</strong>。「现在」是此刻的局面，「项目」是每个项目的体检仪表盘。
+            <strong>留下数据库调用的记录</strong>。
         </p>
     </div>
     <div class="wb-form-row">
@@ -67,14 +67,22 @@ else
         else
         {
             <!-- ① 要你处理的 -->
-            <div class="wb-panel">
-                <h3>要你处理的</h3>
-                @if (Data!.PendingApprovals.Count == 0)
-                {
+            @* 三块里有两块经常是空的。空的用虚线浅底矮一截，
+               别跟有内容的那块一样高 —— 一屏全是空框最劝退。 *@
+            @if (Data!.PendingApprovals.Count == 0)
+            {
+                <div class="wb-panel wb-panel-quiet">
+                    <h3>要你处理的</h3>
                     <p class="wb-muted">没有等你批的写操作。</p>
-                }
-                else
-                {
+                </div>
+            }
+            else
+            {
+                <div class="wb-panel wb-panel-focus">
+                    <div class="wb-card-head">
+                        <h3>要你处理的</h3>
+                        <span class="wb-chip wb-chip-warn">@Data.PendingApprovals.Count 条待批</span>
+                    </div>
                     <p class="wb-muted">这些写操作在等人点头 —— 批了才能执行。</p>
                     <div class="wb-table-scroll">
                         <table class="wb-table">
@@ -94,18 +102,21 @@ else
                             </tbody>
                         </table>
                     </div>
-                }
-            </div>
+                </div>
+            }
 
             <!-- ② 正在发生的 -->
-            <div class="wb-panel">
-                <h3>正在发生的</h3>
-                @if (Data.ActiveTasks.Count == 0 && Data.ActiveSessions.Count == 0)
-                {
+            @if (Data.ActiveTasks.Count == 0 && Data.ActiveSessions.Count == 0)
+            {
+                <div class="wb-panel wb-panel-quiet">
+                    <h3>正在发生的</h3>
                     <p class="wb-muted">当前没有进行中的任务，也没有 agent 在干活。</p>
-                }
-                else
-                {
+                </div>
+            }
+            else
+            {
+                <div class="wb-panel">
+                    <h3>正在发生的</h3>
                     @if (Data.ActiveSessions.Count > 0)
                     {
                         <p class="wb-muted">
@@ -148,21 +159,24 @@ else
                             </table>
                         </div>
                     }
-                }
-            </div>
+                </div>
+            }
 
             <!-- ③ 最近产出 -->
-            <div class="wb-panel">
-                <div class="wb-card-head">
+            @if (Activity.Count == 0)
+            {
+                <div class="wb-panel wb-panel-quiet">
                     <h3>最近产出</h3>
-                    <span class="wb-muted">代码改动是工作台自己从 git 数出来的，不是 agent 自报的</span>
-                </div>
-                @if (Activity.Count == 0)
-                {
                     <p class="wb-muted">还没有产出记录。</p>
-                }
-                else
-                {
+                </div>
+            }
+            else
+            {
+                <div class="wb-panel">
+                    <div class="wb-card-head">
+                        <h3>最近产出</h3>
+                        <span class="wb-muted">代码改动是工作台自己从 git 数出来的，不是 agent 自报的</span>
+                    </div>
                     <div class="wb-table-scroll">
                         <table class="wb-table">
                             <thead>
@@ -194,8 +208,8 @@ else
                     <p class="wb-muted wb-mt-2">
                         <a href="/db-calls">看全部 SQL 执行记录</a>
                     </p>
-                }
-            </div>
+                </div>
+            }
         }
     }
     else

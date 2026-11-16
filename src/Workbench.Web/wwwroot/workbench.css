@@ -479,6 +479,24 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--wb-accent); }
     margin-bottom: var(--wb-gap-3);
 }
 
+/* 空面板不该抢戏：虚线浅底，矮一截。
+   三块面板里两块是空的，铺成跟有内容的一样高，一屏全是空框。 */
+.wb-panel-quiet {
+    background: transparent;
+    border-style: dashed;
+    border-color: var(--wb-border);
+    box-shadow: none;
+    padding: var(--wb-gap-3) var(--wb-gap-4);
+}
+.wb-panel.wb-panel-quiet h3 {
+    margin: 0 0 var(--wb-gap-1);
+    font-size: var(--wb-fs-sm);
+    color: var(--wb-muted);
+}
+
+/* 有事要人处理的那块：左边一道 accent 边条，扫一眼就知道该先看它 */
+.wb-panel-focus { border-left: 3px solid var(--wb-accent); }
+
 .wb-panel h3 {
     margin: 0 0 var(--wb-gap-3);
     font-size: var(--wb-fs-md);
