@@ -723,6 +723,51 @@ input[type="file"]::file-selector-button:hover {
 
 .wb-check { display: inline-flex; align-items: center; gap: 6px; }
 
+/* 「标签 + 控件」的字段行。
+   全局 .wb-input 里 input 是撑满的（flex-grow:1）、select 是内容宽
+   （flex-grow:0，上限 260px）—— 两者混在一组里，右边缘全是参差的口。
+   这里把控件统一钉到同一列：标签列固定宽（--wb-label-w），
+   各行控件的左边缘和右边缘都对齐。 */
+.wb-field-row,
+.wb-field-row-2 {
+    display: grid;
+    align-items: center;
+    gap: var(--wb-gap-2) var(--wb-gap-3);
+}
+/* 一行一组 */
+.wb-field-row { grid-template-columns: var(--wb-label-w, 64px) minmax(0, 1fr); }
+/* 一行两组：左半右半各自成列 —— 单独一行的字段（如密码）跟同列的字段对齐，
+   不会被拉成横跨整行的宽框。
+   注意：同一组里要么所有子元素都自动排布（.wb-field-row-2），
+   要么都写死列位（.wb-field-row）。混着来会让自动排布的标签掉到下一行去。 */
+.wb-field-row-2 {
+    grid-template-columns: var(--wb-label-w, 64px) minmax(0, 1fr) var(--wb-label-w, 64px) minmax(0, 1fr);
+}
+
+.wb-field-row > .wb-label { grid-column: 1; white-space: nowrap; }
+.wb-field-row > .wb-input { grid-column: 2; }
+.wb-field-row > .wb-field-ctl { grid-column: 2; }
+
+/* 控件撑满自己那一列 */
+.wb-field-row > .wb-input,
+.wb-field-row-2 > .wb-input { width: 100%; max-width: none; min-width: 0; }
+
+/* 控件后面跟着按钮的（绑定分支 + 绑定）：按钮跟在控件右边。
+   基准取 0：input 的固有宽度是 size=20 推出来的（~180px），
+   拿它当基准会把按钮挤到下一行去。 */
+.wb-field-ctl {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--wb-gap-2);
+    min-width: 0;
+}
+.wb-field-ctl > .wb-input { flex: 1 1 0; width: auto; max-width: none; min-width: 0; }
+
+/* 操作按钮行：跟上面的字段行拉开一点，
+   否则「保存分派 / 归档」看着像「截止日」这个字段的一部分。 */
+.wb-field-row-act { margin-top: var(--wb-gap-2); }
+
 /* ---------- 9. 表格 ---------- */
 
 .wb-table {

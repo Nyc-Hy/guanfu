@@ -577,7 +577,7 @@ else
                 <h3>任务属性</h3>
 
                 <h4>迭代版本</h4>
-                <div class="wb-form-row">
+                <div class="wb-field-row">
                     <select class="wb-input" @bind="SelectedMilestoneId" @bind:after="AssignMilestoneAsync">
                         <option value="">不在任何迭代版本</option>
                         @foreach (var m in MilestoneItems)
@@ -592,11 +592,11 @@ else
                 }
 
                 <h4>分派与归档</h4>
-                <div class="wb-form-row">
+                <div class="wb-field-row">
                     <label class="wb-label">负责人</label>
                     <input class="wb-input" placeholder="人名或 agent id" @bind="AssigneeInput" @bind:event="oninput" />
                 </div>
-                <div class="wb-form-row">
+                <div class="wb-field-row">
                     <label class="wb-label">优先级</label>
                     <select class="wb-input" @bind="PriorityInput">
                         <option value="Low">低</option>
@@ -605,16 +605,18 @@ else
                         <option value="Critical">紧急</option>
                     </select>
                 </div>
-                <div class="wb-form-row">
+                <div class="wb-field-row">
                     <label class="wb-label">截止日</label>
                     <input class="wb-input" type="datetime-local" value="@DueInput"
                            @onchange="e => DueInput = e.Value?.ToString() ?? string.Empty" />
                 </div>
-                <div class="wb-form-row">
-                    <button class="wb-btn" disabled="@Busy" @onclick="SaveAssignmentAsync">保存分派</button>
-                    <button class="wb-btn" disabled="@Busy" @onclick="ToggleArchiveAsync">
-                        @(Context.Task.IsArchived ? "取消归档" : "归档")
-                    </button>
+                <div class="wb-field-row wb-field-row-act">
+                    <div class="wb-field-ctl">
+                        <button class="wb-btn" disabled="@Busy" @onclick="SaveAssignmentAsync">保存分派</button>
+                        <button class="wb-btn" disabled="@Busy" @onclick="ToggleArchiveAsync">
+                            @(Context.Task.IsArchived ? "取消归档" : "归档")
+                        </button>
+                    </div>
                 </div>
                 <p class="wb-muted">
                     当前：@(string.IsNullOrWhiteSpace(Context.Task.Assignee) ? "未分派" : Context.Task.Assignee)
@@ -627,7 +629,7 @@ else
                 <p class="wb-hint">归档不是删除：流水、产物、评审全都留着，只是默认不在列表里出现。</p>
 
                 <h4>类型与分支</h4>
-                <div class="wb-form-row">
+                <div class="wb-field-row">
                     <label class="wb-label">类型</label>
                     <select class="wb-input" @bind="SelectedType" @bind:after="ChangeTypeAsync">
                         <option value="requirement">需求</option>
@@ -637,10 +639,12 @@ else
                 </div>
                 <p class="wb-muted">编号 @Context.Task.Key 由类型决定（需求 REQ- / 缺陷 BUG- / 优化 OPT-），改类型不改编号。</p>
 
-                <div class="wb-form-row">
+                <div class="wb-field-row">
                     <label class="wb-label">绑定分支</label>
-                    <input class="wb-input" @bind="BranchInput" placeholder="如 feature/login" />
-                    <button class="wb-btn" disabled="@Busy" @onclick="BindBranchAsync">绑定</button>
+                    <div class="wb-field-ctl">
+                        <input class="wb-input" @bind="BranchInput" placeholder="如 feature/login" />
+                        <button class="wb-btn" disabled="@Busy" @onclick="BindBranchAsync">绑定</button>
+                    </div>
                 </div>
                 <p class="wb-muted">
                     仓库当前分支：<code>@(Context.CurrentBranch ?? "未知")</code>
