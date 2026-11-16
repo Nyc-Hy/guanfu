@@ -216,9 +216,12 @@ else if (Data is not null)
     else
     {
         <div class="wb-table-scroll wb-mt-3">
-            <table class="wb-table wb-task-table">
+            <table class="wb-table wb-project-table">
                 <thead>
-                <tr><th>项目</th><th>仓库绑定</th><th>任务</th><th>仓库路径</th><th>描述</th></tr>
+                <tr>
+                    <th>项目</th><th>仓库绑定</th><th>任务</th>
+                    <th class="wb-col-path">仓库路径</th><th class="wb-col-desc">描述</th>
+                </tr>
                 </thead>
                 <tbody>
                 @foreach (var project in Data.Projects)
@@ -242,8 +245,8 @@ else if (Data is not null)
                                 <span class="wb-chip wb-chip-warn">还没有任务</span>
                             }
                         </td>
-                        <td class="wb-muted">@(string.IsNullOrWhiteSpace(project.RepoPath) ? "—" : project.RepoPath)</td>
-                        <td class="wb-muted">@(string.IsNullOrWhiteSpace(project.Description) ? "—" : project.Description)</td>
+                        <td class="wb-muted wb-col-path">@(string.IsNullOrWhiteSpace(project.RepoPath) ? "—" : project.RepoPath)</td>
+                        <td class="wb-muted wb-col-desc">@(string.IsNullOrWhiteSpace(project.Description) ? "—" : project.Description)</td>
                     </tr>
                 }
                 </tbody>

@@ -79,18 +79,28 @@ else
             </div>
 
             <h4>近 8 周流速</h4>
-            <div class="wb-bars">
-                @foreach (var point in metrics.Throughput)
-                {
-                    var max = metrics.Throughput.Count == 0 ? 0 : metrics.Throughput.Max(p => p.Completed);
-                    var height = max <= 0 ? 2 : Math.Max(4, (int)Math.Round(point.Completed * 100d / max));
-                    <div class="wb-bar-col" title="@(point.Week) 完成 @point.Completed">
-                        <div class="wb-bar" style="height:@(height)px"></div>
-                        <span class="wb-bar-label">@point.Completed</span>
-                        <span class="wb-bar-week">@point.Week[5..]</span>
-                    </div>
-                }
-            </div>
+            @if (metrics.Throughput.Count == 0 || metrics.Throughput.Max(p => p.Completed) <= 0)
+            {
+                @* 八周全是 0 时画一排贴底的横杠，看着像「有一点点数据」—— 直接说没有 *@
+                <p class="wb-muted">近 8 周没有完成的任务。</p>
+            }
+            else
+            {
+                <div class="wb-bars">
+                    @foreach (var point in metrics.Throughput)
+                    {
+                        var max = metrics.Throughput.Max(p => p.Completed);
+                        var height = point.Completed <= 0
+                            ? 2
+                            : Math.Max(4, (int)Math.Round(point.Completed * 100d / max));
+                        <div class="wb-bar-col" title="@(point.Week) 完成 @point.Completed">
+                            <div class="wb-bar @(point.Completed <= 0 ? "wb-bar-zero" : "")" style="height:@(height)px"></div>
+                            <span class="wb-bar-label">@point.Completed</span>
+                            <span class="wb-bar-week">@point.Week[5..]</span>
+                        </div>
+                    }
+                </div>
+            }
         </section>
     }
 }

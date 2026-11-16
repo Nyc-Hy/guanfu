@@ -314,6 +314,14 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--wb-accent); }
 
 .wb-topsearch-icon { font-size: var(--wb-fs-md); line-height: 1; }
 
+/* 窄屏下框子就那么宽，文字别折行 —— 折成两行顶栏会变高 */
+.wb-topsearch-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+
 .wb-topsearch kbd {
     margin-left: auto;
     font-family: inherit;
@@ -366,6 +374,10 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--wb-accent); }
     gap: var(--wb-gap-4);
     margin-bottom: var(--wb-gap-5);
 }
+
+/* 标题块吃掉剩余宽度，页头右边的操作按钮就聚成一组 ——
+   否则 space-between 会把两个按钮分到两端去（审计页最明显）。 */
+.wb-page-head > :first-child { flex: 1 1 auto; min-width: 0; }
 
 .wb-page-head h1 {
     margin: 0 0 var(--wb-gap-1);
@@ -795,8 +807,25 @@ a.wb-chip:hover { text-decoration: none; border-color: var(--wb-accent-line); ba
 /* 列宽：表头里写死宽度会让窄屏表格挤爆，交给 CSS */
 .wb-col-switch { width: 64px; }
 .wb-col-policy { width: 96px; }
-.wb-col-verdict { width: 96px; }
-.wb-col-writeback { width: 320px; }
+.wb-col-verdict { width: 88px; }
+.wb-col-writeback { width: 300px; }
+
+/* 评审表：五列里有三列是长文本，auto 布局会按内容分宽度 ——
+   分不到就把「代码规范」压成「代/码/规/范」一竖条。
+   给这几列一个下限，宁可让表在容器里横着滚。 */
+.wb-col-dimension { min-width: 110px; }
+.wb-col-finding { min-width: 190px; }
+.wb-col-reviewer { min-width: 96px; }
+
+/* 搜索结果的任务表：首列是编号，短得很。
+   跟着 .wb-task-table 的 60% 走会把标题挤到天边。 */
+.wb-hit-table th:first-child, .wb-hit-table td:first-child { width: 120px; }
+
+/* 总览页的项目表：项目名 / 绑定状态 / 任务数 / 路径 / 描述。
+   路径不许折行 —— 折了就成一条竖杠；描述给个下限，不然一个字一行。 */
+.wb-project-table th:first-child, .wb-project-table td:first-child { width: 26%; }
+.wb-project-table .wb-col-path { white-space: nowrap; }
+.wb-project-table .wb-col-desc { min-width: 150px; }
 
 /* 任务状态的展示色。映射在 UiText.StatusClass —— 各页面别各写一套。
    放在 .wb-chip 之后：同特异度下后者才生效，放前面会被 .wb-chip 的颜色盖掉。 */
@@ -1060,10 +1089,11 @@ a.wb-chip:hover { text-decoration: none; border-color: var(--wb-accent-line); ba
 .wb-bar {
     width: 100%;
     max-width: 44px;
-    min-height: 4px;
     background: linear-gradient(180deg, var(--wb-accent), rgba(91, 141, 239, .3));
     border-radius: var(--wb-r-xs) var(--wb-r-xs) 0 0;
 }
+/* 这一周是 0：画一条灰底条，别拿蓝色渐变假装有数据 */
+.wb-bar-zero { background: var(--wb-border-strong); border-radius: var(--wb-r-xs); }
 .wb-bar-label { font-size: var(--wb-fs-xs); color: var(--wb-text); }
 .wb-bar-week { font-size: 10px; color: var(--wb-faint); }
 
@@ -1206,6 +1236,24 @@ a.wb-chip:hover { text-decoration: none; border-color: var(--wb-accent-line); ba
 .wb-doc-table th, .wb-doc-table td { border: 1px solid var(--wb-border); padding: 5px 8px; text-align: left; }
 .wb-doc-code { background: var(--wb-bg); border: 1px solid var(--wb-border); border-radius: var(--wb-r); padding: var(--wb-gap-3); font-size: var(--wb-fs-sm); overflow: auto; }
 .wb-doc-diff { background: var(--wb-bg); border: 1px solid var(--wb-border); border-radius: var(--wb-r); padding: var(--wb-gap-3); font-size: var(--wb-fs-sm); overflow: auto; }
+
+/* 代码块不折行（折了复制出来的配置就带换行），靠横向滚动看全 ——
+   滚动条得看得见，否则那段内容看着像被切了。 */
+.wb-doc-code, .wb-doc-diff {
+    scrollbar-width: thin;
+    scrollbar-color: var(--wb-border-strong) transparent;
+}
+.wb-doc-code::-webkit-scrollbar,
+.wb-doc-diff::-webkit-scrollbar { height: 8px; }
+.wb-doc-code::-webkit-scrollbar-track,
+.wb-doc-diff::-webkit-scrollbar-track { background: transparent; }
+.wb-doc-code::-webkit-scrollbar-thumb,
+.wb-doc-diff::-webkit-scrollbar-thumb {
+    background: var(--wb-border-strong);
+    border-radius: var(--wb-r-full);
+}
+.wb-doc-code::-webkit-scrollbar-thumb:hover,
+.wb-doc-diff::-webkit-scrollbar-thumb:hover { background: var(--wb-faint); }
 .wb-diff-added { color: var(--wb-ok); display: block; }
 .wb-diff-removed { color: var(--wb-danger); display: block; }
 .wb-diff-context { color: var(--wb-muted); display: block; }
@@ -1291,6 +1339,11 @@ a.wb-chip:hover { text-decoration: none; border-color: var(--wb-accent-line); ba
     .wb-empty { padding: var(--wb-gap-6) var(--wb-gap-3); }
     .wb-panel { padding: var(--wb-gap-4); }
     .wb-table th, .wb-table td { padding: 8px var(--wb-gap-2); }
+
+    /* 顶栏搜索：42vw 在手机上只有 150px 出头，文字直接折行。
+       让它吃掉剩余宽度，快捷键提示先让位。 */
+    .wb-topsearch { flex: 1 1 auto; width: auto; min-width: 0; }
+    .wb-topsearch kbd { display: none; }
 
     /* 任务表首列别占 60% —— 窄屏上标题列吃满宽，
        状态/负责人/最后动静就被挤到滚动区外了。 */

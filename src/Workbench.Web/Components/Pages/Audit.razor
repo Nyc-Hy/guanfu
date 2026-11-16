@@ -18,8 +18,10 @@
             审计只追加不修改，出了事从这里复盘。
         </p>
     </div>
-    <button class="wb-btn" disabled="@Loading" @onclick="() => ReloadAsync(resetPage: false)">刷新</button>
-    <button class="wb-btn" disabled="@Verifying" @onclick="VerifyAsync">验哈希链</button>
+    <div class="wb-form-row">
+        <button class="wb-btn" disabled="@Loading" @onclick="() => ReloadAsync(resetPage: false)">刷新</button>
+        <button class="wb-btn" disabled="@Verifying" @onclick="VerifyAsync">验哈希链</button>
+    </div>
 </div>
 
 @if (ChainMessage is not null)
