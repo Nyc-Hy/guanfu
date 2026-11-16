@@ -341,20 +341,30 @@ else
                                     </td>
                                     <td class="wb-muted">@item.Reviewer</td>
                                     <td>
-                                        <div class="wb-form-row">
-                                            <input class="wb-input" placeholder="发现 / 跳过理由"
-                                                   @bind:get="GetReviewFindings(item.Dimension)"
-                                                   @bind:set="v => SetReviewFindings(item.Dimension, v)"
-                                                   @bind:event="oninput" />
-                                        </div>
-                                        <div class="wb-form-row">
-                                            <button class="wb-btn" disabled="@Busy"
-                                                    @onclick="() => SubmitDimensionAsync(item.Dimension, true, false)">通过</button>
-                                            <button class="wb-btn wb-btn-danger" disabled="@Busy"
-                                                    @onclick="() => SubmitDimensionAsync(item.Dimension, false, false)">不通过</button>
-                                            <button class="wb-btn" disabled="@Busy"
-                                                    @onclick="() => SubmitDimensionAsync(item.Dimension, false, true)">跳过</button>
-                                        </div>
+                                        @* 七个维度每行都摆「输入框 + 三个按钮」= 一屏全是重复的表单控件。
+                                           只给还没判的维度摆；判过的收成一个「改结论」入口。 *@
+                                        @if (IsOpenDimension(item))
+                                        {
+                                            <div class="wb-form-row">
+                                                <input class="wb-input" placeholder="发现 / 跳过理由"
+                                                       @bind:get="GetReviewFindings(item.Dimension)"
+                                                       @bind:set="v => SetReviewFindings(item.Dimension, v)"
+                                                       @bind:event="oninput" />
+                                            </div>
+                                            <div class="wb-form-row">
+                                                <button class="wb-btn" disabled="@Busy"
+                                                        @onclick="() => SubmitDimensionAsync(item.Dimension, true, false)">通过</button>
+                                                <button class="wb-btn wb-btn-danger" disabled="@Busy"
+                                                        @onclick="() => SubmitDimensionAsync(item.Dimension, false, false)">不通过</button>
+                                                <button class="wb-btn" disabled="@Busy"
+                                                        @onclick="() => SubmitDimensionAsync(item.Dimension, false, true)">跳过</button>
+                                            </div>
+                                        }
+                                        else
+                                        {
+                                            <button class="wb-btn wb-btn-link" disabled="@Busy"
+                                                    @onclick="() => OpenDimension(item)">改结论</button>
+                                        }
                                     </td>
                                 </tr>
                             }
@@ -724,6 +734,14 @@ else
     // 评审回写：每个维度独立的发现 / 跳过理由
     private readonly Dictionary<string, string> _reviewFindings = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// 正在编辑结论的维度。
+    ///
+    /// 默认只展开「还没判」的维度 —— 判过的收成「改结论」入口，
+    /// 七个维度不会在屏幕上摆七套一模一样的控件。
+    /// </summary>
+    private readonly HashSet<string> _openDimensions = new(StringComparer.OrdinalIgnoreCase);
+
     private CancellationTokenSource? _timerCts;
 
     protected override async Task OnParametersSetAsync()
@@ -953,6 +971,30 @@ else
 
     // ---- 评审回写 ----
 
+    /// <summary>
+    /// 这个维度的结论控件是否展开。
+    ///
+    /// 没判过的默认展开（正要填），判过的默认收起，点「改结论」才展开。
+    /// </summary>
+    private bool IsOpenDimension(ReviewItemDto item) =>
+        _openDimensions.Contains(item.Dimension)
+        || IsUndecided(item);
+
+    /// <summary>这个维度还没给结论。</summary>
+    private static bool IsUndecided(ReviewItemDto item) =>
+        item.Status is not ("Passed" or "Failed" or "Skipped");
+
+    private void OpenDimension(ReviewItemDto item)
+    {
+        _openDimensions.Add(item.Dimension);
+
+        // 已填过的理由带回来，省得重写一遍
+        if (!_reviewFindings.ContainsKey(item.Dimension) && !string.IsNullOrWhiteSpace(item.Findings))
+        {
+            _reviewFindings[item.Dimension] = item.Findings;
+        }
+    }
+
     private string GetReviewFindings(string dimension) =>
         _reviewFindings.TryGetValue(dimension, out var findings) ? findings : string.Empty;
 
@@ -982,6 +1024,8 @@ else
                 string.IsNullOrWhiteSpace(findings) ? null : findings,
                 reviewer: "human", skipped: skipped);
             _reviewFindings.Remove(dimension);
+            // 判完就收起来 —— 下一轮再点「改结论」才展开
+            _openDimensions.Remove(dimension);
             Error = null;
             await RefreshReviewsAndEventsAsync();
         }
