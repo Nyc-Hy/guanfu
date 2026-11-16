@@ -1,12 +1,16 @@
-﻿<!DOCTYPE html>
+﻿@inject StaticAssetsVersion Assets
+<!DOCTYPE html>
 <html lang="zh-CN">
 
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <base href="/" />
-    <link rel="stylesheet" href="app.css" />
-    <link rel="stylesheet" href="workbench.css" />
+    @* 静态资源带版本号：浏览器拿到的是本地缓存副本时，
+       改完 CSS 刷新页面看不到变化，人会以为没生效。
+       开发环境每次启动版本号都变（见 Program.cs），必然重新拉。 *@
+    <link rel="stylesheet" href="app.css?v=@Assets.Value" />
+    <link rel="stylesheet" href="workbench.css?v=@Assets.Value" />
     @* 没有作用域样式文件了（MainLayout.razor.css 已删，规则并进了 workbench.css），
        这个链接留着就会每个页面都发一个 404。 *@
     <HeadOutlet />
@@ -29,7 +33,7 @@
        （"Cannot pass the parameter 'Body' ... arbitrary code and cannot be serialized"）。
        正确做法是在这里给 Routes 标模式，布局与页面一并继承。 *@
     <Routes @rendermode="InteractiveServer" />
-    <script src="workbench.js"></script>
+    <script src="workbench.js?v=@Assets.Value"></script>
     <script src="_framework/blazor.web.js"></script>
 </body>
 

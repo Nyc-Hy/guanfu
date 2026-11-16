@@ -23,6 +23,13 @@ const int ApiRateWindowMinutes = 1;
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 
+// 静态资源版本号：开发环境每次启动都换，保证浏览器不会拿着上次的 CSS；
+// 生产环境固定，避免每次重启都让所有客户端重拉一遍。
+builder.Services.AddSingleton(new StaticAssetsVersion(
+    builder.Environment.IsDevelopment()
+        ? DateTimeOffset.UtcNow.ToString("yyyyMMddHHmmss")
+        : "1"));
+
 // 会话绑定要读 HTTP 头（X-Workbench-Session / X-Workbench-Repo），
 // 才知道这次 MCP 调用是哪个 agent、哪个仓库发出来的。
 builder.Services.AddHttpContextAccessor();
@@ -137,7 +144,23 @@ if (!app.Environment.IsDevelopment())
 app.UseMiddleware<OriginHostGuardMiddleware>(OriginHostAllowedHosts.Read(builder.Configuration));
 
 app.UseRateLimiter();
-app.UseStaticFiles();
+
+// 开发时静态文件别缓存：改完 CSS / JS 刷新就该看到新的。
+// 默认中间件会带 Last-Modified，浏览器拿到 304 就继续用本地副本 ——
+// 人会以为「改了没生效」，其实拿的是旧文件。
+// 生产环境保持默认缓存（那里缓存是对的）。
+app.UseStaticFiles(new StaticFileOptions
+{
+    OnPrepareResponse = ctx =>
+    {
+        if (app.Environment.IsDevelopment())
+        {
+            ctx.Context.Response.Headers.CacheControl = "no-cache, no-store, must-revalidate";
+            ctx.Context.Response.Headers.Pragma = "no-cache";
+            ctx.Context.Response.Headers.Expires = "0";
+        }
+    }
+});
 app.UseAntiforgery();
 
 // 未知路径要重新执行到 /not-found-handler，让 Blazor 渲染中文 404。
