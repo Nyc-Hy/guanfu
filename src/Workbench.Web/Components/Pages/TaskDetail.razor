@@ -54,7 +54,7 @@ else
                     <span class="wb-chip @(Context.BranchReady ? "wb-chip-ok" : "wb-chip-warn")">⎇ @Context.Task.Branch</span>
                 }
                 <span> · </span>
-                <span class="wb-chip">@UiText.Status(Context.Task.Status)</span>
+                <span class="wb-chip @UiText.StatusClass(Context.Task.Status)">@UiText.Status(Context.Task.Status)</span>
                 @if (!string.IsNullOrWhiteSpace(Context.Task.ClaimedBy))
                 {
                     <span> · 持有者 @Context.Task.ClaimedBy</span>
@@ -105,7 +105,9 @@ else
         </div>
     }
 
-    <div class="wb-detail-grid">
+    @* 精简视图下侧栏整列都是次要区块 —— 留着就是右边空 340px，
+       主栏反而被挤窄。让主栏占满，展开后侧栏再回来。 *@
+    <div class="wb-detail-grid @(Compact ? "wb-detail-single" : "")">
         <div class="wb-detail-main @(Compact ? "wb-compact" : "")">
             <section class="wb-panel">
                 <h3>状态流转</h3>
@@ -520,7 +522,7 @@ else
             </section>
         </div>
 
-        <aside class="wb-detail-side @(Compact ? "wb-compact" : "")">
+        <aside class="@(Compact ? "wb-detail-collapsed" : "wb-detail-side")">
             <section class="wb-panel wb-secondary">
                 <h3>迭代版本</h3>
                 <div class="wb-form-row">
@@ -534,7 +536,7 @@ else
                 </div>
                 @if (MilestoneItems.Count == 0)
                 {
-                    <p class="wb-muted">项目还没有迭代版本，去看板页添加。</p>
+                    <p class="wb-muted">项目还没有迭代版本，去项目页的「迭代版本」页签添加。</p>
                 }
             </section>
 
@@ -566,7 +568,7 @@ else
                 </div>
                 <p class="wb-muted">
                     当前：@(string.IsNullOrWhiteSpace(Context.Task.Assignee) ? "未分派" : Context.Task.Assignee)
-                    · @Context.Task.Priority
+                    · @UiText.Priority(Context.Task.Priority)
                     @if (Context.Task.DueAt is not null)
                     {
                         <span> · 截止 @Context.Task.DueAt.Value.ToLocalTime().ToString("MM-dd HH:mm")</span>

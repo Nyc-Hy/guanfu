@@ -116,8 +116,8 @@
     「人工点裁决」共用。两个操作撞上就是
     "A second operation was started on this context instance"。
     每个操作单开一个 scope（`ScopeFactory.CreateScope()`）。
-    **页面上新增的定时刷新也一样**：总览、看板的 15 秒自动刷新若跟页面上的
-    写操作共用电路级 DbContext，人正拖拽流转状态时定时器来查库，就是同一个错。
+    **页面上新增的定时刷新也一样**：总览、项目任务页的 15 秒自动刷新若跟页面上的
+    写操作共用电路级 DbContext，人正点「流转」推状态时定时器来查库，就是同一个错。
     测试里同理：`WorkbenchTestHost` 的审批服务每次给新的 DbContext，
     别让「等审批」的轮询和「裁决」的写共用一个。
 22. **REST 端点的敏感分类有测试兜底**：`EndpointClassificationTests` 会枚举所有
@@ -182,12 +182,16 @@
     两个例外：`/connect` 与 `/mcp-tools` 这两页是给开发者按名字调 agent 用的，
     原始工具名可以出现在那里，但要用中文说法兜底（名字在次要位置或折叠区）。
     页面区块别一铺十几块 —— 任务详情用**精简视图**（`wb-compact`）把次要区块收起来。
+    **列表与分组一律用页签 + 表格**（`wb-tabs` / `wb-table`），别铺小卡片格子 ——
+    卡片格 / 看板列（`wb-grid`、`wb-card`、`wb-board`、`wb-column`）已经删掉，别再加回来。
+    状态流转在表格行内做（「流转到…」下拉 + 按钮，选项只列 `TaskStatusMachine.AllowedFrom`），
+    不用拖拽。
 
 31. **列表接口必须有上限**：
-    审批、看板、审计这些列表要一次拉进浏览器的，全都要限量 + 客户端翻页 ——
+    审批、项目任务页、审计这些列表要一次拉进浏览器的，全都要限量 + 客户端翻页 ——
     用久了每个项目几千条任务、每次审批留一条记录，不设上限页面直接卡死。
     `ApprovalService.ListAsync` 的 `limit` 放在 `CancellationToken` 之后（不破坏位置参数调用），
-    看板用 `Tasks.ListAsync(limit:)`。单测 `ListLimitTests` 钉住这条。
+    项目任务页用 `Tasks.ListAsync(limit:)`。单测 `ListLimitTests` 钉住这条。
     **翻页与自动刷新要分开**：定时刷新不能把页码拨回第一页（`RefreshAsync(resetPage:)`），
     只有换筛选条件才重置。
 

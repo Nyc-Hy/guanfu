@@ -10,6 +10,15 @@
     @* 没有作用域样式文件了（MainLayout.razor.css 已删，规则并进了 workbench.css），
        这个链接留着就会每个页面都发一个 404。 *@
     <HeadOutlet />
+    @* 主题在样式之后、Blazor 之前落定：等交互式电路起来再切的话，
+       用户上次选的浅色会先闪一下默认的深色。 *@
+    <script>
+        try {
+            if (localStorage.getItem('wb-theme') === 'light') {
+                document.documentElement.setAttribute('data-theme', 'light');
+            }
+        } catch (e) { }
+    </script>
 </head>
 
 <body>
@@ -20,6 +29,7 @@
        （"Cannot pass the parameter 'Body' ... arbitrary code and cannot be serialized"）。
        正确做法是在这里给 Routes 标模式，布局与页面一并继承。 *@
     <Routes @rendermode="InteractiveServer" />
+    <script src="workbench.js"></script>
     <script src="_framework/blazor.web.js"></script>
 </body>
 

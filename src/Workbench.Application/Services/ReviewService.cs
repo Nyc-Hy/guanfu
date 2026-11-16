@@ -84,7 +84,7 @@ public class ReviewGateException(ReviewGateDto gate)
         }
 
         return $"评审还没过（{string.Join("；", parts)}）。" +
-               "用 workbench_submit_review 回写每个维度的结论，全部通过后才能结项。";
+               "到任务详情页的评审区逐维度回写结论（agent 走评审回写工具），全部通过后才能结项。";
     }
 }
 

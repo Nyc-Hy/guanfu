@@ -121,17 +121,10 @@ else
         ? $"{hours:0.#} 小时"
         : $"{hours / 24:0.#} 天";
 
-    private static string StatusLabel(string status) => status switch
-    {
-        "Draft" => "草稿",
-        "DocsReady" => "文档就绪",
-        "Planned" => "已规划",
-        "InDev" => "开发中",
-        "Testing" => "测试中",
-        "Review" => "待评审",
-        "Done" => "已完成",
-        "Blocked" => "阻塞",
-        "Cancelled" => "已取消",
-        _ => status
-    };
+    /// <summary>
+    /// 状态文案统一走 UiText —— 这页原来自己抄了一份，
+    /// 「已规划」跟别处的「已计划」对不上，「阻塞」跟「受阻」也对不上。
+    /// 同一个状态两种说法，人会以为是两个状态。
+    /// </summary>
+    private static string StatusLabel(string status) => UiText.Status(status);
 }

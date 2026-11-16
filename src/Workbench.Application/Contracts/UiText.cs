@@ -31,6 +31,30 @@ public static class UiText
         => status is null ? "—" : Status(status.Value);
 
     /// <summary>
+    /// 任务状态的展示色（CSS 类）。
+    ///
+    /// 规矩跟 <see cref="Status"/> 一样：**别在页面里各写各的映射**。
+    /// 同一个状态在总览、项目页、搜索结果、详情页得是同一个颜色，
+    /// 否则人扫一眼表就知道「这个状态在这页是红的、在那页是黄的」，是同一件事两套说法。
+    /// </summary>
+    public static string StatusClass(TaskStatus status) => status switch
+    {
+        TaskStatus.InDev => "wb-status-active",
+        TaskStatus.Testing => "wb-status-active",
+        TaskStatus.Review => "wb-status-review",
+        TaskStatus.Done => "wb-status-ok",
+        TaskStatus.Blocked => "wb-status-danger",
+        TaskStatus.Cancelled => "wb-status-muted",
+        _ => "wb-status-neutral"
+    };
+
+    /// <summary>任务状态的展示色（字符串形式，认不出来就用中性色）。</summary>
+    public static string StatusClass(string? status)
+        => Enum.TryParse<TaskStatus>(status, out var parsed)
+            ? StatusClass(parsed)
+            : "wb-status-neutral";
+
+    /// <summary>
     /// 认状态：既能认枚举名（`DocsReady`），也能认中文说法（`文档就绪`）。
     ///
     /// 人敲命令用中文，agent 用枚举名 —— 两种都得能落地，不然「界面上说中文、
@@ -63,6 +87,16 @@ public static class UiText
 
         return false;
     }
+
+    /// <summary>任务优先级。</summary>
+    public static string Priority(TaskPriority priority) => priority switch
+    {
+        TaskPriority.Low => "低",
+        TaskPriority.Normal => "普通",
+        TaskPriority.High => "高",
+        TaskPriority.Critical => "紧急",
+        _ => priority.ToString()
+    };
 
     /// <summary>所有状态的清单（中文），给「你传错了」的错误消息用。</summary>
     public static string StatusNames()

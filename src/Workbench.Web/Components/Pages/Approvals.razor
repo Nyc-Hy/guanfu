@@ -11,13 +11,21 @@
 <PageTitle>审批 · 开发工作台</PageTitle>
 
 <div class="wb-page-head">
-    <h1>审批</h1>
-    <div class="wb-form-row">
-        <button class="wb-btn @(ShowHistory ? "" : "wb-btn-primary")" @onclick="() => SwitchTabAsync(false)">待处理</button>
-        <button class="wb-btn @(ShowHistory ? "wb-btn-primary" : "")" @onclick="() => SwitchTabAsync(true)">历史</button>
-        <button class="wb-btn" @onclick="() => RefreshAsync()">刷新</button>
-        <span class="wb-muted">每 15 秒自动刷新</span>
+    <div>
+        <h1>审批</h1>
+        <p class="wb-muted">
+            agent 要写数据库、提交代码、推送或执行命令时，得在这里点头才放行。
+        </p>
     </div>
+    <div class="wb-form-row">
+        <span class="wb-muted">每 15 秒自动刷新</span>
+        <button class="wb-btn wb-btn-sm" @onclick="() => RefreshAsync()">刷新</button>
+    </div>
+</div>
+
+<div class="wb-tabs">
+    <button class="wb-tab @(ShowHistory ? "" : "wb-tab-active")" @onclick="() => SwitchTabAsync(false)">待处理</button>
+    <button class="wb-tab @(ShowHistory ? "wb-tab-active" : "")" @onclick="() => SwitchTabAsync(true)">历史</button>
 </div>
 
 @* 数据没加载出来时也要有话说，不能白屏 *@
@@ -50,38 +58,36 @@
     </div>
 }
 
-<div class="wb-panel">
-    <div class="wb-form-row">
-        <label class="wb-label">项目</label>
-        <select class="wb-input" @bind="SelectedProjectId" @bind:after="() => RefreshAsync(resetPage: true)">
-            <option value="">全部项目</option>
-            @foreach (var project in ProjectItems)
-            {
-                <option value="@project.Id">@project.Name</option>
-            }
-        </select>
-        @if (ShowHistory)
+<div class="wb-filter-bar">
+    <label class="wb-label">项目</label>
+    <select class="wb-input" @bind="SelectedProjectId" @bind:after="() => RefreshAsync(resetPage: true)">
+        <option value="">全部项目</option>
+        @foreach (var project in ProjectItems)
         {
-            <label class="wb-label">状态</label>
-            <select class="wb-input" @bind="HistoryStatusFilter" @bind:after="() => RefreshAsync(resetPage: true)">
-                <option value="">全部</option>
-                <option value="@nameof(ApprovalStatus.Pending)">待审批</option>
-                <option value="@nameof(ApprovalStatus.Approved)">已批准</option>
-                <option value="@nameof(ApprovalStatus.Rejected)">已驳回</option>
-                <option value="@nameof(ApprovalStatus.Expired)">已过期</option>
-                <option value="@nameof(ApprovalStatus.Executing)">执行中</option>
-                <option value="@nameof(ApprovalStatus.Executed)">已执行</option>
-            </select>
+            <option value="@project.Id">@project.Name</option>
         }
-    </div>
+    </select>
+    @if (ShowHistory)
+    {
+        <label class="wb-label">状态</label>
+        <select class="wb-input" @bind="HistoryStatusFilter" @bind:after="() => RefreshAsync(resetPage: true)">
+            <option value="">全部</option>
+            <option value="@nameof(ApprovalStatus.Pending)">待审批</option>
+            <option value="@nameof(ApprovalStatus.Approved)">已批准</option>
+            <option value="@nameof(ApprovalStatus.Rejected)">已驳回</option>
+            <option value="@nameof(ApprovalStatus.Expired)">已过期</option>
+            <option value="@nameof(ApprovalStatus.Executing)">执行中</option>
+            <option value="@nameof(ApprovalStatus.Executed)">已执行</option>
+        </select>
+    }
 </div>
 
 @if (!ShowHistory)
 {
     @* 批量裁决工具条：人工审核通常是「这批都同意」 *@
-    <div class="wb-panel">
+    <div class="wb-panel wb-toolbar">
         <div class="wb-form-row">
-            <label class="wb-label" style="display:flex;align-items:center;gap:6px">
+            <label class="wb-check">
                 <input type="checkbox" checked="@AllSelected" @onchange="ToggleSelectAll" />
                 全选
             </label>
@@ -97,7 +103,7 @@
         @if (_confirmBatchApprove)
         {
             @* 批准前确认：这是执行 shell / db 写的最后人工关口，把要执行的东西摊开 *@
-            <div style="border:1px solid #c0392b;border-radius:8px;padding:12px;margin-top:8px">
+            <div class="wb-alert">
                 <p class="wb-error">确认批准以下 @_selected.Count 条审批？批准后将允许执行对应操作。</p>
                 @foreach (var item in Items.Where(i => _selected.Contains(i.Id)).Take(10))
                 {
@@ -229,7 +235,7 @@ else
                 @if (_confirmApproveId == approval.Id)
                 {
                     @* 单条批准确认：payload 摘要摊开，看清要执行什么再点确认 *@
-                    <div style="border:1px solid #c0392b;border-radius:8px;padding:12px;margin-top:8px">
+                    <div class="wb-alert">
                         <p class="wb-error">确认批准「@UiText.Tool(approval.ToolName)」？批准后将允许执行：</p>
                         <p class="wb-muted">@approval.Summary</p>
                         <pre class="wb-sql">@approval.Payload</pre>

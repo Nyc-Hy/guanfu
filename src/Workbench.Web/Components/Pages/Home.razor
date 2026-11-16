@@ -115,7 +115,7 @@ else if (Data is not null)
                             <tr>
                                 <td><a href="/tasks/@t.Id">@UiText.TaskRef(t.Key, t.Title)</a></td>
                                 <td class="wb-muted">@t.ProjectName</td>
-                                <td><span class="wb-chip">@UiText.Status(t.Status)</span></td>
+                                <td><span class="wb-chip @UiText.StatusClass(t.Status)">@UiText.Status(t.Status)</span></td>
                                 <td>
                                     @if (!string.IsNullOrWhiteSpace(t.AgentId))
                                     {
@@ -215,40 +215,39 @@ else if (Data is not null)
     }
     else
     {
-        <div class="wb-grid" style="margin-top:12px;">
-            @foreach (var project in Data.Projects)
-            {
-                <a class="wb-card" href="/projects/@project.Id">
-                    <div class="wb-card-head">
-                        <h2>@project.Name</h2>
-                        @if (string.IsNullOrWhiteSpace(project.RepoRoot))
-                        {
-                            <span class="wb-tag wb-tag-warn">没绑仓库</span>
-                        }
-                        else
-                        {
-                            <span class="wb-tag wb-tag-ok">已绑仓库</span>
-                        }
-                    </div>
-
-                    @if (!string.IsNullOrWhiteSpace(project.Description))
-                    {
-                        <p class="wb-muted">@project.Description</p>
-                    }
-
-                    <div class="wb-card-meta">
-                        <span class="wb-chip">@project.TotalTasks 个任务</span>
-                        @if (project.TotalTasks == 0)
-                        {
-                            <span class="wb-chip wb-chip-warn">还没有任务</span>
-                        }
-                        @if (!string.IsNullOrWhiteSpace(project.RepoPath))
-                        {
-                            <span class="wb-chip wb-chip-muted">@project.RepoPath</span>
-                        }
-                    </div>
-                </a>
-            }
+        <div class="wb-table-scroll" style="margin-top:12px;">
+            <table class="wb-table wb-task-table">
+                <thead>
+                <tr><th>项目</th><th>仓库绑定</th><th>任务</th><th>仓库路径</th><th>描述</th></tr>
+                </thead>
+                <tbody>
+                @foreach (var project in Data.Projects)
+                {
+                    <tr>
+                        <td><a class="wb-task-title" href="/projects/@project.Id">@project.Name</a></td>
+                        <td>
+                            @if (string.IsNullOrWhiteSpace(project.RepoRoot))
+                            {
+                                <span class="wb-tag wb-tag-warn">没绑仓库</span>
+                            }
+                            else
+                            {
+                                <span class="wb-tag wb-tag-ok">已绑仓库</span>
+                            }
+                        </td>
+                        <td>
+                            <span class="wb-chip">@project.TotalTasks 个任务</span>
+                            @if (project.TotalTasks == 0)
+                            {
+                                <span class="wb-chip wb-chip-warn">还没有任务</span>
+                            }
+                        </td>
+                        <td class="wb-muted">@(string.IsNullOrWhiteSpace(project.RepoPath) ? "—" : project.RepoPath)</td>
+                        <td class="wb-muted">@(string.IsNullOrWhiteSpace(project.Description) ? "—" : project.Description)</td>
+                    </tr>
+                }
+                </tbody>
+            </table>
         </div>
     }
 </div>
