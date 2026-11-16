@@ -163,8 +163,7 @@ else
                 <button class="wb-btn" disabled="@Loading" @onclick="() => ReloadAsync()">刷新</button>
             </div>
             <p class="wb-hint">
-                点「状态」那一格就能流转 —— 菜单里只列当前合法的目标状态。
-                每 15 秒自动刷新（不会拨回你的页码）。
+                点「状态」那一格就能流转（菜单里只列当前合法的目标状态）。每 15 秒自动刷新，不拨页码。
             </p>
             @if (Items.Count >= MaxTasks)
             {

@@ -569,6 +569,15 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--wb-accent); }
 .wb-btn:active:not(:disabled) { transform: translateY(.5px); }
 .wb-btn:disabled { opacity: .45; cursor: not-allowed; }
 
+/* 禁用的实心按钮要退回中性色 —— 半透明的蓝看着还是像能点 */
+.wb-btn-primary:disabled,
+.wb-btn-danger:disabled {
+    background: var(--wb-surface-2);
+    border-color: var(--wb-border);
+    color: var(--wb-faint);
+    opacity: 1;
+}
+
 .wb-btn-primary {
     background: var(--wb-accent);
     border-color: var(--wb-accent);
@@ -924,7 +933,11 @@ a.wb-chip:hover { text-decoration: none; border-color: var(--wb-accent-line); ba
     margin-bottom: var(--wb-gap-3);
 }
 
-.wb-filter-key { flex: 1 1 220px; min-width: 180px; }
+.wb-filter-key { flex: 1 1 220px; min-width: 180px; max-width: 340px; }
+
+/* 筛选条里的下拉内容很短（「负责人：全部」），继承下来的 200px 最小宽
+   留着一堆空白，五个控件挤在一行像没对齐。 */
+.wb-filters select.wb-input { min-width: 132px; }
 
 .wb-task-table th:first-child, .wb-task-table td:first-child { width: 60%; }
 
@@ -965,7 +978,8 @@ a.wb-chip:hover { text-decoration: none; border-color: var(--wb-accent-line); ba
     cursor: pointer;
 }
 .wb-status-btn:hover { background: var(--wb-surface-3); color: var(--wb-text); }
-.wb-caret { color: var(--wb-faint); font-size: 9px; }
+/* 三角太小会看着像句点，分不清是状态还是可点的箭头 */
+.wb-caret { color: var(--wb-faint); font-size: 11px; line-height: 1; }
 
 .wb-menu-backdrop { position: fixed; inset: 0; z-index: 50; }
 
