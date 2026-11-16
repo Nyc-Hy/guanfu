@@ -57,6 +57,29 @@ else
 
     <div class="wb-detail-grid">
         <div class="wb-detail-main">
+            @* 七块面板铺开谁也看不过来 —— 按用途分页签，一屏只留要改的那几块。
+               页签跟着 URL 走，链接能直接发人。 *@
+            <div class="wb-tabs" role="tablist">
+                <button class="wb-tab @(ActiveTab == "project" ? "wb-tab-active" : "")" role="tab"
+                        aria-selected="@(ActiveTab == "project")" @onclick='() => GoTab("project")'>
+                    项目
+                </button>
+                <button class="wb-tab @(ActiveTab == "agent" ? "wb-tab-active" : "")" role="tab"
+                        aria-selected="@(ActiveTab == "agent")" @onclick='() => GoTab("agent")'>
+                    agent
+                </button>
+                <button class="wb-tab @(ActiveTab == "notify" ? "wb-tab-active" : "")" role="tab"
+                        aria-selected="@(ActiveTab == "notify")" @onclick='() => GoTab("notify")'>
+                    通知
+                </button>
+                <button class="wb-tab @(ActiveTab == "milestone" ? "wb-tab-active" : "")" role="tab"
+                        aria-selected="@(ActiveTab == "milestone")" @onclick='() => GoTab("milestone")'>
+                    迭代版本 <span class="wb-count">@MilestoneItems.Count</span>
+                </button>
+            </div>
+
+            @if (ActiveTab == "project")
+            {
             <section class="wb-panel">
                 <h3>基本信息</h3>
                 <div class="wb-form-row">
@@ -93,7 +116,9 @@ else
                     <p class="wb-alert wb-alert-warn">@Config.RepoWarning</p>
                 }
             </section>
-
+            }
+            else if (ActiveTab == "agent")
+            {
             <section class="wb-panel">
                 <h3>启动 agent</h3>
                 <div class="wb-form-row">
@@ -119,7 +144,29 @@ else
                     命令不走 shell 解析，不支持管道与重定向。
                 </p>
             </section>
-
+            }
+            else if (ActiveTab == "notify")
+            {
+            <section class="wb-panel">
+                <h3>审批通知</h3>
+                <div class="wb-form-row">
+                    <label class="wb-label">Webhook</label>
+                    <input class="wb-input" placeholder="https://oapi.dingtalk.com/robot/send?access_token=..."
+                           @bind="NotificationWebhookUrl" @bind:event="oninput" />
+                </div>
+                <div class="wb-form-row">
+                    <label class="wb-label">格式</label>
+                    <select class="wb-input" @bind="NotificationFormat">
+                        <option value="generic">generic（通用 JSON）</option>
+                        <option value="dingtalk">dingtalk（钉钉）</option>
+                        <option value="feishu">feishu（飞书）</option>
+                    </select>
+                </div>
+                <p class="wb-hint">有人请求审批时推一条消息过去。人不在电脑前时，审批不会静静躺到过期。</p>
+            </section>
+            }
+            else
+            {
             <section class="wb-panel">
                 <h3>迭代版本 / 里程碑</h3>
                 @if (MilestoneItems.Count == 0)
@@ -174,27 +221,10 @@ else
                     }
                 }
             </section>
+            }
         </div>
 
         <aside class="wb-detail-side">
-            <section class="wb-panel">
-                <h3>审批通知</h3>
-                <div class="wb-form-row">
-                    <label class="wb-label">Webhook</label>
-                    <input class="wb-input" placeholder="https://oapi.dingtalk.com/robot/send?access_token=..."
-                           @bind="NotificationWebhookUrl" @bind:event="oninput" />
-                </div>
-                <div class="wb-form-row">
-                    <label class="wb-label">格式</label>
-                    <select class="wb-input" @bind="NotificationFormat">
-                        <option value="generic">generic（通用 JSON）</option>
-                        <option value="dingtalk">dingtalk（钉钉）</option>
-                        <option value="feishu">feishu（飞书）</option>
-                    </select>
-                </div>
-                <p class="wb-hint">有人请求审批时推一条消息过去。人不在电脑前时，审批不会静静躺到过期。</p>
-            </section>
-
             <section class="wb-panel">
                 <h3>当前配置</h3>
                 <ul class="wb-timeline">
@@ -217,7 +247,24 @@ else
 }
 
 @code {
+    /// <summary>
+    /// 页签跟着 URL 走 —— 「/projects/{id}/settings?tab=agent」能直接落到 agent 那一页。
+    /// </summary>
+    [SupplyParameterFromQuery(Name = "tab")]
+    public string? Tab { get; set; }
+
     [Parameter] public Guid ProjectId { get; set; }
+
+    private string ActiveTab => Tab switch
+    {
+        "agent" => "agent",
+        "notify" => "notify",
+        "milestone" => "milestone",
+        _ => "project"
+    };
+
+    /// <summary>已经加载过的项目。切页签也是参数变化，别顺手重载。</summary>
+    private Guid? _loadedProjectId;
 
     private ProjectConfigDto? Config { get; set; }
     private IReadOnlyList<MilestoneDto> MilestoneItems { get; set; } = [];
@@ -260,7 +307,25 @@ else
     {
         Gate ??= new UiTokenGate(Tokens.Token);
         Gate.AuthorizeFromRequest(RequestContext?.Request);
-        await ReloadAsync();
+
+        // 只在项目换了才重载：切页签也是参数变化，
+        // 重载会把人正在填的草稿冲掉。
+        if (_loadedProjectId != ProjectId)
+        {
+            _loadedProjectId = ProjectId;
+            await ReloadAsync();
+        }
+    }
+
+    /// <summary>切页签。URL 是唯一真相 —— 深链能直接落到某一页。</summary>
+    private void GoTab(string tab)
+    {
+        if (tab == ActiveTab)
+        {
+            return;
+        }
+
+        Nav.NavigateTo($"/projects/{ProjectId}/settings?tab={tab}", replace: true);
     }
 
     protected override Task OnAfterRenderAsync(bool firstRender)
