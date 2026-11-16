@@ -186,6 +186,17 @@
     卡片格 / 看板列（`wb-grid`、`wb-card`、`wb-board`、`wb-column`）已经删掉，别再加回来。
     状态流转在表格行内做（「流转到…」下拉 + 按钮，选项只列 `TaskStatusMachine.AllowedFrom`），
     不用拖拽。
+    **颜色一律走 CSS 变量**：`wwwroot/workbench.css` 是 token 化的设计系统（`--wb-*`），
+    页面里出现 `#2563eb` 这种硬编码值就是漏出来了 —— 亮色主题下那些颜色在浅底上
+    对比度不够，换主题时也不知道还有哪些地方要改。任务状态色走 `UiText.StatusClass`，
+    事件类型色走 `wb-ev-*` 类。固定列宽写成 CSS 类，别塞进 `style`。
+    内联 `style` 只留给运行时算出来的值（进度条宽度、层级缩进）；
+    **固定间距走间距助手类**（`wb-mt-2` / `wb-mt-3` / `wb-mb-3` / `wb-my-3`），
+    别写 `style="margin-top:8px"` 这种。
+    **表格一律包在 `.wb-table-scroll` 里**：窄屏时表自己在容器里横向滚，
+    别让整页被撑宽（`.wb-table-wide` 是列多的表，额外给更大的最小宽度）。
+    改完 CSS 要**重启服务**才看得到 —— 静态资源 URL 带版本号（`StaticAssetsVersion`），
+    Development 下每次启动自动变号，开发环境还加了 no-cache 头，两边都别关。
 
 31. **列表接口必须有上限**：
     审批、项目任务页、审计这些列表要一次拉进浏览器的，全都要限量 + 客户端翻页 ——
