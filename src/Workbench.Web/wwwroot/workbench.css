@@ -1264,6 +1264,26 @@ a.wb-chip:hover { text-decoration: none; border-color: var(--wb-accent-line); ba
 
 /* ---------- 18. 提示条 ---------- */
 
+/* 状态条：背景信息 + 动作，一行装下，不占一整块面板 */
+.wb-statusbar {
+    display: flex;
+    align-items: center;
+    gap: var(--wb-gap-3);
+    flex-wrap: wrap;
+    padding: var(--wb-gap-3) var(--wb-gap-4);
+    background: var(--wb-surface-2);
+    border: 1px solid var(--wb-border);
+    border-radius: var(--wb-r);
+    margin-bottom: var(--wb-gap-4);
+}
+.wb-statusbar-text {
+    flex: 1 1 320px;
+    min-width: 0;
+    color: var(--wb-text-2);
+}
+.wb-statusbar-text > * { margin-right: var(--wb-gap-2); }
+.wb-statusbar-text > *:last-child { margin-right: 0; }
+
 .wb-alert {
     border: 1px solid var(--wb-danger);
     background: var(--wb-danger-soft);

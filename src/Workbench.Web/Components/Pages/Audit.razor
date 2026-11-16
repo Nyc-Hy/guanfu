@@ -20,48 +20,53 @@
     </div>
     <div class="wb-form-row">
         <button class="wb-btn" disabled="@Loading" @onclick="() => ReloadAsync(resetPage: false)">刷新</button>
-        <button class="wb-btn" disabled="@Verifying" @onclick="VerifyAsync">验哈希链</button>
     </div>
 </div>
 
-@if (ChainMessage is not null)
-{
-    <div class="wb-panel">
-        @if (ChainIntact)
+@* 链的状态与动作挤在一条里 —— 这是背景信息，不是页面的主内容，
+   不用为它铺一整块面板。 *@
+<div class="wb-statusbar">
+    <div class="wb-statusbar-text">
+        @if (ChainMessage is not null)
         {
-            <p><span class="wb-tag wb-tag-ok">链完整</span> @ChainMessage</p>
+            @if (ChainIntact)
+            {
+                <span class="wb-tag wb-tag-ok">链完整</span>
+            }
+            else
+            {
+                <span class="wb-tag wb-tag-danger">链断了</span>
+            }
+            <span>@ChainMessage</span>
         }
         else
         {
-            <p><span class="wb-tag wb-tag-danger">链断了</span> @ChainMessage</p>
+            <span class="wb-muted">哈希链还没验过。</span>
         }
-    </div>
-}
 
-@* 链头归档：库里自己算的链挡不住「连哈希一起重算」——
-   把链头写到工作台数据目录之外，才多一道对上的机会。 *@
-<div class="wb-panel">
-    <h3>链头归档</h3>
-    <p class="wb-muted">
-        归档路径：@if (string.IsNullOrWhiteSpace(ArchivePath))
+        @if (!string.IsNullOrWhiteSpace(ArchivePath))
         {
-            <span class="wb-tag wb-tag-warn">未配置</span>
-            <span>（配 <code>Workbench:AuditArchivePath</code> 才生效；路径必须在工作台数据目录之外。）</span>
+            <span class="wb-muted">归档路径 <code>@ArchivePath</code></span>
         }
         else
         {
-            <code>@ArchivePath</code>
+            <span class="wb-tag wb-tag-warn">未配置归档路径</span>
+            <span class="wb-muted">配 <code>Workbench:AuditArchivePath</code> 才生效；路径必须在工作台数据目录之外。</span>
         }
-    </p>
 
-    @if (ArchiveResultMessage is not null)
-    {
-        <p><span class="wb-tag wb-tag-ok">已归档</span> @ArchiveResultMessage</p>
-    }
+        @if (!Authorized && !string.IsNullOrWhiteSpace(ArchivePath))
+        {
+            <span class="wb-muted">归档要人工凭证（往工作台外面写文件）。</span>
+        }
 
-    @if (ArchiveCompareMessage is not null)
-    {
-        <p>
+        @if (ArchiveResultMessage is not null)
+        {
+            <span class="wb-tag wb-tag-ok">已归档</span>
+            <span>@ArchiveResultMessage</span>
+        }
+
+        @if (ArchiveCompareMessage is not null)
+        {
             @switch (ArchiveCompareKind)
             {
                 case "ok":
@@ -74,17 +79,13 @@
                     <span class="wb-tag wb-chip-muted">还没归档过</span>
                     break;
             }
-            @ArchiveCompareMessage
-        </p>
-    }
-
+            <span>@ArchiveCompareMessage</span>
+        }
+    </div>
     <div class="wb-form-row">
+        <button class="wb-btn" disabled="@Verifying" @onclick="VerifyAsync">验哈希链</button>
         <button class="wb-btn" disabled="@(Busy || !Authorized)" @onclick="ArchiveAsync">归档链头</button>
         <button class="wb-btn" disabled="@Busy" @onclick="VerifyArchiveAsync">与归档对账</button>
-        @if (!Authorized && !string.IsNullOrWhiteSpace(ArchivePath))
-        {
-            <span class="wb-muted">归档要人工凭证（往工作台外面写文件）。</span>
-        }
     </div>
 </div>
 
