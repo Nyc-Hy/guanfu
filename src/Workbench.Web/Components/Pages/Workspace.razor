@@ -58,7 +58,7 @@
                     <strong>数据库快照（workbench.db）、文档原件（documents/）、加密密钥（secret.key）、agent 运行日志（runs/）</strong>。
                     密钥能解开库里所有加密的数据库密码 —— 导出目录要放在只有你能访问的位置，
                     传输时请加密。目标目录里的同名旧导出产物会被替换。
-                    <div class="wb-form-row" style="margin-top:10px">
+                    <div class="wb-form-row wb-mt-3">
                         <button class="wb-btn wb-btn-primary" disabled="@(!Authorized || Busy)" @onclick="ExportAsync">
                             @(Exporting ? "导出中…" : "确认导出")
                         </button>

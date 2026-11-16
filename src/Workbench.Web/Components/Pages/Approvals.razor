@@ -113,7 +113,7 @@
                 {
                     <p class="wb-muted">…还有 @(_selected.Count - 10) 条。</p>
                 }
-                <div class="wb-form-row" style="margin-top:8px">
+                <div class="wb-form-row wb-mt-2">
                     <button class="wb-btn wb-btn-danger" disabled="@Submitting"
                             @onclick="() => BatchDecideAsync(true)">确认批准</button>
                     <button class="wb-btn" @onclick="() => _confirmBatchApprove = false">取消</button>
@@ -138,7 +138,7 @@ else
 
             <div class="wb-panel @(approval.Id == _focusId ? "wb-approval-focus" : "")" id="approval-@approval.Id">
                 <div class="wb-card-head">
-                    <div style="display:flex;align-items:center;gap:8px">
+                    <div class="wb-chip-row">
                         @if (!ShowHistory)
                         {
                             <input type="checkbox" checked="@_selected.Contains(approval.Id)"

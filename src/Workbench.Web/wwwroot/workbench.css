@@ -39,6 +39,15 @@
     --wb-danger: #ef5f6b;
     --wb-danger-soft: rgba(239, 95, 107, .13);
 
+    /* 事件类型色：时间线上的图标与标签按事件种类着色。
+       亮色主题要更深 —— 暗色的那套在浅底上对比度不够。 */
+    --wb-ev-blue: #60a5fa;
+    --wb-ev-purple: #a78bfa;
+    --wb-ev-cyan: #22d3ee;
+    --wb-ev-green: #34d399;
+    --wb-ev-amber: #fbbf24;
+    --wb-ev-gray: #94a3b8;
+
     /* 阴影 */
     --wb-shadow-1: 0 1px 2px rgba(0, 0, 0, .35);
     --wb-shadow-2: 0 4px 16px rgba(0, 0, 0, .30);
@@ -102,6 +111,13 @@
     --wb-warn-soft: rgba(182, 118, 18, .11);
     --wb-danger: #d23844;
     --wb-danger-soft: rgba(210, 56, 68, .09);
+
+    --wb-ev-blue: #2563eb;
+    --wb-ev-purple: #7c3aed;
+    --wb-ev-cyan: #0e7490;
+    --wb-ev-green: #15803d;
+    --wb-ev-amber: #b45309;
+    --wb-ev-gray: #64748b;
 
     --wb-shadow-1: 0 1px 2px rgba(16, 24, 40, .06);
     --wb-shadow-2: 0 4px 14px rgba(16, 24, 40, .08);
@@ -392,6 +408,10 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--wb-accent); }
     padding: var(--wb-gap-3) var(--wb-gap-4);
 }
 
+/* 批量裁决理由是「一句话」级别的输入，拉成横贯整条工具条的大框
+   既不像输入框也不像按钮组。给它一个上限，剩下的空间留给操作按钮。 */
+.wb-toolbar .wb-input { flex: 0 1 360px; max-width: 360px; }
+
 /* 扁平容器：留结构不留外观（筛选条、提示区用） */
 .wb-panel-flat {
     background: transparent;
@@ -435,14 +455,33 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--wb-accent); }
 .wb-error { color: var(--wb-danger); font-size: var(--wb-fs); margin: var(--wb-gap-2) 0 0; }
 .wb-faint { color: var(--wb-faint); }
 
+/* 间距助手：固定的间距走类，不写内联 style。
+   内联 style 只留给运行时算出来的值（进度条宽度、层级缩进）。 */
+.wb-mt-2 { margin-top: var(--wb-gap-2); }
+.wb-mt-3 { margin-top: var(--wb-gap-3); }
+.wb-mb-3 { margin-bottom: var(--wb-gap-3); }
+.wb-my-3 { margin: var(--wb-gap-3) 0; }
+
 .wb-empty {
-    padding: var(--wb-gap-7) var(--wb-gap-4);
+    padding: var(--wb-gap-6) var(--wb-gap-4);
     text-align: center;
     color: var(--wb-muted);
     border: 1px dashed var(--wb-border-strong);
     border-radius: var(--wb-r-lg);
     background: var(--wb-surface);
     font-size: var(--wb-fs);
+}
+
+/* 提示块：讲「怎么用」而不是「这里没有东西」——
+   不需要虚线大框，占一行就够。 */
+.wb-note {
+    padding: var(--wb-gap-4);
+    color: var(--wb-muted);
+    font-size: var(--wb-fs);
+    line-height: 1.7;
+    background: var(--wb-surface-2);
+    border: 1px solid var(--wb-border);
+    border-radius: var(--wb-r);
 }
 
 .wb-loading { padding: var(--wb-gap-7); text-align: center; color: var(--wb-muted); font-size: var(--wb-fs); }
@@ -556,6 +595,33 @@ textarea.wb-input {
     width: 100%;
 }
 
+/* 原生文件选择框：浏览器默认那个灰按钮跟整套控件不是一个画风。
+   用 ::file-selector-button 单改按钮，不用隐藏 input（隐藏了就得自己维护状态）。 */
+input[type="file"] {
+    color: var(--wb-muted);
+    font-size: var(--wb-fs);
+}
+
+input[type="file"]::file-selector-button {
+    height: var(--wb-ctl-h);
+    padding: 0 var(--wb-gap-3);
+    margin-right: var(--wb-gap-3);
+    border-radius: var(--wb-r-sm);
+    border: 1px solid var(--wb-border-strong);
+    background: var(--wb-surface-2);
+    color: var(--wb-text);
+    font-family: inherit;
+    font-size: var(--wb-fs);
+    line-height: 1;
+    cursor: pointer;
+    transition: background .12s ease, border-color .12s ease;
+}
+
+input[type="file"]::file-selector-button:hover {
+    background: var(--wb-surface-3);
+    border-color: var(--wb-faint);
+}
+
 .wb-form-row {
     display: flex;
     gap: var(--wb-gap-2);
@@ -608,6 +674,20 @@ textarea.wb-input {
 
 .wb-table-scroll { overflow-x: auto; }
 .wb-table-scroll > .wb-table { min-width: 640px; }
+
+/* 横向可滚的表：滚动条常驻。macOS 默认是「浮起来」的，一不动就看不见，
+   右边还压着几列的时候没人知道要去滑。 */
+.wb-table-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: var(--wb-border-strong) transparent;
+}
+.wb-table-scroll::-webkit-scrollbar { height: 8px; }
+.wb-table-scroll::-webkit-scrollbar-track { background: transparent; }
+.wb-table-scroll::-webkit-scrollbar-thumb {
+    background: var(--wb-border-strong);
+    border-radius: var(--wb-r-full);
+}
+.wb-table-scroll::-webkit-scrollbar-thumb:hover { background: var(--wb-faint); }
 
 /* 列多的表：给它更大的最小宽度，窄屏下横向滚动，
    而不是把每个格子压成「一个字一行」的竖条。 */
@@ -712,6 +792,12 @@ a.wb-chip:hover { text-decoration: none; border-color: var(--wb-accent-line); ba
 .wb-chip-warn { color: var(--wb-warn); border-color: transparent; background: var(--wb-warn-soft); }
 .wb-chip-danger { color: var(--wb-danger); border-color: transparent; background: var(--wb-danger-soft); }
 
+/* 列宽：表头里写死宽度会让窄屏表格挤爆，交给 CSS */
+.wb-col-switch { width: 64px; }
+.wb-col-policy { width: 96px; }
+.wb-col-verdict { width: 96px; }
+.wb-col-writeback { width: 320px; }
+
 /* 任务状态的展示色。映射在 UiText.StatusClass —— 各页面别各写一套。
    放在 .wb-chip 之后：同特异度下后者才生效，放前面会被 .wb-chip 的颜色盖掉。 */
 .wb-status-neutral { color: var(--wb-muted); background: var(--wb-surface-2); border-color: var(--wb-border); }
@@ -720,6 +806,26 @@ a.wb-chip:hover { text-decoration: none; border-color: var(--wb-accent-line); ba
 .wb-status-ok { color: var(--wb-ok); background: var(--wb-ok-soft); border-color: transparent; }
 .wb-status-danger { color: var(--wb-danger); background: var(--wb-danger-soft); border-color: transparent; }
 .wb-status-muted { color: var(--wb-faint); background: transparent; border-color: var(--wb-border); }
+
+/* 事件类型色：时间线上的图标与事件标签按种类着色 */
+.wb-ev-blue { color: var(--wb-ev-blue); }
+.wb-ev-purple { color: var(--wb-ev-purple); }
+.wb-ev-cyan { color: var(--wb-ev-cyan); }
+.wb-ev-green { color: var(--wb-ev-green); }
+.wb-ev-amber { color: var(--wb-ev-amber); }
+.wb-ev-gray { color: var(--wb-ev-gray); }
+
+/* 事件标签是 chip：边框跟着事件色走 */
+.wb-chip[class*="wb-ev-"] { border-color: currentColor; }
+
+/* 一排小标签（审批卡头部：工具名、调用方、任务、项目） */
+.wb-chip-row {
+    display: flex;
+    align-items: center;
+    gap: var(--wb-gap-2);
+    flex-wrap: wrap;
+    min-width: 0;
+}
 
 .wb-chip-x {
     background: none;
@@ -1012,6 +1118,17 @@ a.wb-chip:hover { text-decoration: none; border-color: var(--wb-accent-line); ba
 
 .wb-filter-bar .wb-input { flex: 0 1 auto; min-width: 150px; }
 
+/* 日期区间：两个日期框加「至」算一个整体，
+   免得换行时「至」自己占一行。 */
+.wb-date-range {
+    display: flex;
+    align-items: center;
+    gap: var(--wb-gap-2);
+    flex: 0 1 auto;
+}
+
+.wb-date-range .wb-input { min-width: 140px; max-width: 170px; }
+
 /* 进度条 */
 .wb-progress { height: 6px; background: var(--wb-surface-3); border-radius: 3px; overflow: hidden; margin-top: var(--wb-gap-2); }
 .wb-progress-bar { height: 100%; background: var(--wb-accent); border-radius: 3px; }
@@ -1110,6 +1227,26 @@ a.wb-chip:hover { text-decoration: none; border-color: var(--wb-accent-line); ba
 
     .wb-nav-toggle-box:checked ~ .wb-side { transform: translateX(0); }
 
+    /* 抽屉开了，汉堡要让位：挪到抽屉外侧并变成关闭键。
+       不挪的话它正好压住侧边栏左上角的品牌标识。 */
+    .wb-nav-toggle-box:checked ~ .wb-nav-burger {
+        left: calc(var(--wb-side-w) + 8px);
+        font-size: 0;
+        z-index: 46;
+    }
+
+    .wb-shell:has(.wb-nav-toggle-box:checked) .wb-nav-burger {
+        left: calc(var(--wb-side-w) + 8px);
+        font-size: 0;
+        z-index: 46;
+    }
+
+    .wb-nav-toggle-box:checked ~ .wb-nav-burger::after {
+        content: "✕";
+        font-size: 14px;
+        line-height: 1;
+    }
+
     .wb-nav-toggle-box:checked ~ .wb-nav-backdrop {
         display: block;
         position: fixed;
@@ -1123,13 +1260,35 @@ a.wb-chip:hover { text-decoration: none; border-color: var(--wb-accent-line); ba
 }
 
 @media (max-width: 640px) {
-    .wb-content { padding: var(--wb-gap-3); }
+    .wb-content { padding: var(--wb-gap-4); }
     .wb-page-head { flex-direction: column; align-items: stretch; }
-    .wb-page-head > .wb-form-row { flex-wrap: wrap; }
+
+    /* 页头里的操作按钮别跟着拉满整行 —— align-items: stretch 会把它撑成一条大横杠 */
+    .wb-page-head > .wb-form-row,
+    .wb-page-head > .wb-btn { align-self: flex-start; }
+
+    /* 筛选条：控件按可用宽度排布。
+       别用 grid —— 「标签 + 控件」这种配对会被拆到两格里，
+       控件多的页面还会把主按钮拉成半屏宽。 */
+    .wb-filter-bar .wb-input { flex: 1 1 160px; min-width: 0; width: auto; }
+
+    /* 工具条里的输入框在宽屏封了顶，窄屏反过来让它占满整行 */
+    .wb-toolbar .wb-input { flex: 1 1 100%; max-width: none; }
+
+    /* 项目页的筛选行：下拉框保底 150px 宽，窄屏一行放不下两个就换行 */
+    .wb-filters .wb-filter-key { flex: 1 1 100%; }
+    .wb-filters select.wb-input { flex: 1 1 140px; min-width: 0; max-width: none; }
+
+    /* 日期区间独占一行，两个框平分它 */
+    .wb-date-range { flex: 1 1 100%; }
+    .wb-date-range .wb-input { flex: 1 1 0; width: auto; min-width: 0; max-width: none; }
+
     .wb-input { min-width: 0; }
-    .wb-filter-bar .wb-input { flex: 1 1 100%; min-width: 0; }
-    select.wb-input { max-width: 100%; }
     .wb-empty { padding: var(--wb-gap-6) var(--wb-gap-3); }
     .wb-panel { padding: var(--wb-gap-4); }
     .wb-table th, .wb-table td { padding: 8px var(--wb-gap-2); }
+
+    /* 任务表首列别占 60% —— 窄屏上标题列吃满宽，
+       状态/负责人/最后动静就被挤到滚动区外了。 */
+    .wb-task-table th:first-child, .wb-task-table td:first-child { width: 45%; }
 }

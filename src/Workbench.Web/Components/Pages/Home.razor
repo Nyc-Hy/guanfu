@@ -52,7 +52,7 @@ else if (Data is not null && Data.Projects.Count == 0)
 else if (Data is not null)
 {
     <!-- ① 要你处理的 -->
-    <div class="wb-panel" style="margin-bottom:16px;">
+    <div class="wb-panel">
         <h3>要你处理的</h3>
         @if (Data.PendingApprovals.Count == 0)
         {
@@ -83,7 +83,7 @@ else if (Data is not null)
     </div>
 
     <!-- ② 正在发生的 -->
-    <div class="wb-panel" style="margin-bottom:16px;">
+    <div class="wb-panel">
         <h3>正在发生的</h3>
         @if (Data.ActiveTasks.Count == 0 && Data.ActiveSessions.Count == 0)
         {
@@ -137,7 +137,7 @@ else if (Data is not null)
     </div>
 
     <!-- ③ 最近产出 -->
-    <div class="wb-panel" style="margin-bottom:16px;">
+    <div class="wb-panel">
         <div class="wb-card-head">
             <h3>最近产出</h3>
             <span class="wb-muted">代码改动是工作台自己从 git 数出来的，不是 agent 自报的</span>
@@ -176,7 +176,7 @@ else if (Data is not null)
                     </tbody>
                 </table>
             </div>
-            <p class="wb-muted" style="margin-top:8px;">
+            <p class="wb-muted wb-mt-2">
                 <a href="/db-calls">看全部数据库调用</a>
             </p>
         }
@@ -192,7 +192,7 @@ else if (Data is not null)
 
     @if (ShowCreate)
     {
-        <div style="margin:12px 0;">
+        <div class="wb-my-3">
             <div class="wb-form-row">
                 <input class="wb-input" placeholder="项目名称" @bind="NewName" @bind:event="oninput" />
                 <input class="wb-input" placeholder="描述（可选）" @bind="NewDescription" @bind:event="oninput" />
@@ -215,7 +215,7 @@ else if (Data is not null)
     }
     else
     {
-        <div class="wb-table-scroll" style="margin-top:12px;">
+        <div class="wb-table-scroll wb-mt-3">
             <table class="wb-table wb-task-table">
                 <thead>
                 <tr><th>项目</th><th>仓库绑定</th><th>任务</th><th>仓库路径</th><th>描述</th></tr>

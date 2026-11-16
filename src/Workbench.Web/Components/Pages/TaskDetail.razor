@@ -173,66 +173,68 @@ else
                 }
                 else
                 {
-                    <table class="wb-table">
-                        <thead>
-                        <tr>
-                            <th>文件名</th>
-                            <th>类型</th>
-                            <th>大小</th>
-                            <th>解析</th>
-                            <th></th>
-                        </tr>
-                        </thead>
-                        <tbody>
-                        @foreach (var doc in Context.Documents)
-                        {
+                    <div class="wb-table-scroll">
+                        <table class="wb-table">
+                            <thead>
                             <tr>
-                                <td>@doc.FileName</td>
-                                <td><span class="wb-chip">@doc.Kind</span></td>
-                                <td>@(doc.SizeBytes / 1024) KB</td>
-                                <td>
-                                    @if (doc.Parsed)
-                                    {
-                                        <span class="wb-tag wb-tag-ok">已解析</span>
-                                    }
-                                    else if (!string.IsNullOrWhiteSpace(doc.ParseError))
-                                    {
-                                        <span class="wb-tag wb-tag-danger" title="@doc.ParseError">失败</span>
-                                    }
-                                    else
-                                    {
-                                        <span class="wb-tag">未解析</span>
-                                    }
-                                </td>
-                                <td>
-                                    <a href="/documents/@doc.Id">详情</a>
-                                    <button class="wb-btn wb-btn-link" @onclick="() => ToggleDocumentAsync(doc.Id)">
-                                        @(IsDocumentExpanded(doc.Id) ? "收起" : "就地查看")
-                                    </button>
-                                </td>
+                                <th>文件名</th>
+                                <th>类型</th>
+                                <th>大小</th>
+                                <th>解析</th>
+                                <th></th>
                             </tr>
-                            @if (IsDocumentExpanded(doc.Id))
+                            </thead>
+                            <tbody>
+                            @foreach (var doc in Context.Documents)
                             {
                                 <tr>
-                                    <td colspan="5">
-                                        <div class="wb-doc">
-                                            @if (DocumentOutline(doc.Id).Count > 0)
-                                            {
-                                                <div class="wb-doc-outline">
-                                                    @foreach (var item in DocumentOutline(doc.Id))
-                                                    {
-                                                        <div style="padding-left: @(item.Level * 14)px">@item.Title</div>
-                                                    }
-                                                </div>
-                                            }
-                                            <pre class="wb-pre">@DocumentText(doc.Id)</pre>
-                                        </div>
+                                    <td>@doc.FileName</td>
+                                    <td><span class="wb-chip">@doc.Kind</span></td>
+                                    <td>@(doc.SizeBytes / 1024) KB</td>
+                                    <td>
+                                        @if (doc.Parsed)
+                                        {
+                                            <span class="wb-tag wb-tag-ok">已解析</span>
+                                        }
+                                        else if (!string.IsNullOrWhiteSpace(doc.ParseError))
+                                        {
+                                            <span class="wb-tag wb-tag-danger" title="@doc.ParseError">失败</span>
+                                        }
+                                        else
+                                        {
+                                            <span class="wb-tag">未解析</span>
+                                        }
+                                    </td>
+                                    <td>
+                                        <a href="/documents/@doc.Id">详情</a>
+                                        <button class="wb-btn wb-btn-link" @onclick="() => ToggleDocumentAsync(doc.Id)">
+                                            @(IsDocumentExpanded(doc.Id) ? "收起" : "就地查看")
+                                        </button>
                                     </td>
                                 </tr>
+                                @if (IsDocumentExpanded(doc.Id))
+                                {
+                                    <tr>
+                                        <td colspan="5">
+                                            <div class="wb-doc">
+                                                @if (DocumentOutline(doc.Id).Count > 0)
+                                                {
+                                                    <div class="wb-doc-outline">
+                                                        @foreach (var item in DocumentOutline(doc.Id))
+                                                        {
+                                                            <div style="padding-left: @(item.Level * 14)px">@item.Title</div>
+                                                        }
+                                                    </div>
+                                                }
+                                                <pre class="wb-pre">@DocumentText(doc.Id)</pre>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                }
                             }
-                        }
-                        </tbody>
-                    </table>
+                            </tbody>
+                        </table>
+                    </div>
                 }
             </section>
 
@@ -264,69 +266,71 @@ else
                 }
                 else
                 {
-                    <table class="wb-table">
-                        <thead>
-                        <tr>
-                            <th>维度</th>
-                            <th style="width:96px">结论</th>
-                            <th>发现</th>
-                            <th>评审人</th>
-                            <th style="width:320px">回写</th>
-                        </tr>
-                        </thead>
-                        <tbody>
-                        @foreach (var item in CurrentReview.Items)
-                        {
+                    <div class="wb-table-scroll">
+                        <table class="wb-table">
+                            <thead>
                             <tr>
-                                <td>@item.DimensionName</td>
-                                <td>
-                                    @switch (item.Status)
-                                    {
-                                        case "Passed":
-                                            <span class="wb-tag wb-tag-ok">通过</span>
-                                            break;
-                                        case "Failed":
-                                            <span class="wb-tag wb-tag-danger">不通过</span>
-                                            break;
-                                        case "Skipped":
-                                            <span class="wb-tag">跳过</span>
-                                            break;
-                                        default:
-                                            <span class="wb-tag wb-tag-warn">待评审</span>
-                                            break;
-                                    }
-                                </td>
-                                <td class="wb-muted">
-                                    @if (!string.IsNullOrWhiteSpace(item.Findings))
-                                    {
-                                        <span>@item.Findings</span>
-                                    }
-                                    @if (!string.IsNullOrWhiteSpace(item.Evidence))
-                                    {
-                                        <div class="wb-timeline-note">@item.Evidence</div>
-                                    }
-                                </td>
-                                <td class="wb-muted">@item.Reviewer</td>
-                                <td>
-                                    <div class="wb-form-row">
-                                        <input class="wb-input" placeholder="发现 / 跳过理由（跳过必填）"
-                                               @bind:get="GetReviewFindings(item.Dimension)"
-                                               @bind:set="v => SetReviewFindings(item.Dimension, v)"
-                                               @bind:event="oninput" />
-                                    </div>
-                                    <div class="wb-form-row">
-                                        <button class="wb-btn" disabled="@Busy"
-                                                @onclick="() => SubmitDimensionAsync(item.Dimension, true, false)">通过</button>
-                                        <button class="wb-btn wb-btn-danger" disabled="@Busy"
-                                                @onclick="() => SubmitDimensionAsync(item.Dimension, false, false)">不通过</button>
-                                        <button class="wb-btn" disabled="@Busy"
-                                                @onclick="() => SubmitDimensionAsync(item.Dimension, false, true)">跳过</button>
-                                    </div>
-                                </td>
+                                <th>维度</th>
+                                <th class="wb-col-verdict">结论</th>
+                                <th>发现</th>
+                                <th>评审人</th>
+                                <th class="wb-col-writeback">回写</th>
                             </tr>
-                        }
-                        </tbody>
-                    </table>
+                            </thead>
+                            <tbody>
+                            @foreach (var item in CurrentReview.Items)
+                            {
+                                <tr>
+                                    <td>@item.DimensionName</td>
+                                    <td>
+                                        @switch (item.Status)
+                                        {
+                                            case "Passed":
+                                                <span class="wb-tag wb-tag-ok">通过</span>
+                                                break;
+                                            case "Failed":
+                                                <span class="wb-tag wb-tag-danger">不通过</span>
+                                                break;
+                                            case "Skipped":
+                                                <span class="wb-tag">跳过</span>
+                                                break;
+                                            default:
+                                                <span class="wb-tag wb-tag-warn">待评审</span>
+                                                break;
+                                        }
+                                    </td>
+                                    <td class="wb-muted">
+                                        @if (!string.IsNullOrWhiteSpace(item.Findings))
+                                        {
+                                            <span>@item.Findings</span>
+                                        }
+                                        @if (!string.IsNullOrWhiteSpace(item.Evidence))
+                                        {
+                                            <div class="wb-timeline-note">@item.Evidence</div>
+                                        }
+                                    </td>
+                                    <td class="wb-muted">@item.Reviewer</td>
+                                    <td>
+                                        <div class="wb-form-row">
+                                            <input class="wb-input" placeholder="发现 / 跳过理由"
+                                                   @bind:get="GetReviewFindings(item.Dimension)"
+                                                   @bind:set="v => SetReviewFindings(item.Dimension, v)"
+                                                   @bind:event="oninput" />
+                                        </div>
+                                        <div class="wb-form-row">
+                                            <button class="wb-btn" disabled="@Busy"
+                                                    @onclick="() => SubmitDimensionAsync(item.Dimension, true, false)">通过</button>
+                                            <button class="wb-btn wb-btn-danger" disabled="@Busy"
+                                                    @onclick="() => SubmitDimensionAsync(item.Dimension, false, false)">不通过</button>
+                                            <button class="wb-btn" disabled="@Busy"
+                                                    @onclick="() => SubmitDimensionAsync(item.Dimension, false, true)">跳过</button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            }
+                            </tbody>
+                        </table>
+                    </div>
                     <p class="wb-hint">跳过 = 该维度不适用，必须写理由，每轮最多跳 2 个。</p>
 
                     @if (ReviewHistory.Count > 1)
@@ -480,11 +484,11 @@ else
                         {
                             <li>
                                 <div class="wb-timeline-when" title="@evt.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")">
-                                    <span style="color:@EventColor(evt.EventType)">@EventIcon(evt.EventType)</span>
+                                    <span class="@EventColorClass(evt.EventType)">@EventIcon(evt.EventType)</span>
                                     @Relative(evt.CreatedAt)
                                 </div>
                                 <div class="wb-timeline-what">
-                                    <span class="wb-chip" style="border-color:@EventColor(evt.EventType);color:@EventColor(evt.EventType)">
+                                    <span class="wb-chip @EventColorClass(evt.EventType)">
                                         @EventLabel(evt.EventType)
                                     </span>
                                     @if (evt.From is not null && evt.To is not null && evt.From != evt.To)
@@ -1371,17 +1375,24 @@ else
         _ => "·"
     };
 
-    private static string EventColor(string? eventType) => eventType switch
+    /// <summary>
+    /// 事件类型的展示色（CSS 类）。
+    ///
+    /// 颜色本身在 CSS 里 —— 早先这里直接返回 #2563eb 这样的硬编码值内联进 style，
+    /// 亮色主题下那些颜色在浅底上对比度不够，而且颜色散在页面里，
+    /// 换主题时根本不知道还有这些地方要改。
+    /// </summary>
+    private static string EventColorClass(string? eventType) => eventType switch
     {
-        TaskEventTypes.StatusChanged => "#2563eb",
-        TaskEventTypes.PlanSaved => "#7c3aed",
-        TaskEventTypes.ArtifactAdded => "#0891b2",
-        TaskEventTypes.TestReported => "#16a34a",
-        TaskEventTypes.Assigned or TaskEventTypes.MilestoneAssigned or TaskEventTypes.TypeChanged => "#d97706",
-        TaskEventTypes.ReviewRoundOpened or TaskEventTypes.ReviewDimensionResult or TaskEventTypes.ReviewRoundClosed => "#7c3aed",
-        TaskEventTypes.AgentLaunched => "#16a34a",
-        TaskEventTypes.BranchBound or TaskEventTypes.Claimed or TaskEventTypes.Released => "#0891b2",
-        _ => "#64748b"
+        TaskEventTypes.StatusChanged => "wb-ev-blue",
+        TaskEventTypes.PlanSaved => "wb-ev-purple",
+        TaskEventTypes.ArtifactAdded => "wb-ev-cyan",
+        TaskEventTypes.TestReported => "wb-ev-green",
+        TaskEventTypes.Assigned or TaskEventTypes.MilestoneAssigned or TaskEventTypes.TypeChanged => "wb-ev-amber",
+        TaskEventTypes.ReviewRoundOpened or TaskEventTypes.ReviewDimensionResult or TaskEventTypes.ReviewRoundClosed => "wb-ev-purple",
+        TaskEventTypes.AgentLaunched => "wb-ev-green",
+        TaskEventTypes.BranchBound or TaskEventTypes.Claimed or TaskEventTypes.Released => "wb-ev-cyan",
+        _ => "wb-ev-gray"
     };
 
     public async ValueTask DisposeAsync()

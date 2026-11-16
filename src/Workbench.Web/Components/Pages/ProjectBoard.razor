@@ -195,102 +195,104 @@ else
                 <div class="wb-menu-backdrop" @onclick="CloseMenu"></div>
             }
 
-            <table class="wb-table wb-task-table">
-                <thead>
-                <tr>
-                    <th>任务</th><th>状态</th><th>负责人</th><th>最后动静</th>
-                </tr>
-                </thead>
-                <tbody>
-                @foreach (var task in PagedItems)
-                {
+            <div class="wb-table-scroll">
+                <table class="wb-table wb-task-table">
+                    <thead>
                     <tr>
-                        <td>
-                            <div class="wb-task-line">
-                                <a class="wb-task-title" href="/tasks/@task.Id">@task.Title</a>
-                                @if (!string.IsNullOrWhiteSpace(task.Key))
-                                {
-                                    <span class="wb-task-key">@task.Key</span>
-                                }
-                                @if (task.IsArchived)
-                                {
-                                    <span class="wb-tag">归档</span>
-                                }
-                                @if (task.Stale)
-                                {
-                                    <span class="wb-tag wb-tag-warn">停滞</span>
-                                }
-                                @if (task.PendingDependencies > 0)
-                                {
-                                    <span class="wb-tag wb-tag-warn" title="还有 @task.PendingDependencies 个前置任务没完成">等前置 @task.PendingDependencies</span>
-                                }
-                            </div>
-                            <div class="wb-task-meta">
-                                <span class="wb-chip @TaskTypes.CssClass(task.Type)">@TaskTypes.Name(task.Type)</span>
-                                @if (!string.IsNullOrWhiteSpace(task.Branch))
-                                {
-                                    <span>⎇ @task.Branch</span>
-                                }
-                                @if (MilestoneName(task.MilestoneId) is { } milestoneName)
-                                {
-                                    <span>@milestoneName</span>
-                                }
-                                @if (!string.IsNullOrWhiteSpace(task.ClaimedBy))
-                                {
-                                    <span>
-                                        在 @task.ClaimedBy 手上
-                                        @if (task.LeaseExpiresAt is not null)
-                                        {
-                                            <text>· 租至 @task.LeaseExpiresAt.Value.ToLocalTime().ToString("HH:mm")</text>
-                                        }
-                                    </span>
-                                }
-                                @if (task.DueAt is not null)
-                                {
-                                    <span>截止 @task.DueAt.Value.ToLocalTime().ToString("MM-dd")</span>
-                                }
-                            </div>
-                        </td>
-                        <td class="wb-status-cell">
-                            <button class="wb-status-btn" @onclick="() => ToggleMenu(task.Id)">
-                                <span class="wb-chip @UiText.StatusClass(task.Status)">@UiText.Status(task.Status)</span>
-                                <span class="wb-caret">▾</span>
-                            </button>
-                            @if (_openMenuTaskId == task.Id)
-                            {
-                                <div class="wb-menu">
-                                    @if (TaskStatusMachine.AllowedFrom(task.Status).Count == 0)
+                        <th>任务</th><th>状态</th><th>负责人</th><th>最后动静</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    @foreach (var task in PagedItems)
+                    {
+                        <tr>
+                            <td>
+                                <div class="wb-task-line">
+                                    <a class="wb-task-title" href="/tasks/@task.Id">@task.Title</a>
+                                    @if (!string.IsNullOrWhiteSpace(task.Key))
                                     {
-                                        <div class="wb-menu-empty">没有可流转的状态</div>
+                                        <span class="wb-task-key">@task.Key</span>
                                     }
-                                    else
+                                    @if (task.IsArchived)
                                     {
-                                        @foreach (var target in TaskStatusMachine.AllowedFrom(task.Status))
-                                        {
-                                            <button class="wb-menu-item" disabled="@Busy" @onclick="() => FlowAsync(task, target)">@UiText.Status(target)</button>
-                                        }
+                                        <span class="wb-tag">归档</span>
+                                    }
+                                    @if (task.Stale)
+                                    {
+                                        <span class="wb-tag wb-tag-warn">停滞</span>
+                                    }
+                                    @if (task.PendingDependencies > 0)
+                                    {
+                                        <span class="wb-tag wb-tag-warn" title="还有 @task.PendingDependencies 个前置任务没完成">等前置 @task.PendingDependencies</span>
                                     }
                                 </div>
-                            }
-                        </td>
-                        <td>
-                            @if (!string.IsNullOrWhiteSpace(task.Assignee))
-                            {
-                                <span>@task.Assignee</span>
-                                <span class="wb-chip wb-chip-muted">@UiText.Priority(task.Priority)</span>
-                            }
-                            else
-                            {
-                                <span class="wb-muted">—</span>
-                            }
-                        </td>
-                        <td class="wb-muted" title="@(task.LastActivityAt is null ? "" : Absolute(task.LastActivityAt.Value))">
-                            @(task.LastActivityAt is null ? "—" : Relative(task.LastActivityAt.Value))
-                        </td>
-                    </tr>
-                }
-                </tbody>
-            </table>
+                                <div class="wb-task-meta">
+                                    <span class="wb-chip @TaskTypes.CssClass(task.Type)">@TaskTypes.Name(task.Type)</span>
+                                    @if (!string.IsNullOrWhiteSpace(task.Branch))
+                                    {
+                                        <span>⎇ @task.Branch</span>
+                                    }
+                                    @if (MilestoneName(task.MilestoneId) is { } milestoneName)
+                                    {
+                                        <span>@milestoneName</span>
+                                    }
+                                    @if (!string.IsNullOrWhiteSpace(task.ClaimedBy))
+                                    {
+                                        <span>
+                                            在 @task.ClaimedBy 手上
+                                            @if (task.LeaseExpiresAt is not null)
+                                            {
+                                                <text>· 租至 @task.LeaseExpiresAt.Value.ToLocalTime().ToString("HH:mm")</text>
+                                            }
+                                        </span>
+                                    }
+                                    @if (task.DueAt is not null)
+                                    {
+                                        <span>截止 @task.DueAt.Value.ToLocalTime().ToString("MM-dd")</span>
+                                    }
+                                </div>
+                            </td>
+                            <td class="wb-status-cell">
+                                <button class="wb-status-btn" @onclick="() => ToggleMenu(task.Id)">
+                                    <span class="wb-chip @UiText.StatusClass(task.Status)">@UiText.Status(task.Status)</span>
+                                    <span class="wb-caret">▾</span>
+                                </button>
+                                @if (_openMenuTaskId == task.Id)
+                                {
+                                    <div class="wb-menu">
+                                        @if (TaskStatusMachine.AllowedFrom(task.Status).Count == 0)
+                                        {
+                                            <div class="wb-menu-empty">没有可流转的状态</div>
+                                        }
+                                        else
+                                        {
+                                            @foreach (var target in TaskStatusMachine.AllowedFrom(task.Status))
+                                            {
+                                                <button class="wb-menu-item" disabled="@Busy" @onclick="() => FlowAsync(task, target)">@UiText.Status(target)</button>
+                                            }
+                                        }
+                                    </div>
+                                }
+                            </td>
+                            <td>
+                                @if (!string.IsNullOrWhiteSpace(task.Assignee))
+                                {
+                                    <span>@task.Assignee</span>
+                                    <span class="wb-chip wb-chip-muted">@UiText.Priority(task.Priority)</span>
+                                }
+                                else
+                                {
+                                    <span class="wb-muted">—</span>
+                                }
+                            </td>
+                            <td class="wb-muted" title="@(task.LastActivityAt is null ? "" : Absolute(task.LastActivityAt.Value))">
+                                @(task.LastActivityAt is null ? "—" : Relative(task.LastActivityAt.Value))
+                            </td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
 
             <div class="wb-pager">
                 <button class="wb-btn" disabled="@(Loading || PageIndex == 0)" @onclick="PrevPage">上一页</button>

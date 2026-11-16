@@ -24,7 +24,7 @@
 
 @if (ChainMessage is not null)
 {
-    <div class="wb-panel" style="margin-bottom:16px;">
+    <div class="wb-panel">
         @if (ChainIntact)
         {
             <p><span class="wb-tag wb-tag-ok">链完整</span> @ChainMessage</p>
@@ -38,7 +38,7 @@
 
 @* 链头归档：库里自己算的链挡不住「连哈希一起重算」——
    把链头写到工作台数据目录之外，才多一道对上的机会。 *@
-<div class="wb-panel" style="margin-bottom:16px;">
+<div class="wb-panel">
     <h3>链头归档</h3>
     <p class="wb-muted">
         归档路径：@if (string.IsNullOrWhiteSpace(ArchivePath))

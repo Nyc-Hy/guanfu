@@ -63,42 +63,44 @@ else
                 <span class="wb-muted">@group.Count() 个</span>
             </div>
 
-            <table class="wb-table">
-                <thead>
-                <tr>
-                    <th style="width:64px">开关</th>
-                    <th>工具名</th>
-                    <th>说明</th>
-                    <th style="width:96px">策略</th>
-                </tr>
-                </thead>
-                <tbody>
-                @foreach (var tool in group)
-                {
+            <div class="wb-table-scroll">
+                <table class="wb-table">
+                    <thead>
                     <tr>
-                        <td>
-                            <input type="checkbox" checked="@tool.Enabled" disabled="@(Saving || !Gate.Authorized)"
-                                   @onchange="e => SetEnabledAsync(tool.Name, (bool)(e.Value ?? false))" />
-                        </td>
-                        <td>
-                            @UiText.Tool(tool.Name)
-                            <div class="wb-muted"><code>@tool.Name</code></div>
-                        </td>
-                        <td class="wb-muted wb-tool-desc">@tool.Description</td>
-                        <td>
-                            @if (tool.RequiresApproval)
-                            {
-                                <span class="wb-tag wb-tag-warn">需人工审批</span>
-                            }
-                            else
-                            {
-                                <span class="wb-tag wb-tag-ok">直接执行</span>
-                            }
-                        </td>
+                        <th class="wb-col-switch">开关</th>
+                        <th>工具名</th>
+                        <th>说明</th>
+                        <th class="wb-col-policy">策略</th>
                     </tr>
-                }
-                </tbody>
-            </table>
+                    </thead>
+                    <tbody>
+                    @foreach (var tool in group)
+                    {
+                        <tr>
+                            <td>
+                                <input type="checkbox" checked="@tool.Enabled" disabled="@(Saving || !Gate.Authorized)"
+                                       @onchange="e => SetEnabledAsync(tool.Name, (bool)(e.Value ?? false))" />
+                            </td>
+                            <td>
+                                @UiText.Tool(tool.Name)
+                                <div class="wb-muted"><code>@tool.Name</code></div>
+                            </td>
+                            <td class="wb-muted wb-tool-desc">@tool.Description</td>
+                            <td>
+                                @if (tool.RequiresApproval)
+                                {
+                                    <span class="wb-tag wb-tag-warn">需人工审批</span>
+                                }
+                                else
+                                {
+                                    <span class="wb-tag wb-tag-ok">直接执行</span>
+                                }
+                            </td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
         </section>
     }
 }

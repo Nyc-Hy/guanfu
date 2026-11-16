@@ -20,37 +20,39 @@
 <ErrorNotice Error="LoadError" />
 
 <div class="wb-filter-bar">
-    <select class="wb-input" @bind="ProjectFilter" @bind:after="OnProjectChangedAsync">
+    <select class="wb-input" title="项目" aria-label="项目" @bind="ProjectFilter" @bind:after="OnProjectChangedAsync">
         <option value="">全部项目</option>
         @foreach (var project in ProjectList)
         {
             <option value="@project.Id">@project.Name</option>
         }
     </select>
-    <select class="wb-input" @bind="ConnectionFilter" @bind:after="() => ReloadAsync(resetPage: true)">
+    <select class="wb-input" title="连接" aria-label="连接" @bind="ConnectionFilter" @bind:after="() => ReloadAsync(resetPage: true)">
         <option value="">全部连接</option>
         @foreach (var conn in VisibleConnections)
         {
             <option value="@conn.Id">@ConnectionLabel(conn)</option>
         }
     </select>
-    <input class="wb-input" type="text" placeholder="库名" @bind="DatabaseFilter"
-           @bind:after="() => ReloadAsync(resetPage: true)" />
-    <input class="wb-input" type="text" placeholder="表名" @bind="TableFilter"
-           @bind:after="() => ReloadAsync(resetPage: true)" />
-    <input class="wb-input" type="text" placeholder="SQL 里包含" @bind="SqlFilter"
-           @bind:after="() => ReloadAsync(resetPage: true)" />
+    <input class="wb-input" type="text" placeholder="库名" title="库名" aria-label="库名"
+           @bind="DatabaseFilter" @bind:after="() => ReloadAsync(resetPage: true)" />
+    <input class="wb-input" type="text" placeholder="表名" title="表名" aria-label="表名"
+           @bind="TableFilter" @bind:after="() => ReloadAsync(resetPage: true)" />
+    <input class="wb-input" type="text" placeholder="SQL 里包含" title="SQL 里包含" aria-label="SQL 里包含"
+           @bind="SqlFilter" @bind:after="() => ReloadAsync(resetPage: true)" />
     <select class="wb-input" @bind="KindFilter" @bind:after="() => ReloadAsync(resetPage: true)">
         <option value="">全部读写类型</option>
         <option value="Read">读</option>
         <option value="Write">写</option>
         <option value="Unknown">未知</option>
     </select>
-    <input class="wb-input" type="date" title="起始日期" @bind="FromDate"
-           @bind:after="() => ReloadAsync(resetPage: true)" />
-    <span class="wb-muted">至</span>
-    <input class="wb-input" type="date" title="结束日期" @bind="ToDate"
-           @bind:after="() => ReloadAsync(resetPage: true)" />
+    <div class="wb-date-range">
+        <input class="wb-input" type="date" title="起始日期" aria-label="起始日期" @bind="FromDate"
+               @bind:after="() => ReloadAsync(resetPage: true)" />
+        <span class="wb-muted">至</span>
+        <input class="wb-input" type="date" title="结束日期" aria-label="结束日期" @bind="ToDate"
+               @bind:after="() => ReloadAsync(resetPage: true)" />
+    </div>
 </div>
 
 @if (Loading && Rows.Count == 0)
