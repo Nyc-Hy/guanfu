@@ -74,6 +74,12 @@ public sealed class MilestoneService(IAppDbContext db, IClock clock) : IMileston
             .Where(t => t.MilestoneId != null && ids.Contains(t.MilestoneId))
             .ToListAsync(cancellationToken);
 
+        // 每个里程碑只算挂在自己名下的任务 —— 拿全项目的任务算，
+        // 列表里每一行都会显示同一个总数与进度。
+        var tasksByMilestone = tasks
+            .GroupBy(t => t.MilestoneId!.Value)
+            .ToDictionary(g => g.Key, g => (IReadOnlyList<TaskItem>)g.ToList());
+
         // 子里程碑的 id 一并带上 —— 前端要能自己把树搭出来
         var childrenByParent = milestones
             .Where(m => m.ParentId is not null)
@@ -83,7 +89,7 @@ public sealed class MilestoneService(IAppDbContext db, IClock clock) : IMileston
         return milestones
             .Select(m =>
             {
-                var dto = Build(m, tasks);
+                var dto = Build(m, tasksByMilestone.GetValueOrDefault(m.Id, []));
                 return dto with { Children = childrenByParent.GetValueOrDefault(m.Id, []) };
             })
             .ToList();

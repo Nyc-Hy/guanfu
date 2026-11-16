@@ -41,6 +41,32 @@ public class MilestoneServiceTests
     }
 
     [Fact]
+    public async Task 列表里每个里程碑只算自己名下的任务()
+    {
+        using var host = new WorkbenchTestHost();
+        var project = await host.Projects.CreateAsync("测试项目");
+        var first = await host.Milestones.CreateAsync(project.Id, "第一期");
+        var second = await host.Milestones.CreateAsync(project.Id, "第二期");
+
+        var t1 = await host.Tasks.CreateAsync(project.Id, "任务一");
+        var t2 = await host.Tasks.CreateAsync(project.Id, "任务二");
+        var t3 = await host.Tasks.CreateAsync(project.Id, "任务三");
+        await host.Milestones.AssignTaskAsync(t1.Id, first.Id);
+        await host.Milestones.AssignTaskAsync(t2.Id, first.Id);
+        await host.Milestones.AssignTaskAsync(t3.Id, second.Id);
+        await host.Tasks.ChangeStatusAsync(t3.Id, TaskStatus.DocsReady);
+
+        var list = await host.Milestones.ListAsync(project.Id);
+        var firstDto = list.Single(m => m.Id == first.Id);
+        var secondDto = list.Single(m => m.Id == second.Id);
+
+        Assert.Equal(2, firstDto.TotalTasks);
+        Assert.Equal(1, secondDto.TotalTasks);
+        Assert.Equal(0d, firstDto.Progress);
+        Assert.True(secondDto.Progress > 0);
+    }
+
+    [Fact]
     public async Task 删里程碑只摘任务不删任务()
     {
         using var host = new WorkbenchTestHost();
