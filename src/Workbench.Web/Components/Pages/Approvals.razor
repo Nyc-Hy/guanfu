@@ -83,9 +83,10 @@
     }
 </div>
 
-@if (!ShowHistory)
+@if (!ShowHistory && Items.Count > 0)
 {
-    @* 批量裁决工具条：人工审核通常是「这批都同意」 *@
+    @* 批量裁决工具条：人工审核通常是「这批都同意」。
+       一条待批都没有时别摆它 —— 那时全是禁用按钮，白占一整行。 *@
     <div class="wb-panel wb-toolbar">
         <div class="wb-form-row">
             <label class="wb-check">
