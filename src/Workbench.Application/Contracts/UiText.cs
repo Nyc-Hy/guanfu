@@ -285,4 +285,29 @@ public static class UiText
 
         return string.IsNullOrWhiteSpace(title) ? "未关联任务" : title;
     }
+
+    /// <summary>
+    /// MCP 工具分组 → URL 短码。
+    ///
+    /// 分组名是中文，直接塞进 URL 会变成一串百分号编码（?cat=%E5%B7%A5%E4%BD%9C...），
+    /// 没法发给人看。短码放这里，页面不各写各的。
+    /// </summary>
+    public static string ToolGroupSlug(string? group) => group switch
+    {
+        "工作台组" => "workbench",
+        "文档组" => "docs",
+        "数据库组" => "db",
+        "通用组" => "general",
+        _ => "other"
+    };
+
+    /// <summary>URL 短码 → MCP 工具分组名。认不出来就回「通用组」。</summary>
+    public static string ToolGroupOf(string? slug) => slug switch
+    {
+        "workbench" => "工作台组",
+        "docs" => "文档组",
+        "db" => "数据库组",
+        "general" => "通用组",
+        _ => "通用组"
+    };
 }

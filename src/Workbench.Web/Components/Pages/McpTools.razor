@@ -4,6 +4,7 @@
 @inject IMcpToolService Tools
 @inject HumanTokenAccessor Tokens
 @inject IJSRuntime JS
+@inject NavigationManager Nav
 
 <PageTitle>MCP 工具 · 开发工作台</PageTitle>
 
@@ -55,26 +56,61 @@ else if (Items.Count == 0)
 }
 else
 {
-    @foreach (var group in Groups)
+    @* 62 个工具分 4 组全铺开是 5000 多像素的一长条 —— 按组分页签，
+       组内再分页 + 能搜。一次只看得到当前这一组。 *@
+    <div class="wb-tabs" role="tablist">
+        @foreach (var group in Groups)
+        {
+            <button class="wb-tab @(ActiveGroup == group.Key ? "wb-tab-active" : "")" role="tab"
+                    aria-selected="@(ActiveGroup == group.Key)" @onclick="() => GoGroup(group.Key)">
+                @group.Key <span class="wb-count">@group.Count()</span>
+            </button>
+        }
+    </div>
+
+    <div class="wb-filter-bar">
+        <input class="wb-input" type="search" placeholder="搜工具名或说明"
+               value="@Search" @oninput="OnSearchChanged" />
+        <span class="wb-muted">
+            @if (string.IsNullOrWhiteSpace(Search))
+            {
+                <text>本组 @CurrentTools.Count 个工具</text>
+            }
+            else
+            {
+                <text>匹配 @CurrentTools.Count 个</text>
+            }
+        </span>
+    </div>
+
+    @if (CurrentTools.Count == 0)
+    {
+        <div class="wb-empty">
+            @if (string.IsNullOrWhiteSpace(Search))
+            {
+                <text>这一组没有工具。</text>
+            }
+            else
+            {
+                <text>没找到匹配「@Search」的工具。</text>
+            }
+        </div>
+    }
+    else
     {
         <section class="wb-panel">
-            <div class="wb-card-head">
-                <h3>@group.Key</h3>
-                <span class="wb-muted">@group.Count() 个</span>
-            </div>
-
             <div class="wb-table-scroll">
                 <table class="wb-table">
                     <thead>
                     <tr>
                         <th class="wb-col-switch">开关</th>
-                        <th>工具名</th>
+                        <th class="wb-col-tool">工具</th>
                         <th>说明</th>
                         <th class="wb-col-policy">策略</th>
                     </tr>
                     </thead>
                     <tbody>
-                    @foreach (var tool in group)
+                    @foreach (var tool in PagedTools)
                     {
                         <tr>
                             <td>
@@ -82,8 +118,8 @@ else
                                        @onchange="e => SetEnabledAsync(tool.Name, (bool)(e.Value ?? false))" />
                             </td>
                             <td>
-                                @UiText.Tool(tool.Name)
-                                <div class="wb-muted"><code>@tool.Name</code></div>
+                                <div class="wb-tool-line">@UiText.Tool(tool.Name)</div>
+                                <div class="wb-muted wb-tool-code"><code>@tool.Name</code></div>
                             </td>
                             <td class="wb-muted wb-tool-desc">@tool.Description</td>
                             <td>
@@ -101,11 +137,22 @@ else
                     </tbody>
                 </table>
             </div>
+
+            @if (PageCount > 1)
+            {
+                <div class="wb-pager">
+                    <button class="wb-btn" disabled="@(PageIndex == 0)" @onclick="PrevPage">上一页</button>
+                    <span class="wb-muted">第 @(PageIndex + 1) / @PageCount 页</span>
+                    <button class="wb-btn" disabled="@(PageIndex >= PageCount - 1)" @onclick="NextPage">下一页</button>
+                </div>
+            }
         </section>
     }
 }
 
 @code {
+    private const int PageSize = 20;
+
     private IReadOnlyList<McpToolInfo> Items { get; set; } = [];
     private bool Saving { get; set; }
     private bool Loading { get; set; }
@@ -118,11 +165,71 @@ else
 
     [CascadingParameter] public HttpContext? RequestContext { get; set; }
 
+    /// <summary>
+    /// 分组页签跟着 URL 走 ——「/mcp-tools?cat=docs」能直接落到文档组，
+    /// 链接也能发给人。默认「工作台组」。
+    /// </summary>
+    [SupplyParameterFromQuery(Name = "cat")]
+    public string? Cat { get; set; }
+
+    private string Search { get; set; } = string.Empty;
+    private int PageIndex { get; set; }
+
     private int EnabledCount => Items.Count(t => t.Enabled);
 
     /// <summary>按目录里的分类顺序分组，组内保持目录顺序。</summary>
     private IEnumerable<IGrouping<string, McpToolInfo>> Groups =>
         Items.GroupBy(t => t.Category);
+
+    /// <summary>当前分组。URL 没给（cat 缺失或认不出来）就落在第一组。</summary>
+    private string ActiveGroup
+    {
+        get
+        {
+            var groups = Groups.ToList();
+            if (groups.Count == 0)
+            {
+                return string.Empty;
+            }
+
+            if (!string.IsNullOrWhiteSpace(Cat))
+            {
+                var wanted = UiText.ToolGroupOf(Cat);
+                var hit = groups.FirstOrDefault(g => g.Key == wanted);
+                if (hit is not null)
+                {
+                    return hit.Key;
+                }
+            }
+
+            return groups[0].Key;
+        }
+    }
+
+    /// <summary>当前分组里、命中搜索词的工具。</summary>
+    private List<McpToolInfo> CurrentTools
+    {
+        get
+        {
+            var list = Items.Where(t => t.Category == ActiveGroup).ToList();
+
+            if (string.IsNullOrWhiteSpace(Search))
+            {
+                return list;
+            }
+
+            var q = Search.Trim();
+            return list
+                .Where(t => t.Name.Contains(q, StringComparison.OrdinalIgnoreCase)
+                            || t.Description.Contains(q, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+        }
+    }
+
+    private int PageCount => Math.Max(1, (CurrentTools.Count + PageSize - 1) / PageSize);
+
+    private IEnumerable<McpToolInfo> PagedTools =>
+        CurrentTools.Skip(PageIndex * PageSize).Take(PageSize);
 
     protected override async Task OnInitializedAsync()
     {
@@ -178,6 +285,29 @@ else
             ActionError = null;
         }
     }
+
+    /// <summary>切分组。URL 是唯一真相 —— 深链能直接落到某一组。</summary>
+    private void GoGroup(string group)
+    {
+        if (group == ActiveGroup)
+        {
+            return;
+        }
+
+        PageIndex = 0;
+        Search = string.Empty;
+        Nav.NavigateTo($"/mcp-tools?cat={UiText.ToolGroupSlug(group)}", replace: true);
+    }
+
+    private void OnSearchChanged(ChangeEventArgs args)
+    {
+        Search = args.Value?.ToString() ?? string.Empty;
+        PageIndex = 0;
+    }
+
+    private void PrevPage() => PageIndex = Math.Max(0, PageIndex - 1);
+
+    private void NextPage() => PageIndex = Math.Min(PageCount - 1, PageIndex + 1);
 
     private async Task ReloadAsync()
     {

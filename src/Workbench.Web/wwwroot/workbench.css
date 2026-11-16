@@ -884,6 +884,12 @@ a.wb-chip:hover { text-decoration: none; border-color: var(--wb-accent-line); ba
 .wb-col-verdict { width: 88px; }
 .wb-col-writeback { width: 300px; }
 
+/* 工具名一列：中文说法 + 原始标识两行。给个下限，
+   否则窄屏时标识那行会被压成一条竖杠。 */
+.wb-col-tool { min-width: 170px; }
+.wb-tool-line { font-weight: 600; color: var(--wb-text); }
+.wb-tool-code { font-size: var(--wb-fs-xs); }
+
 /* 评审表：五列里有三列是长文本，auto 布局会按内容分宽度 ——
    分不到就把「代码规范」压成「代/码/规/范」一竖条。
    给这几列一个下限，宁可让表在容器里横着滚。 */
