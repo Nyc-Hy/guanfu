@@ -2,6 +2,7 @@
 @rendermode InteractiveServer
 @inject IServiceScopeFactory ScopeFactory
 @inject NavigationManager Nav
+@inject IJSRuntime JS
 @implements IAsyncDisposable
 
 <PageTitle>项目任务 · 开发工作台</PageTitle>
@@ -190,11 +191,6 @@ else
         }
         else
         {
-            @if (_openMenuTaskId is not null)
-            {
-                <div class="wb-menu-backdrop" @onclick="CloseMenu"></div>
-            }
-
             <div class="wb-table-scroll">
                 <table class="wb-table wb-task-table">
                     <thead>
@@ -253,26 +249,10 @@ else
                                 </div>
                             </td>
                             <td class="wb-status-cell">
-                                <button class="wb-status-btn" @onclick="() => ToggleMenu(task.Id)">
+                                <button class="wb-status-btn" id="wb-status-@task.Id" @onclick="() => ToggleMenu(task.Id)">
                                     <span class="wb-chip @UiText.StatusClass(task.Status)">@UiText.Status(task.Status)</span>
                                     <span class="wb-caret">▾</span>
                                 </button>
-                                @if (_openMenuTaskId == task.Id)
-                                {
-                                    <div class="wb-menu">
-                                        @if (TaskStatusMachine.AllowedFrom(task.Status).Count == 0)
-                                        {
-                                            <div class="wb-menu-empty">没有可流转的状态</div>
-                                        }
-                                        else
-                                        {
-                                            @foreach (var target in TaskStatusMachine.AllowedFrom(task.Status))
-                                            {
-                                                <button class="wb-menu-item" disabled="@Busy" @onclick="() => FlowAsync(task, target)">@UiText.Status(target)</button>
-                                            }
-                                        }
-                                    </div>
-                                }
                             </td>
                             <td>
                                 @if (!string.IsNullOrWhiteSpace(task.Assignee))
@@ -293,6 +273,24 @@ else
                     </tbody>
                 </table>
             </div>
+
+            @if (_openMenuTaskId is { } openId && OpenTask(openId) is { } openTask)
+            {
+                <div class="wb-menu-backdrop" @onclick="CloseMenu"></div>
+                <div class="wb-menu wb-menu-fixed" id="wb-task-menu">
+                    @if (TaskStatusMachine.AllowedFrom(openTask.Status).Count == 0)
+                    {
+                        <div class="wb-menu-empty">没有可流转的状态</div>
+                    }
+                    else
+                    {
+                        @foreach (var target in TaskStatusMachine.AllowedFrom(openTask.Status))
+                        {
+                            <button class="wb-menu-item" disabled="@Busy" @onclick="() => FlowAsync(openTask, target)">@UiText.Status(target)</button>
+                        }
+                    }
+                </div>
+            }
 
             <div class="wb-pager">
                 <button class="wb-btn" disabled="@(Loading || PageIndex == 0)" @onclick="PrevPage">上一页</button>
@@ -432,6 +430,8 @@ else
 
     private void CloseMenu() => _openMenuTaskId = null;
 
+    private TaskSummaryDto? OpenTask(Guid taskId) => Items.FirstOrDefault(t => t.Id == taskId);
+
     protected override async Task OnParametersSetAsync() => await ReloadAsync();
 
     /// <summary>自动刷新间隔。agent 在推进任务时表格得自己动起来。</summary>
@@ -439,7 +439,7 @@ else
 
     private CancellationTokenSource? _timerCts;
 
-    protected override Task OnAfterRenderAsync(bool firstRender)
+    protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         // 只在交互阶段起定时器：预渲染出来的实例用完就扔。
         if (firstRender)
@@ -448,7 +448,19 @@ else
             _ = RunRefreshTimerAsync(_timerCts.Token);
         }
 
-        return Task.CompletedTask;
+        if (_openMenuTaskId is { } openId)
+        {
+            try
+            {
+                // 菜单渲染在表格外面（滚动容器会裁掉单元格里绝对定位的菜单），
+                // 摆位交给 JS：贴着触发按钮，下方放不下就往上翻。
+                await JS.InvokeVoidAsync("wbPositionMenu", "wb-task-menu", $"wb-status-{openId}");
+            }
+            catch (JSException)
+            {
+                // 脚本没加载出来就算了 —— 菜单顶多位置不对，不该把页面的渲染带崩
+            }
+        }
     }
 
     /// <summary>

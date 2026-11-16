@@ -913,6 +913,10 @@ a.wb-chip:hover { text-decoration: none; border-color: var(--wb-accent-line); ba
     box-shadow: var(--wb-shadow-3);
 }
 
+/* 菜单摆到表格外面：滚动容器会裁掉单元格里绝对定位的菜单，
+   位置由 workbench.js 按触发按钮算。 */
+.wb-menu.wb-menu-fixed { position: fixed; top: 0; left: 0; margin-top: 0; }
+
 .wb-menu-item {
     display: block;
     width: 100%;

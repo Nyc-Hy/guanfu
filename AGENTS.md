@@ -184,8 +184,8 @@
     页面区块别一铺十几块 —— 任务详情用**精简视图**（`wb-compact`）把次要区块收起来。
     **列表与分组一律用页签 + 表格**（`wb-tabs` / `wb-table`），别铺小卡片格子 ——
     卡片格 / 看板列（`wb-grid`、`wb-card`、`wb-board`、`wb-column`）已经删掉，别再加回来。
-    状态流转在表格行内做（「流转到…」下拉 + 按钮，选项只列 `TaskStatusMachine.AllowedFrom`），
-    不用拖拽。
+    状态流转在表格行内做（点「状态」格弹菜单，选项只列 `TaskStatusMachine.AllowedFrom`），
+    不用拖拽。**状态筛选用下拉，不要再摊成一排页签** —— 一屏十来个页签没人看得过来。
     **颜色一律走 CSS 变量**：`wwwroot/workbench.css` 是 token 化的设计系统（`--wb-*`），
     页面里出现 `#2563eb` 这种硬编码值就是漏出来了 —— 亮色主题下那些颜色在浅底上
     对比度不够，换主题时也不知道还有哪些地方要改。任务状态色走 `UiText.StatusClass`，
