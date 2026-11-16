@@ -50,6 +50,8 @@
         }
         else
         {
+            @* 没配路径时，「未配置」标签已经说清楚了 ——
+               再摆一句「没配置归档路径，链头对账」是同一件事说两遍。 *@
             <span class="wb-tag wb-tag-warn">未配置归档路径</span>
             <span class="wb-muted">配 <code>Workbench:AuditArchivePath</code> 才生效；路径必须在工作台数据目录之外。</span>
         }
@@ -65,7 +67,7 @@
             <span>@ArchiveResultMessage</span>
         }
 
-        @if (ArchiveCompareMessage is not null)
+        @if (ArchiveCompareMessage is not null && !string.IsNullOrWhiteSpace(ArchivePath))
         {
             @switch (ArchiveCompareKind)
             {
