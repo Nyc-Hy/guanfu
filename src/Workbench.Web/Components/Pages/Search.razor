@@ -12,7 +12,7 @@
     <div>
         <h1>全局搜索</h1>
         <p class="wb-muted">
-            搜任务（编号 + 标题）、项目、文档、产出文件与数据库调用。
+            搜任务（编号 + 标题）、项目、文档、产出文件与 SQL 执行记录。
             编号不认写法差异：<code>req001</code> 和 <code>REQ-001</code> 是同一个。
         </p>
     </div>
@@ -162,8 +162,8 @@ else
     {
         <section class="wb-panel">
             <div class="wb-card-head">
-                <h3>数据库调用</h3>
-                <a class="wb-btn wb-btn-link" href="/db-calls?sql=@Uri.EscapeDataString(LastQuery)">在数据库调用页看全部</a>
+                <h3>SQL 执行记录</h3>
+                <a class="wb-btn wb-btn-link" href="/db-calls?sql=@Uri.EscapeDataString(LastQuery)">在 SQL 执行记录页看全部</a>
             </div>
             <div class="wb-table-scroll wb-table-wide">
                 <table class="wb-table wb-task-table">
@@ -207,7 +207,7 @@ else
 
     <p class="wb-hint">
         结果上限：任务 @TaskLimit 条、项目 @ProjectLimit 条、文档 @DocLimit 条、
-        产出文件 @FileLimit 条、数据库调用 @DbCallLimit 条。
+        产出文件 @FileLimit 条、SQL 执行记录 @DbCallLimit 条。
         文档最多扫描 @DocScanTaskLimit 个任务下的文件，内容匹配最多解析 @DocContentScanLimit 个文档。
         @if (SkippedDocs > 0)
         {
@@ -252,7 +252,7 @@ else
         new("projects", "项目", ProjectHits.Count),
         new("docs", "文档", DocHits.Count),
         new("files", "产出文件", FileHits.Count),
-        new("db", "数据库调用", DbHits.Count)
+        new("db", "SQL 执行记录", DbHits.Count)
     }.Where(g => g.Count > 0).ToList();
 
     private IReadOnlyList<TaskSummaryDto> TaskHits { get; set; } = [];

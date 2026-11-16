@@ -7,15 +7,15 @@
 @inject IAuditChainArchiveService Archive
 @inject IOptions<WorkbenchOptions> Options
 
-<PageTitle>工具审计 · 开发工作台</PageTitle>
+<PageTitle>工具调用记录 · 开发工作台</PageTitle>
 
 <div class="wb-page-head">
     <div>
-        <h1>工具审计</h1>
+        <h1>工具调用记录</h1>
         <p class="wb-muted">
             agent 的<strong>每次工具调用</strong>都会记一笔：谁调的、哪个项目、哪个任务、
             用的哪条审批、结果如何、花了多久。写操作与数据库访问还会记下 SQL 原文与结果摘要。
-            审计只追加不修改，出了事从这里复盘。
+            记录只追加不修改，出了事从这里复盘。
         </p>
     </div>
     <div class="wb-form-row">

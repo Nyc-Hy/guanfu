@@ -269,6 +269,24 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--wb-accent); }
 
 .wb-side-link .wb-badge { margin-left: auto; margin-right: 0; }
 
+/* 入口名 + 一行说明。名字太抽象时，光看「审批 / 审计」不知道该什么时候点开。 */
+.wb-side-text {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+.wb-side-link-name { line-height: 1.35; }
+.wb-side-link-sub {
+    font-size: var(--wb-fs-xs);
+    line-height: 1.3;
+    color: var(--wb-faint);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.wb-side-link:hover .wb-side-link-sub { color: var(--wb-muted); }
+.wb-side-link.active .wb-side-link-sub { color: var(--wb-text-2); }
+
 /* 新建项目的入口：虚线框，跟已有的项目区分开 —— 它是个动作，不是项目 */
 .wb-side-link-new {
     margin-top: var(--wb-gap-1);

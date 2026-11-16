@@ -18,22 +18,42 @@
         </div>
 
         <nav class="wb-side-scroll">
+            @* 每个入口都带一行说明 —— 「审批 / 审计 / 数据库调用」这种抽象名词，
+               光看名字不知道该什么时候点开看。 *@
             <div class="wb-side-group">
                 <div class="wb-side-group-label">工作</div>
-                <a class="wb-side-link wb-side-link-lead @(IsCurrent("/") ? "active" : "")" href="/">总览</a>
+                <a class="wb-side-link wb-side-link-lead @(IsCurrent("/") ? "active" : "")" href="/">
+                    <span class="wb-side-text">
+                        <span class="wb-side-link-name">总览</span>
+                        <span class="wb-side-link-sub">此刻的局面与项目体检</span>
+                    </span>
+                </a>
             </div>
 
             <div class="wb-side-group">
                 <div class="wb-side-group-label">治理</div>
                 <a class="wb-side-link @(IsCurrent("/approvals") ? "active" : "")" href="/approvals">
-                    审批
+                    <span class="wb-side-text">
+                        <span class="wb-side-link-name">待批操作</span>
+                        <span class="wb-side-link-sub">agent 的写操作等你点头</span>
+                    </span>
                     @if (PendingCount > 0)
                     {
                         <span class="wb-badge">@PendingCount</span>
                     }
                 </a>
-                <a class="wb-side-link @(IsCurrent("/audit") ? "active" : "")" href="/audit">审计</a>
-                <a class="wb-side-link @(IsCurrent("/db-calls") ? "active" : "")" href="/db-calls">数据库调用</a>
+                <a class="wb-side-link @(IsCurrent("/audit") ? "active" : "")" href="/audit">
+                    <span class="wb-side-text">
+                        <span class="wb-side-link-name">工具调用记录</span>
+                        <span class="wb-side-link-sub">agent 每次调工具都留一笔</span>
+                    </span>
+                </a>
+                <a class="wb-side-link @(IsCurrent("/db-calls") ? "active" : "")" href="/db-calls">
+                    <span class="wb-side-text">
+                        <span class="wb-side-link-name">SQL 执行记录</span>
+                        <span class="wb-side-link-sub">跑过的 SQL 与影响行数</span>
+                    </span>
+                </a>
             </div>
 
             <div class="wb-side-group">
@@ -58,15 +78,40 @@
 
             <div class="wb-side-group">
                 <div class="wb-side-group-label">接入</div>
-                <a class="wb-side-link @(IsCurrent("/mcp-tools") ? "active" : "")" href="/mcp-tools">MCP 工具</a>
-                <a class="wb-side-link @(IsCurrent("/connect") ? "active" : "")" href="/connect">接入 agent</a>
-                <a class="wb-side-link @(IsCurrent("/db-connections") ? "active" : "")" href="/db-connections">数据库连接</a>
+                <a class="wb-side-link @(IsCurrent("/mcp-tools") ? "active" : "")" href="/mcp-tools">
+                    <span class="wb-side-text">
+                        <span class="wb-side-link-name">MCP 工具</span>
+                        <span class="wb-side-link-sub">开关 agent 能用哪些工具</span>
+                    </span>
+                </a>
+                <a class="wb-side-link @(IsCurrent("/connect") ? "active" : "")" href="/connect">
+                    <span class="wb-side-text">
+                        <span class="wb-side-link-name">接入 agent</span>
+                        <span class="wb-side-link-sub">把 agent 接进工作台</span>
+                    </span>
+                </a>
+                <a class="wb-side-link @(IsCurrent("/db-connections") ? "active" : "")" href="/db-connections">
+                    <span class="wb-side-text">
+                        <span class="wb-side-link-name">数据库连接</span>
+                        <span class="wb-side-link-sub">配库与免审批规则</span>
+                    </span>
+                </a>
             </div>
 
             <div class="wb-side-group">
                 <div class="wb-side-group-label">运维</div>
-                <a class="wb-side-link @(IsCurrent("/workspace") ? "active" : "")" href="/workspace">工作区</a>
-                <a class="wb-side-link @(IsCurrent("/search") ? "active" : "")" href="/search">搜索</a>
+                <a class="wb-side-link @(IsCurrent("/workspace") ? "active" : "")" href="/workspace">
+                    <span class="wb-side-text">
+                        <span class="wb-side-link-name">工作区</span>
+                        <span class="wb-side-link-sub">导出导入，换机用</span>
+                    </span>
+                </a>
+                <a class="wb-side-link @(IsCurrent("/search") ? "active" : "")" href="/search">
+                    <span class="wb-side-text">
+                        <span class="wb-side-link-name">搜索</span>
+                        <span class="wb-side-link-sub">任务文档调用一起搜</span>
+                    </span>
+                </a>
             </div>
         </nav>
     </aside>
