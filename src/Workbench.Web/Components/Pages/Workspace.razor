@@ -30,7 +30,7 @@
                 把当前工作区导出到一个目录，整个目录拷到新机器即可。
                 数据库用 SQLite 快照导出，边跑边导也不会拿到半截文件。
             </p>
-            <div class="wb-form-row">
+            <div class="wb-field-row">
                 <label class="wb-label">导出目录</label>
                 <input class="wb-input" placeholder="/Users/you/backup/workbench-export"
                        disabled="@Busy" @bind="ExportDirectory" @bind:event="oninput" />
@@ -41,14 +41,16 @@
 
             @if (!ExportConfirming)
             {
-                <div class="wb-form-row">
-                    <button class="wb-btn wb-btn-primary"
-                            disabled="@(!Authorized || Busy || string.IsNullOrWhiteSpace(ExportDirectory))"
-                            @onclick="() => ExportConfirming = true">导出…</button>
-                    @if (!Authorized)
-                    {
-                        <span class="wb-muted">需要先在上方验证人工凭证。</span>
-                    }
+                <div class="wb-field-row">
+                    <div class="wb-field-ctl">
+                        <button class="wb-btn wb-btn-primary"
+                                disabled="@(!Authorized || Busy || string.IsNullOrWhiteSpace(ExportDirectory))"
+                                @onclick="() => ExportConfirming = true">导出…</button>
+                        @if (!Authorized)
+                        {
+                            <span class="wb-muted">需要先在上方验证人工凭证。</span>
+                        }
+                    </div>
                 </div>
             }
             else
@@ -74,12 +76,12 @@
                 把一个导出目录恢复到新的 WORKBENCH_HOME。导入完成后，
                 把环境变量 WORKBENCH_HOME 指到目标目录再启动服务。
             </p>
-            <div class="wb-form-row">
+            <div class="wb-field-row">
                 <label class="wb-label">导出源目录</label>
                 <input class="wb-input" placeholder="/Users/you/backup/workbench-export"
                        disabled="@Busy" @bind="ImportSourceDirectory" @bind:event="oninput" />
             </div>
-            <div class="wb-form-row">
+            <div class="wb-field-row">
                 <label class="wb-label">目标 HOME</label>
                 <input class="wb-input" placeholder="/Users/you/.workbench-restored"
                        disabled="@Busy" @bind="ImportTargetDirectory" @bind:event="oninput" />
@@ -91,19 +93,21 @@
                 不能导入到正在运行的 WORKBENCH_HOME —— 那会把正在用的库覆盖掉。
             </div>
 
-            <div class="wb-form-row">
+            <div class="wb-field-row">
                 <label class="wb-label">强确认</label>
                 <input class="wb-input" placeholder="输入「覆盖导入」四个字以确认"
                        disabled="@Busy" @bind="ImportConfirmText" @bind:event="oninput" />
             </div>
-            <div class="wb-form-row">
-                <button class="wb-btn wb-btn-danger" disabled="@(!CanImport)" @onclick="ImportAsync">
-                    @(Importing ? "导入中…" : "覆盖导入")
-                </button>
-                @if (!Authorized)
-                {
-                    <span class="wb-muted">需要先在上方验证人工凭证。</span>
-                }
+            <div class="wb-field-row">
+                <div class="wb-field-ctl">
+                    <button class="wb-btn wb-btn-danger" disabled="@(!CanImport)" @onclick="ImportAsync">
+                        @(Importing ? "导入中…" : "覆盖导入")
+                    </button>
+                    @if (!Authorized)
+                    {
+                        <span class="wb-muted">需要先在上方验证人工凭证。</span>
+                    }
+                </div>
             </div>
         </section>
     </div>
