@@ -147,6 +147,18 @@ h1, h2, h3, h4 { font-weight: 600; letter-spacing: -.01em; }
 a { color: var(--wb-accent); text-decoration: none; }
 a:hover { color: var(--wb-accent-hover); text-decoration: underline; }
 
+/* 对象标题链接：指向某个任务 / 项目 / 文档。
+   用正文色而不是链接蓝 —— 一屏里十几条蓝链接比内容还抢眼，
+   鼠标停上去变蓝，就知道能点。动作链接（「去处理」「详情」）才用蓝。 */
+.wb-link-title {
+    color: var(--wb-text);
+    font-weight: 500;
+}
+.wb-link-title:hover {
+    color: var(--wb-accent);
+    text-decoration: none;
+}
+
 code, pre, .wb-sql, .wb-mono {
     font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }

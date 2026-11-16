@@ -128,7 +128,7 @@ else
                                 @foreach (var t in Data.ActiveTasks)
                                 {
                                     <tr>
-                                        <td><a href="/tasks/@t.Id">@UiText.TaskRef(t.Key, t.Title)</a></td>
+                                        <td><a class="wb-link-title" href="/tasks/@t.Id">@UiText.TaskRef(t.Key, t.Title)</a></td>
                                         <td class="wb-muted">@t.ProjectName</td>
                                         <td><span class="wb-chip @UiText.StatusClass(t.Status)">@UiText.Status(t.Status)</span></td>
                                         <td>
@@ -178,7 +178,7 @@ else
                                     <td>
                                         @if (item.TaskId is not null)
                                         {
-                                            <a href="/tasks/@item.TaskId">@item.TaskLabel</a>
+                                            <a class="wb-link-title" href="/tasks/@item.TaskId">@item.TaskLabel</a>
                                         }
                                         else
                                         {

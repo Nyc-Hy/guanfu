@@ -87,12 +87,12 @@ else
                 <tr>
                     <td class="wb-muted">@row.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</td>
                     <td>
-                        <a href="/projects/@row.ProjectId">@(string.IsNullOrWhiteSpace(row.ProjectName) ? "未命名项目" : row.ProjectName)</a>
+                        <a class="wb-link-title" href="/projects/@row.ProjectId">@(string.IsNullOrWhiteSpace(row.ProjectName) ? "未命名项目" : row.ProjectName)</a>
                     </td>
                     <td>
                         @if (row.TaskId is not null)
                         {
-                            <a href="/tasks/@row.TaskId">@UiText.TaskRef(row.TaskKey)</a>
+                            <a class="wb-link-title" href="/tasks/@row.TaskId">@UiText.TaskRef(row.TaskKey)</a>
                         }
                         else
                         {

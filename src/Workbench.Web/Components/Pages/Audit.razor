@@ -158,11 +158,11 @@ else
                     <td>
                         @if (row.ProjectId is not null)
                         {
-                            <a href="/projects/@row.ProjectId">@ProjectName(row.ProjectId.Value)</a>
+                            <a class="wb-link-title" href="/projects/@row.ProjectId">@ProjectName(row.ProjectId.Value)</a>
                         }
                         @if (row.TaskId is not null)
                         {
-                            <div><a class="wb-back" href="/tasks/@row.TaskId">@UiText.TaskRef(row.TaskKey)</a></div>
+                            <div><a class="wb-link-title" href="/tasks/@row.TaskId">@UiText.TaskRef(row.TaskKey)</a></div>
                         }
                         @if (row.ProjectId is null && row.TaskId is null)
                         {
