@@ -47,6 +47,9 @@
         <option value="Unknown">未知</option>
     </select>
     <div class="wb-date-range">
+        @* 日期框空着的时候只显示浏览器的 mm/dd/yyyy，
+           光看框子不知道筛的是哪头 —— 补上可见标签。 *@
+        <label class="wb-label">日期</label>
         <input class="wb-input" type="date" title="起始日期" aria-label="起始日期" @bind="FromDate"
                @bind:after="() => ReloadAsync(resetPage: true)" />
         <span class="wb-muted">至</span>
