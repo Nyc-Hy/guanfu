@@ -136,6 +136,32 @@ public sealed class PlanningMcpTools(
         return await dispatch.GetAsync(scope.ProjectId, limit, cancellationToken);
     }
 
+    [McpServerTool(Name = "workbench_suggest_tasks")]
+    [Description(
+        "「先干哪个」：把这个项目里**现在能干的活**排个序，并给出理由。" +
+        "排序看四件事：优先级、权重、等了多久（防饥饿）、做完能解锁几个任务（别人在等它）。" +
+        "每条都带 reasons 说明为什么排在这儿 —— agent 看得懂理由，人也看得懂凭什么。" +
+        "已经在干的活不会出现在列表里。" +
+        "已绑定会话时不用传 projectId。")]
+    public async Task<SuggestionToolResult> SuggestTasksAsync(
+        Guid? projectId = null,
+        int limit = 10,
+        string? excludeAgentId = null,
+        CancellationToken cancellationToken = default)
+    {
+        var scope = await ResolveScopeAsync(projectId, cancellationToken);
+
+        if (dispatch is null)
+        {
+            return new SuggestionToolResult { Ok = true, Suggestions = [] };
+        }
+
+        var suggestions = await dispatch.SuggestAsync(
+            scope.ProjectId, limit, excludeAgentId, cancellationToken);
+
+        return new SuggestionToolResult { Ok = true, Suggestions = suggestions };
+    }
+
     [McpServerTool(Name = "workbench_create_project")]
     [Description(
         "创建一个新项目。name 必填，description 可选。返回 ok=true 与项目信息（含 id）；" +
@@ -277,3 +303,13 @@ public sealed record MilestoneOpResult(
 public sealed record MilestoneDeleteResult(
     bool Ok,
     string? Error = null);
+
+/// <summary>调度建议的返回形状。</summary>
+public sealed record SuggestionToolResult
+{
+    public bool Ok { get; init; }
+
+    public string? Error { get; init; }
+
+    public IReadOnlyList<DispatchSuggestionDto> Suggestions { get; init; } = [];
+}

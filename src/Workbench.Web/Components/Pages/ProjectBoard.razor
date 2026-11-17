@@ -80,6 +80,53 @@ else
     @if (ActiveTab == "dispatch")
     {
     <section class="wb-panel">
+        <div class="wb-card-head">
+            <h3>建议先做</h3>
+            <span class="wb-chip">按优先级 · 权重 · 等了多久 · 能解锁几个排</span>
+        </div>
+        @if (Suggestions.Count == 0)
+        {
+            <p class="wb-muted">现在没有可以开工的活。</p>
+        }
+        else
+        {
+            <div class="wb-table-scroll">
+                <table class="wb-table">
+                    <thead>
+                    <tr><th>顺序</th><th>任务</th><th>类型</th><th>为什么是它</th><th class="wb-col-station">工位</th></tr>
+                    </thead>
+                    <tbody>
+                    @for (var i = 0; i < Suggestions.Count; i++)
+                    {
+                        var s = Suggestions[i];
+                        <tr>
+                            <td class="wb-muted">@(i + 1)</td>
+                            <td><a class="wb-link-title" href="/tasks/@s.TaskId">@UiText.TaskRef(s.Key, s.Title)</a></td>
+                            <td><span class="wb-chip @TaskTypes.CssClass(s.Type)">@TaskTypes.Name(s.Type)</span></td>
+                            <td class="wb-muted">@string.Join("；", s.Reasons)</td>
+                            <td>
+                                @if (!string.IsNullOrWhiteSpace(s.StationHint))
+                                {
+                                    <span class="wb-chip wb-chip-warn" title="@s.StationHint">要开 worktree</span>
+                                }
+                                else
+                                {
+                                    <span class="wb-muted" title="主工作区可用，现在就能开工">可用</span>
+                                }
+                            </td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+            <p class="wb-hint">
+                agent 与人看的是同一份排序 —— agent 侧走 <code>workbench_suggest_tasks</code>。
+                已经在干的活不在列表里。
+            </p>
+        }
+    </section>
+
+    <section class="wb-panel">
         <h3>现在能干的活</h3>
         <p class="wb-hint">
             前置全清、没人占着的活 —— agent 可以直接领。
@@ -471,6 +518,9 @@ else
     // ---- 页签 ----
     private string ActiveTab { get; set; } = "tasks";
 
+    /// <summary>调度建议：先干哪个（含理由）。</summary>
+    private IReadOnlyList<DispatchSuggestionDto> Suggestions { get; set; } = [];
+
     /// <summary>调度板：现在什么能干、什么卡着、谁在干。</summary>
     private DispatchBoardDto Dispatch { get; set; } = new(Guid.Empty, [], [], [], 0, 0, 0);
 
@@ -699,6 +749,7 @@ else
             var milestones = scope.ServiceProvider.GetRequiredService<IMilestoneService>();
             var tasks = scope.ServiceProvider.GetRequiredService<ITaskService>();
             var dispatch = scope.ServiceProvider.GetRequiredService<IDispatchService>();
+            var suggestions = await dispatch.SuggestAsync(ProjectId, 10);
 
             Project = await projects.GetAsync(ProjectId);
             MilestoneItems = await milestones.ListAsync(ProjectId);
@@ -708,6 +759,7 @@ else
             // 一次最多拉 500 条。表格翻页兜着渲染，但拉取这步也不能没上限。
             Items = await tasks.ListAsync(ProjectId, null, null, milestoneId, includeArchived: IncludeArchived, limit: MaxTasks);
             Dispatch = await dispatch.GetAsync(ProjectId, 50);
+            Suggestions = suggestions;
             LoadError = null;
 
             if (resetPage)

@@ -20,6 +20,19 @@ namespace Workbench.Application.Services;
 public interface IDispatchService
 {
     Task<DispatchBoardDto> GetAsync(Guid projectId, int limit = 20, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 「先干哪个」—— 给候选活排个序，并说清**为什么**是它。
+    ///
+    /// 调度板回答「什么能干」，这个回答「先干哪个」：
+    /// 同样能干的活有五个，agent 挑哪个、为什么挑，是两回事。
+    /// 排序要**可解释** —— agent 看得懂理由，人也看得懂凭什么。
+    /// </summary>
+    Task<IReadOnlyList<DispatchSuggestionDto>> SuggestAsync(
+        Guid projectId,
+        int limit = 10,
+        string? excludeAgentId = null,
+        CancellationToken cancellationToken = default);
 }
 
 /// <summary>调度板上的一条任务。</summary>
@@ -46,6 +59,25 @@ public sealed record DispatchTaskDto(
     double Weight,
     DateTimeOffset CreatedAt);
 
+/// <summary>一条调度建议：这个活为什么排在这儿。</summary>
+public sealed record DispatchSuggestionDto(
+    Guid TaskId,
+    string? Key,
+    string Title,
+    TaskType Type,
+    TaskPriority Priority,
+    double Weight,
+    string Status,
+    /// <summary>排序分（越高越该先做）。</summary>
+    double Score,
+    /// <summary>为什么推荐它 —— agent 要知道，人也要看得懂。</summary>
+    IReadOnlyList<string> Reasons,
+    /// <summary>它做完能解锁几个任务（别人在等它）。</summary>
+    int Unblocks,
+    /// <summary>工位提示（主工作区被占着 → 要自己开 worktree）。空 = 现在就能开工。</summary>
+    string? StationHint,
+    DateTimeOffset CreatedAt);
+
 /// <summary>调度板。</summary>
 public sealed record DispatchBoardDto(
     Guid ProjectId,
@@ -58,6 +90,200 @@ public sealed record DispatchBoardDto(
 
 public sealed class DispatchService(IAppDbContext db, IClock clock) : IDispatchService
 {
+    public async Task<IReadOnlyList<DispatchSuggestionDto>> SuggestAsync(
+        Guid projectId,
+        int limit = 10,
+        string? excludeAgentId = null,
+        CancellationToken cancellationToken = default)
+    {
+        var take = Math.Clamp(limit, 1, 50);
+        var now = clock.UtcNow;
+
+        var tasks = await db.Tasks.AsNoTracking()
+            .Where(t => t.ProjectId == projectId &&
+                        !t.IsArchived &&
+                        t.Status != TaskStatus.Done &&
+                        t.Status != TaskStatus.Cancelled)
+            .Select(t => new
+            {
+                t.Id, t.Key, t.Title, t.Type, t.Priority, t.Weight, t.Status,
+                t.CreatedAt, t.ClaimedByAgentId, t.LeaseExpiresAt, t.WorkPath
+            })
+            .ToListAsync(cancellationToken);
+
+        if (tasks.Count == 0)
+        {
+            return [];
+        }
+
+        var ids = tasks.Select(t => t.Id).ToList();
+        var byId = tasks.ToDictionary(t => t.Id);
+
+        // 依赖的两个方向都要：
+        // 正向（我依赖它）用来判断能不能开工，反向（谁依赖我）用来算「做完能解锁几个」。
+        var deps = await db.TaskDependencies.AsNoTracking()
+            .Where(d => ids.Contains(d.TaskId) && d.Type == DependencyType.BlockedBy)
+            .Select(d => new { d.TaskId, d.DependsOnTaskId })
+            .ToListAsync(cancellationToken);
+
+        var forward = deps
+            .GroupBy(d => d.TaskId)
+            .ToDictionary(g => g.Key, g => g.Select(d => d.DependsOnTaskId).Distinct().ToList());
+
+        var reverse = deps
+            .GroupBy(d => d.DependsOnTaskId)
+            .ToDictionary(g => g.Key, g => g.Select(d => d.TaskId).Distinct().ToList());
+
+        // 已完成的前置（可能不在这个项目里，也要算数）
+        var doneIds = await db.Tasks.AsNoTracking()
+            .Where(t => deps.Select(d => d.DependsOnTaskId).Contains(t.Id) && t.Status == TaskStatus.Done)
+            .Select(t => t.Id)
+            .ToListAsync(cancellationToken);
+
+        var done = doneIds.ToHashSet();
+
+        // 每个活的上一个持有者（最近的认领 / 释放事件）——
+        // 用来判断「这活是不是某个 agent 刚放下的」。
+        var holderEvents = await db.StatusEvents.AsNoTracking()
+            .Where(e => ids.Contains(e.TaskId) &&
+                        (e.EventType == TaskEventTypes.Claimed || e.EventType == TaskEventTypes.Released))
+            .OrderBy(e => e.CreatedAt)
+            .Select(e => new { e.TaskId, e.Actor })
+            .ToListAsync(cancellationToken);
+
+        var lastHolders = holderEvents
+            .GroupBy(e => e.TaskId)
+            .ToDictionary(g => g.Key, g => g.Last().Actor);
+
+        // 主工作区现在被谁占着
+        var project = await db.Projects.AsNoTracking()
+            .FirstOrDefaultAsync(p => p.Id == projectId, cancellationToken);
+        var mainCheckout = project?.RepoPath;
+
+        var mainHolder = tasks.FirstOrDefault(t =>
+            t.LeaseExpiresAt is not null &&
+            t.LeaseExpiresAt.Value > now &&
+            t.ClaimedByAgentId is not null &&
+            (t.WorkPath is null ||
+             (mainCheckout is not null &&
+              string.Equals(mainCheckout, t.WorkPath, StringComparison.OrdinalIgnoreCase))));
+
+        var suggestions = new List<DispatchSuggestionDto>();
+
+        foreach (var task in tasks)
+        {
+            // 前置没做完 → 现在不能开工
+            var blockers = forward.TryGetValue(task.Id, out var list)
+                ? list.Where(b => !done.Contains(b)).ToList()
+                : [];
+
+            if (blockers.Count > 0)
+            {
+                continue;
+            }
+
+            // 有人在干 → 不是候选
+            var held = task.LeaseExpiresAt is not null && task.LeaseExpiresAt.Value > now;
+            if (held)
+            {
+                continue;
+            }
+
+            // 排除某个 agent 的活：**手上占着的**（本来就不算候选）
+            // 与**刚放下的**（上一个持有者是他）——
+            // agent 常问「还有什么该我干的」，别把刚放下的活又推回给它。
+            if (!string.IsNullOrWhiteSpace(excludeAgentId))
+            {
+                var heldBy = task.ClaimedByAgentId;
+                var lastHolder = lastHolders.TryGetValue(task.Id, out var h) ? h : null;
+
+                if (string.Equals(heldBy, excludeAgentId, StringComparison.Ordinal) ||
+                    string.Equals(lastHolder, excludeAgentId, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+            }
+
+            // 解锁数：还有几个任务在等它
+            var unblocks = reverse.TryGetValue(task.Id, out var waiting)
+                ? waiting.Count(w => !byId.TryGetValue(w, out var t) || t.Status != TaskStatus.Done)
+                : 0;
+
+            var reasons = new List<string>();
+            var score = 0d;
+
+            var priorityPoints = PriorityPoints(task.Priority);
+            score += priorityPoints;
+            reasons.Add(task.Priority switch
+            {
+                TaskPriority.Critical => "优先级：紧急",
+                TaskPriority.High => "优先级：高",
+                TaskPriority.Low => "优先级：低",
+                _ => "优先级：普通"
+            });
+
+            if (task.Weight > 1)
+            {
+                score += task.Weight * 5;
+                reasons.Add($"权重 {task.Weight:0.##}");
+            }
+
+            // 等得越久越该做 —— 防饥饿
+            var waitedDays = Math.Max(0, (now - task.CreatedAt).TotalDays);
+            if (waitedDays >= 1)
+            {
+                score += Math.Min(waitedDays * 2, 30);
+                reasons.Add($"已等 {(int)waitedDays} 天");
+            }
+
+            if (unblocks > 0)
+            {
+                score += Math.Min(unblocks * 8, 40);
+                reasons.Add($"做完能解锁 {unblocks} 个任务");
+            }
+
+            // 工位：主工作区被占着 → 要并行就得开自己的 worktree
+            string? stationHint = null;
+            if (mainHolder is not null &&
+                !string.Equals(mainHolder.ClaimedByAgentId, task.ClaimedByAgentId, StringComparison.Ordinal))
+            {
+                stationHint = $"主工作区被 {mainHolder.ClaimedByAgentId} 占着，要并行就得开自己的 worktree";
+            }
+            else
+            {
+                reasons.Add("现在没人占主工作区");
+            }
+
+            suggestions.Add(new DispatchSuggestionDto(
+                task.Id,
+                task.Key,
+                task.Title,
+                task.Type,
+                task.Priority,
+                task.Weight,
+                task.Status.ToString(),
+                Math.Round(score, 1),
+                reasons,
+                unblocks,
+                stationHint,
+                task.CreatedAt));
+        }
+
+        return suggestions
+            .OrderByDescending(s => s.Score)
+            .ThenBy(s => s.CreatedAt)
+            .Take(take)
+            .ToList();
+    }
+
+    private static double PriorityPoints(TaskPriority priority) => priority switch
+    {
+        TaskPriority.Critical => 40,
+        TaskPriority.High => 30,
+        TaskPriority.Normal => 20,
+        _ => 10
+    };
+
     public async Task<DispatchBoardDto> GetAsync(
         Guid projectId,
         int limit = 20,

@@ -533,6 +533,10 @@ public static class WorkbenchApi
 
         // ---- 调度视图 ----
         // 读：agent 与人都要看（选活、看板）。开放。
+        api.MapGet("/projects/{projectId:guid}/suggestions", async (
+            Guid projectId, IDispatchService dispatch, int? limit, CancellationToken ct) =>
+            Results.Ok(await dispatch.SuggestAsync(projectId, limit ?? 10, null, ct)));
+
         api.MapGet("/projects/{projectId:guid}/dispatch", async (
             Guid projectId, IDispatchService dispatch, int? limit, CancellationToken ct) =>
             Results.Ok(await dispatch.GetAsync(projectId, limit ?? 20, ct)));

@@ -240,6 +240,26 @@ def main() -> int:
     context = mcp.call("workbench_get_context", {"taskId": task_id})
     expect("allowedTransitions" in context, "上下文应带出允许的状态迁移")
 
+    print("\n-- 调度建议（先干哪个）--")
+    # 再建一个没被领的活 —— 领掉的那个不算候选
+    mcp.call(
+        "workbench_create_task",
+        {"projectId": project_id, "title": f"另一个待办 e2e {suffix}", "type": "bug"},
+    )
+
+    suggestions = mcp.call("workbench_get_dispatch_board", {"projectId": project_id})
+    board = mcp.call("workbench_suggest_tasks", {"projectId": project_id})
+    expect(
+        isinstance(board, dict) and "suggestions" in board,
+        f"调度建议应返回带理由的列表（实际：{board}）",
+    )
+    items = board.get("suggestions") or []
+    expect(len(items) > 0, "至少该有一条建议")
+    expect(
+        all(item.get("reasons") for item in items),
+        "每条建议都要有理由 —— agent 得知道为什么是它",
+    )
+
     print("\n-- 调度板（现在什么能干）--")
     board = mcp.call("workbench_get_dispatch_board", {"projectId": project_id})
     expect(

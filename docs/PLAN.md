@@ -1,4 +1,4 @@
-# 开发工作台 — 实施计划（v0.8）
+# 开发工作台 — 实施计划（v0.13）
 
 > v0.1 征求意见 → v0.2 锁定六项决策 → v0.3 同步实现现状 → v0.4 P3/P4 收尾 →
 > **v0.5 评审工作流**（7 维度专家团 + 结项门禁 + 任务编号 + 版本归组）→
@@ -27,6 +27,22 @@
 「文档解读」是**确定性解析**（结构化还原 + 修订还原），不是 AI 理解，不破坏这条边界。
 评审同理 —— 工作台给**骨架**（阶段、维度、清单、门禁、历史），判断由 agent（可开子 agent / 专家团）做，再逐维度回写结论。
 
+### v0.8 做了什么
+
+| 能力 | 落地 |
+|---|---|
+| **项目绑本地仓库** | 创建时必填仓库路径；`RepoPath`（人填的）+ `RepoRoot`（规范化绑定键）两套 |
+| **会话绑定** | `AgentSession` 实体；桥接带 `X-Workbench-Repo`；`workbench_bind_session` 工具 |
+| **projectId 可选化** | 19 处工具签名；会话解析优先级「显式 > 会话」，**冲突直接拒** |
+| **按编号干活** | `claim(taskKey)` / `get_context(taskKey)` —— agent 不用背 GUID |
+| **产出文件自动采集** | `TaskFileChange`；两个采集点（提交后、Review 快照） |
+| **数据库调用专页** | `DbCallRecord` 专表 + `/db-calls` 页面 + 服务端真分页 |
+| **首页总览** | 等我批 / 在动任务 / 活动会话 / 最近产出 / 最近 SQL |
+| **审计哈希链** | `prevHash` + `hash`；改一条断一条，页面可验 |
+| **验收** | 单测 739 条；端到端 183 条（新增链路 F 25 条） |
+
+---
+
 ### v0.9 做了什么
 
 | 能力 | 落地 |
@@ -45,29 +61,34 @@
 | **项目级规约（一等实体）** | `ProjectSpec`：项目目标 / DoD（逐条）/ 提交约定 / 测试命令 / 分支约定 / 红线。人填（要人工凭证），agent 读（`workbench_get_project_spec`），上下文包与评审包都带着 |
 | **调度板** | `IDispatchService`：能干（ready）/ 有人在干（inProgress）/ 卡着（blocked，带阻塞链深度）。agent 用 `workbench_get_dispatch_board`，人在项目页「现在能干」页签看同一份 |
 
-### v0.10 之后该往哪儿长
-
-1. **容量与预算** —— 并行上限已做；成本维度（token / 花费）还没有
-2. **里程碑验收门禁** —— 现在只有评审有门禁
-3. **规约的评审落地** —— 规约已经进了评审包，但「DoD 逐条判定」还没做成结构化结论
-
-审计与审批那块已经比初心厚，**不再加戏**。
-
-### v0.8 做了什么
+### v0.11 做了什么
 
 | 能力 | 落地 |
 |---|---|
-| **项目绑本地仓库** | 创建时必填仓库路径；`RepoPath`（人填的）+ `RepoRoot`（规范化绑定键）两套 |
-| **会话绑定** | `AgentSession` 实体；桥接带 `X-Workbench-Repo`；`workbench_bind_session` 工具 |
-| **projectId 可选化** | 19 处工具签名；会话解析优先级「显式 > 会话」，**冲突直接拒** |
-| **按编号干活** | `claim(taskKey)` / `get_context(taskKey)` —— agent 不用背 GUID |
-| **产出文件自动采集** | `TaskFileChange`；两个采集点（提交后、Review 快照） |
-| **数据库调用专页** | `DbCallRecord` 专表 + `/db-calls` 页面 + 服务端真分页 |
-| **首页总览** | 等我批 / 在动任务 / 活动会话 / 最近产出 / 最近 SQL |
-| **审计哈希链** | `prevHash` + `hash`；改一条断一条，页面可验 |
-| **验收** | 单测 739 条；端到端 183 条（新增链路 F 25 条） |
+| **DoD 逐条判定** | `SpecVerdict`：规约的完成定义一条一条判（满足 / 不满足 / 不适用）；`workbench_submit_spec_verdict`；**没判完 / 判成不满足不许结项**（结项门禁加上规约这一道） |
+| **里程碑验收门禁** | 验收要求整棵子树（版本 → 需求组 → 需求）的活都做完；签过字之后里面的活状态冻住、不许再往里加活；要改先撤销验收 |
+| **用量与开销** | `TaskUsageService`：工具调用次数 / 工具种类 / 事件数 / 租约时长（工作台自己数）+ token / 费用（agent 自报）；**每任务工具调用上限**（MCP 中央过滤器里生效，被拦下的调用照样进审计） |
 
----
+### v0.12 做了什么
+
+| 能力 | 落地 |
+|---|---|
+| **交接记录** | `task.handoff` 事件（from / to）；上一个持有者从事件流里取，不加列 |
+| **开销增量累计** | agent 按次上报增量，工作台累加成总额，每次上报都留痕（增量 + 总额都在 payload 里） |
+
+### v0.13 做了什么
+
+| 能力 | 落地 |
+|---|---|
+| **调度建议「先干哪个」** | `IDispatchService.SuggestAsync`：优先级 + 权重 + 等待时长（防饥饿）+ 解锁数排序；每条带 `reasons`；主工作区被占给工位提示；`workbench_suggest_tasks` + 项目页「建议先做」表 |
+
+### 接下来该往哪儿长
+
+1. **成本要更真** —— 现在 token / 费用是 agent 自报的；要准就得接 agent 侧的用量回传
+2. **规约的层级** —— 规约现在是项目级的；「12 月版本」这种粒度要不要单独一套 DoD
+3. **多 agent 协作的痕迹** —— 工位与交接是第一块；还需要「谁把活交给谁」的上下文
+
+审计与审批那块已经比初心厚，**不再加戏**。
 
 ## 1. 已锁定的六项决策
 
@@ -91,7 +112,7 @@ Workbench.sln
 │  ├─ Workbench.Application     用例服务、DTO、事件、审批编排
 │  ├─ Workbench.Documents       文档解析引擎（MD/DOCX/PDF/diff → 统一模型）
 │  ├─ Workbench.Infrastructure  EF Core/SQLite、文档存储、Git 检视、SQL Server 执行器、密钥加密
-│  ├─ Workbench.Mcp             MCP 工具集（50 个工具）+ 注册
+│  ├─ Workbench.Mcp             MCP 工具集（68 个工具）+ 注册
 │  ├─ Workbench.Web             Blazor UI + REST API + /mcp 端点（宿主进程）、人工凭证、定时备份
 │  └─ Workbench.Cli             wb 命令行 + stdio↔HTTP MCP 桥接
 └─ tests/Workbench.Tests        389 项测试
@@ -236,7 +257,7 @@ agent 拿到上下文就知道现在能不能开跑。
 
 ---
 
-## 4. MCP 工具（50 个，下划线命名）
+## 4. MCP 工具（68 个，下划线命名）
 
 **工作台组（34）**：`workbench_list_projects` / `get_project` / `get_project_config` / `create_task` /
 `list_tasks` / `get_task` / **`get_task_by_key`**（按编号找任务）/ `claim_task` /

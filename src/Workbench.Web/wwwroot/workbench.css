@@ -941,6 +941,8 @@ a.wb-chip:hover { text-decoration: none; border-color: var(--wb-accent-line); ba
 .wb-col-dimension { min-width: 110px; }
 .wb-col-finding { min-width: 190px; }
 .wb-col-reviewer { min-width: 96px; }
+/* 工位列：文案短，但「要开 worktree」不折行 —— 折了就读不成一句话了 */
+.wb-col-station { min-width: 130px; }
 
 /* 搜索结果的任务表：首列是编号，短得很。
    跟着 .wb-task-table 的 60% 走会把标题挤到天边。 */
