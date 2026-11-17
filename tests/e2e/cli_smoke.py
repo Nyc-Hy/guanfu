@@ -151,6 +151,19 @@ def main() -> int:
                    "--content", "改了三个文件", "--author", "e2e")
     expect(code == 0, "wb task artifact 应成功")
 
+    print("\n-- E1.4b 批量导入文档 --")
+    with tempfile.TemporaryDirectory(prefix="wb-e2e-docs-") as doc_dir:
+        doc_a = os.path.join(doc_dir, "PRD-需求.md")
+        doc_b = os.path.join(doc_dir, "接口文档.md")
+        with open(doc_a, "w", encoding="utf-8") as handle:
+            handle.write("# 需求\n登录要账号密码")
+        with open(doc_b, "w", encoding="utf-8") as handle:
+            handle.write("# 接口\nPOST /api/login")
+
+        code, out = wb("doc", "upload", task_id, doc_a, doc_b)
+        expect(code == 0, f"wb doc upload 多个文件应成功（输出：{out.strip()[:200]}）")
+        expect("2" in out, f"应报出上传了几个文件（输出：{out.strip()[:200]}）")
+
     code, out = wb("task", "test-result", task_id, "--total", "10", "--passed", "9",
                    "--failures", "用例A", "--coverage", "0.9", "--author", "e2e")
     expect(code == 0, "wb task test-result 应成功")

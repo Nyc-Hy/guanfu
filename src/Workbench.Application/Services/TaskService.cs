@@ -93,12 +93,26 @@ public interface ITaskService
     ///
     /// <paramref name="reason"/> 写清楚为什么交（下一个 agent 看得见）。
     /// </summary>
+    /// <summary>
+    /// 把活排进人工计划（顶到已排的最后一位）或移出去。
+    ///
+    /// 调度建议是建议，最终顺序是人的决定 —— 这一条就是人的那把钥匙。
+    /// </summary>
+    Task<TaskSummaryDto> SetPinnedAsync(
+        Guid id,
+        bool pinned,
+        CancellationToken cancellationToken = default);
+
     Task ReleaseAsync(
         Guid id,
         string agentId,
         string? reason = null,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// 回写开发计划。<paramref name="occurredAt"/> 是**实际发生时间** ——
+    /// agent 离线干完了再补报时给「真的那会儿」，不给就是「现在」。
+    /// </summary>
     Task<PlanDto> SetPlanAsync(
         Guid id,
         string? background,
@@ -107,8 +121,10 @@ public interface ITaskService
         string? acceptanceCriteria,
         string? risks,
         string? author,
+        DateTimeOffset? occurredAt = null,
         CancellationToken cancellationToken = default);
 
+    /// <summary>登记产物。<paramref name="occurredAt"/> 同上：实际发生时间（补报用）。</summary>
     Task<ArtifactDto> AddArtifactAsync(
         Guid id,
         ArtifactType type,
@@ -118,8 +134,10 @@ public interface ITaskService
         string? commitSha = null,
         string? branch = null,
         string? author = null,
+        DateTimeOffset? occurredAt = null,
         CancellationToken cancellationToken = default);
 
+    /// <summary>回写测试结果。<paramref name="occurredAt"/> 同上：实际发生时间（补报用）。</summary>
     Task<TestResultDto> ReportTestResultAsync(
         Guid id,
         int total,
@@ -127,13 +145,16 @@ public interface ITaskService
         string? failures = null,
         double? coverage = null,
         string? author = null,
+        DateTimeOffset? occurredAt = null,
         CancellationToken cancellationToken = default);
 
+    /// <summary>写一条流水事件。<paramref name="occurredAt"/> 同上：实际发生时间（补报用）。</summary>
     Task<StatusEventDto> PostEventAsync(
         Guid id,
         string message,
         TaskEventSource source = TaskEventSource.System,
         string? actor = null,
+        DateTimeOffset? occurredAt = null,
         CancellationToken cancellationToken = default);
 
     Task<TaskContextDto> GetContextAsync(Guid id, int eventLimit = 20, CancellationToken cancellationToken = default);
@@ -175,6 +196,9 @@ public sealed class TaskService(
     IProjectSpecService? specService = null) : ITaskService
 {
     public const int StaleAfterHours = 72;
+
+    /// <summary>补报的时间最多能比记录时间晚多久（留点时钟误差的余量）。</summary>
+    private static readonly TimeSpan FutureTolerance = TimeSpan.FromMinutes(5);
 
     public async Task<TaskSummaryDto> CreateAsync(
         Guid projectId,
@@ -1031,6 +1055,49 @@ public sealed class TaskService(
             previous?.Reason);
     }
 
+    public async Task<TaskSummaryDto> SetPinnedAsync(
+        Guid id,
+        bool pinned,
+        CancellationToken cancellationToken = default)
+    {
+        var task = await db.Tasks.FirstOrDefaultAsync(t => t.Id == id, cancellationToken)
+                   ?? throw new NotFoundException("任务", id);
+
+        if (pinned)
+        {
+            // 排到已排的最后一位 —— 人按想做的顺序点一遍，就是那个顺序
+            var last = await db.Tasks.AsNoTracking()
+                .Where(t => t.ProjectId == task.ProjectId && t.PinnedOrder != null)
+                .MaxAsync(t => (int?)t.PinnedOrder, cancellationToken);
+
+            task.PinnedOrder = (last ?? 0) + 1;
+        }
+        else
+        {
+            task.PinnedOrder = null;
+        }
+
+        task.UpdatedAt = clock.UtcNow;
+        task.LastActivityAt = clock.UtcNow;
+
+        db.StatusEvents.Add(new StatusEvent
+        {
+            TaskId = id,
+            FromStatus = null,
+            ToStatus = null,
+            Source = TaskEventSource.Human,
+            Actor = "human",
+            Note = pinned ? $"排进人工计划（第 {task.PinnedOrder} 位）" : "移出人工计划",
+            EventType = TaskEventTypes.SchedulePinned,
+            Payload = WorkbenchJson.Serialize(new { pinned, order = task.PinnedOrder }),
+            CreatedAt = clock.UtcNow
+        });
+
+        await db.SaveChangesAsync(cancellationToken);
+
+        return await SummaryWithPendingAsync(task, cancellationToken);
+    }
+
     public async Task ReleaseAsync(
         Guid id,
         string agentId,
@@ -1098,8 +1165,12 @@ public sealed class TaskService(
         string? acceptanceCriteria,
         string? risks,
         string? author,
+        DateTimeOffset? occurredAt = null,
         CancellationToken cancellationToken = default)
     {
+        var recordedAt = clock.UtcNow;
+        var happenedAt = ResolveOccurredAt(occurredAt, recordedAt);
+
         // 版本号可能撞车：并发回写时两个请求会算出同一个 Max+1。
         // (TaskId, Version) 唯一索引挡得住，撞了就重算一个再来 ——
         // 与任务编号、评审轮次的既有模式一致。
@@ -1123,12 +1194,13 @@ public sealed class TaskService(
                 AcceptanceCriteria = acceptanceCriteria,
                 Risks = risks,
                 Author = author,
-                CreatedAt = clock.UtcNow
+                // 计划是「什么时候想明白的」——补报时给真的那会儿
+                CreatedAt = happenedAt
             };
 
             db.Plans.Add(plan);
-            task.UpdatedAt = clock.UtcNow;
-            task.LastActivityAt = clock.UtcNow;
+            task.UpdatedAt = recordedAt;
+            task.LastActivityAt = recordedAt;
 
             db.StatusEvents.Add(new StatusEvent
             {
@@ -1140,8 +1212,9 @@ public sealed class TaskService(
                 Actor = author,
                 Note = $"回写开发计划 v{plan.Version}",
                 EventType = TaskEventTypes.PlanSaved,
-                Payload = WorkbenchJson.Serialize(new { version = plan.Version, author }),
-                CreatedAt = clock.UtcNow
+                Payload = WorkbenchJson.Serialize(new { version = plan.Version, author, occurredAt = HappenedAtPayload(happenedAt, recordedAt) }),
+                CreatedAt = recordedAt,
+                OccurredAt = OccurredAtIfBackdated(happenedAt, recordedAt)
             });
 
             try
@@ -1156,6 +1229,45 @@ public sealed class TaskService(
         }
     }
 
+    /// <summary>
+    /// 补报的实际发生时间。返回记录时间（没补报时就是「现在」）。
+    ///
+    /// 两条底线：
+    /// - 不能在未来（留 5 分钟的时钟误差余量）—— 未来的事还没发生；
+    /// - 不能早于一年前 —— 多半是时间写错了。
+    /// </summary>
+    private static DateTimeOffset ResolveOccurredAt(DateTimeOffset? requested, DateTimeOffset recordedAt)
+    {
+        if (requested is not { } value)
+        {
+            return recordedAt;
+        }
+
+        var utc = value.ToUniversalTime();
+
+        if (utc > recordedAt.Add(FutureTolerance))
+        {
+            throw new WorkbenchException(
+                $"补报的时间不能在未来（{utc:yyyy-MM-dd HH:mm} UTC）—— 还没发生的事不能补报。");
+        }
+
+        if (utc < recordedAt.AddYears(-1))
+        {
+            throw new WorkbenchException(
+                $"补报的时间太早了（{utc:yyyy-MM-dd}）—— 超过一年，多半是写错了。");
+        }
+
+        return utc;
+    }
+
+    /// <summary>跟记录时间一样就不算补报 —— 免得流水里到处挂「补报」。</summary>
+    private static DateTimeOffset? OccurredAtIfBackdated(DateTimeOffset happenedAt, DateTimeOffset recordedAt) =>
+        Math.Abs((happenedAt - recordedAt).TotalSeconds) < 1 ? null : happenedAt;
+
+    /// <summary>补报时把实际发生时间写进载荷（机器可读）。</summary>
+    private static DateTimeOffset? HappenedAtPayload(DateTimeOffset happenedAt, DateTimeOffset recordedAt) =>
+        OccurredAtIfBackdated(happenedAt, recordedAt);
+
     public async Task<ArtifactDto> AddArtifactAsync(
         Guid id,
         ArtifactType type,
@@ -1165,10 +1277,14 @@ public sealed class TaskService(
         string? commitSha = null,
         string? branch = null,
         string? author = null,
+        DateTimeOffset? occurredAt = null,
         CancellationToken cancellationToken = default)
     {
         var task = await db.Tasks.FirstOrDefaultAsync(t => t.Id == id, cancellationToken)
                    ?? throw new NotFoundException("任务", id);
+
+        var recordedAt = clock.UtcNow;
+        var happenedAt = ResolveOccurredAt(occurredAt, recordedAt);
 
         var artifact = new Artifact
         {
@@ -1180,12 +1296,13 @@ public sealed class TaskService(
             CommitSha = commitSha,
             Branch = branch,
             Author = author,
-            CreatedAt = clock.UtcNow
+            // 产物是「什么时候做出来的」——补报时给真的那会儿
+            CreatedAt = happenedAt
         };
 
         db.Artifacts.Add(artifact);
-        task.UpdatedAt = clock.UtcNow;
-        task.LastActivityAt = clock.UtcNow;
+        task.UpdatedAt = recordedAt;
+        task.LastActivityAt = recordedAt;
 
         db.StatusEvents.Add(new StatusEvent
         {
@@ -1204,9 +1321,11 @@ public sealed class TaskService(
                 title = artifact.Title,
                 commitSha,
                 branch,
-                externalPath
+                externalPath,
+                occurredAt = HappenedAtPayload(happenedAt, recordedAt)
             }),
-            CreatedAt = clock.UtcNow
+            CreatedAt = recordedAt,
+            OccurredAt = OccurredAtIfBackdated(happenedAt, recordedAt)
         });
 
         await db.SaveChangesAsync(cancellationToken);
@@ -1220,10 +1339,14 @@ public sealed class TaskService(
         string? failures = null,
         double? coverage = null,
         string? author = null,
+        DateTimeOffset? occurredAt = null,
         CancellationToken cancellationToken = default)
     {
         var task = await db.Tasks.FirstOrDefaultAsync(t => t.Id == id, cancellationToken)
                    ?? throw new NotFoundException("任务", id);
+
+        var recordedAt = clock.UtcNow;
+        var happenedAt = ResolveOccurredAt(occurredAt, recordedAt);
 
         // 不校验的话会算出「通过率 > 1」这种数，指标看板直接挂
         if (total < 0)
@@ -1255,7 +1378,7 @@ public sealed class TaskService(
             Title = summary,
             Content = failures,
             Author = author,
-            CreatedAt = clock.UtcNow
+            CreatedAt = happenedAt
         };
 
         db.Artifacts.Add(artifact);
@@ -1269,11 +1392,11 @@ public sealed class TaskService(
             Coverage = coverage,
             Failures = failures,
             Author = author,
-            ReportedAt = clock.UtcNow
+            ReportedAt = happenedAt
         });
 
-        task.UpdatedAt = clock.UtcNow;
-        task.LastActivityAt = clock.UtcNow;
+        task.UpdatedAt = recordedAt;
+        task.LastActivityAt = recordedAt;
 
         db.StatusEvents.Add(new StatusEvent
         {
@@ -1285,13 +1408,21 @@ public sealed class TaskService(
             Actor = author,
             Note = summary,
             EventType = TaskEventTypes.TestReported,
-            Payload = WorkbenchJson.Serialize(new { total, passed, failed, coverage }),
-            CreatedAt = clock.UtcNow
+            Payload = WorkbenchJson.Serialize(new
+            {
+                total,
+                passed,
+                failed,
+                coverage,
+                occurredAt = HappenedAtPayload(happenedAt, recordedAt)
+            }),
+            CreatedAt = recordedAt,
+            OccurredAt = OccurredAtIfBackdated(happenedAt, recordedAt)
         });
 
         await db.SaveChangesAsync(cancellationToken);
 
-        return new TestResultDto(id, total, passed, failed, coverage, failures, author, clock.UtcNow);
+        return new TestResultDto(id, total, passed, failed, coverage, failures, author, happenedAt);
     }
 
     public async Task<StatusEventDto> PostEventAsync(
@@ -1299,10 +1430,14 @@ public sealed class TaskService(
         string message,
         TaskEventSource source = TaskEventSource.System,
         string? actor = null,
+        DateTimeOffset? occurredAt = null,
         CancellationToken cancellationToken = default)
     {
         var task = await db.Tasks.FirstOrDefaultAsync(t => t.Id == id, cancellationToken)
                    ?? throw new NotFoundException("任务", id);
+
+        var recordedAt = clock.UtcNow;
+        var happenedAt = ResolveOccurredAt(occurredAt, recordedAt);
 
         var evt = new StatusEvent
         {
@@ -1314,13 +1449,18 @@ public sealed class TaskService(
             Actor = actor,
             Note = message,
             EventType = TaskEventTypes.Note,
-            Payload = WorkbenchJson.Serialize(new { message }),
-            CreatedAt = clock.UtcNow
+            Payload = WorkbenchJson.Serialize(new
+            {
+                message,
+                occurredAt = HappenedAtPayload(happenedAt, recordedAt)
+            }),
+            CreatedAt = recordedAt,
+            OccurredAt = OccurredAtIfBackdated(happenedAt, recordedAt)
         };
 
         db.StatusEvents.Add(evt);
-        task.UpdatedAt = clock.UtcNow;
-        task.LastActivityAt = clock.UtcNow;
+        task.UpdatedAt = recordedAt;
+        task.LastActivityAt = recordedAt;
 
         await db.SaveChangesAsync(cancellationToken);
         return ToEventDto(evt);
@@ -1971,7 +2111,8 @@ public sealed class TaskService(
         e.Note,
         e.CreatedAt,
         e.EventType,
-        e.Payload);
+        e.Payload,
+        e.OccurredAt);
 
     internal static DocumentDto ToDocumentDto(Document d) => new(
         d.Id,

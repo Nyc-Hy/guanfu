@@ -8,6 +8,9 @@ public class Workspace
     public string? Description { get; set; }
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public List<Project> Projects { get; set; } = [];
+
+    /// <summary>工作区标准规约（所有项目通用）。</summary>
+    public WorkspaceSpec? Spec { get; set; }
 }
 
 /// <summary>项目。工作台的核心管理单元。</summary>
@@ -160,6 +163,42 @@ public class Milestone
 }
 
 /// <summary>
+/// 工作区级规约：**所有项目通用的底线**。
+///
+/// 公司/团队的规矩（「必须有单测」「必须更新文档」「不许改 migrations」）
+/// 不该每个项目抄一遍 —— 抄一遍就会抄漏、改一处就忘了另一处。
+/// 工作区级是底线，项目级与里程碑级在它之上叠加。
+/// </summary>
+public class WorkspaceSpec
+{
+    /// <summary>工作区 id。</summary>
+    public Guid WorkspaceId { get; set; }
+
+    public Workspace? Workspace { get; set; }
+
+    /// <summary>工作区目标 / 背景。</summary>
+    public string? Purpose { get; set; }
+
+    /// <summary>完成定义（DoD）。**逐行存**，一行一条。</summary>
+    public string? DefinitionOfDone { get; set; }
+
+    /// <summary>提交信息约定（所有项目通用）。</summary>
+    public string? CommitConvention { get; set; }
+
+    /// <summary>测试命令（所有项目通用）。</summary>
+    public string? TestCommand { get; set; }
+
+    /// <summary>分支命名约定（所有项目通用）。</summary>
+    public string? BranchConvention { get; set; }
+
+    /// <summary>红线 / 禁忌（所有项目通用）。</summary>
+    public string? Guardrails { get; set; }
+
+    public DateTimeOffset? UpdatedAt { get; set; }
+    public string? UpdatedBy { get; set; }
+}
+
+/// <summary>
 /// 里程碑级规约。
 ///
 /// 与项目级规约**叠加**：项目级的规矩对所有活适用，里程碑级的只对这个里程碑里的活生效。
@@ -273,6 +312,14 @@ public class TaskItem
     public DateTimeOffset? LeaseExpiresAt { get; set; }
 
     /// <summary>
+    /// 人工排的位次（越小越先做）。为空 = 没排，由调度建议按分排。
+    ///
+    /// 调度建议只是**建议** —— 最终谁先干，人说了算。
+    /// 所以人能「排进计划」把它顶到前面，也能随时移出去。
+    /// </summary>
+    public int? PinnedOrder { get; set; }
+
+    /// <summary>
     /// 这个 agent 干活的工作目录（绝对路径）。
     ///
     /// 为空 = 用项目的主工作区（仓库根）。非空 = agent 自己开的 git worktree。
@@ -344,6 +391,16 @@ public class StatusEvent
     public string? Payload { get; set; }
 
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>
+    /// 实际发生时间（补报用）。
+    ///
+    /// agent 可能在工作台够不着的时候就把活干完了（离线补报）。
+    /// 这时它报上来的时间是**真的发生时间**，跟「工作台什么时候知道」不是一回事 ——
+    /// 账本上这两件事都要有：CreatedAt 是记录时间，OccurredAt 是发生时间。
+    /// 为空表示没补报，两者相同。
+    /// </summary>
+    public DateTimeOffset? OccurredAt { get; set; }
 }
 
 /// <summary>上传的文档原件（PRD / 测试用例 / 接口文档等）。</summary>

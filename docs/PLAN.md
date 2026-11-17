@@ -95,6 +95,14 @@
 |---|---|
 | **验收 × 规约打通** | 里程碑验收除了「子树里的活都做完」，还要看**这个版本的完成定义逐条判过、且没有判成不满足的**。判定的证据在评审轮次里（每个活评的是生效的那份完成定义），验收时汇总 |
 
+### v0.16 做了什么
+
+| 能力 | 落地 |
+|---|---|
+| **文档导入的批量入口** | 界面一次选多个文件；REST `POST /api/tasks/{id}/documents/batch`；MCP `doc_upload` 支持 `documents` 数组；CLI `wb doc upload <任务ID> <文件...>`。**一个文件失败不牵连其它的** —— 成功的进 `uploaded`，失败的进 `failed`（带文件名与原因） |
+| **文档类别统一猜** | 类别（PRD / 用例 / 接口文档）由文件名猜，**服务层统一算**，界面 / REST / MCP / CLI 共用一份 —— 同一份文档从哪进来都带着同一个类别 |
+| **agent 侧的离线补报** | 回写计划 / 产物 / 测试结果 / 流水事件都能带 `occurredAt`（实际发生时间）。账本上 `OccurredAt` 是发生时间、`CreatedAt` 是「工作台什么时候知道的」；界面给补报的事件挂「补报」标记并摆出两个时间。未来的时间不收，离谱的过去也拒 |
+
 ### 接下来该往哪儿长
 
 1. **成本不做** —— 工作台不知道 agent 用什么模型什么套餐，自报的数字在审计上站不住；
@@ -468,6 +476,8 @@ MCP 端点**不带**这个门槛 —— agent 走的就是它，它不能有裁�
 | 导出目录等于 WORKBENCH_HOME | `Path.GetFullPath("/home/")` 不等于 `/home`，判断被绕开 → **删掉正在用的 workbench.db** | 归一化 + 带分隔符比较 + 解软链；导出目标目录里有非导出文件也拒 |
 | REST API 零认证 | agent 自己批自己的审批；`ASPNETCORE_URLS=0.0.0.0` 时升级为远程命令执行 | 敏感端点要人工凭证（token 0600 + 固定时间比对） |
 | Markdown 链接只防裸 HTML | `[x](javascript:alert(1))` 原样输出 → 点一下就执行脚本 | `LinkUrlPolicy` scheme 白名单，`javascript:`/`data:` 等降级成纯文本 |
+| DTO 的位置记录给 `Guid` 加默认值 | `Guid WorkspaceId = default` → SDK 生成 JSON Schema 时默认值转不回 `Guid` → **整个服务起不来**，而单测全绿 | 别给值类型加默认值（或写 `Guid?`）；`McpToolContractTests` 加一条「每个工具的 Schema 都能生成」 |
+| CLI 的 multipart 走了 JSON 通道 | `wb doc upload` 把 `MultipartFormDataContent` 塞进 JSON 序列化 → 服务端收到一坨 JSON，上传必坏 | 用 `PostMultipartAsync`；端到端补一条 CLI 批量上传的断言 |
 | shell 白名单是命令串前缀 | `git` 一勾就放行 `git push --force`、`npm` 放行 `npm publish` | 白名单按**词**比较，条目可写子命令（`git status`） |
 | `git status --porcelain` 中文路径 | 输出 `\346\226\207...`，按路径读文件必然找不到 | 调用加 `core.quotePath=false` + 自写 C 转义解码兜底 |
 | `GitInspector` 先同步读完再等退出 | 10 秒超时根本走不到，git 挂住就永久占住线程；父子互等死锁 | 并发读两个流 + `WaitForExitAsync(token)`，超时杀整棵进程树 |

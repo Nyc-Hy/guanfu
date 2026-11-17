@@ -44,6 +44,18 @@ public interface IProjectSpecService
         Guid taskId,
         CancellationToken cancellationToken = default);
 
+    /// <summary>读工作区标准规约（所有项目通用）。没填过就返回空的。</summary>
+    Task<ProjectSpecDto> GetForWorkspaceAsync(
+        Guid workspaceId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>写工作区标准规约。</summary>
+    Task<ProjectSpecDto> UpdateForWorkspaceAsync(
+        Guid workspaceId,
+        ProjectSpecInput input,
+        string? updatedBy = null,
+        CancellationToken cancellationToken = default);
+
     /// <summary>写规约。整份覆盖 —— 规矩是「现在该是什么样」，不是补丁。</summary>
     Task<ProjectSpecDto> UpdateAsync(
         Guid projectId,
@@ -99,6 +111,14 @@ public sealed class ProjectSpecService(IAppDbContext db, IClock clock) : IProjec
             return ProjectSpecDto.Empty(Guid.Empty);
         }
 
+        var workspaceId = await db.Projects.AsNoTracking()
+            .Where(p => p.Id == task.ProjectId)
+            .Select(p => p.WorkspaceId)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        var workspace = await db.WorkspaceSpecs.AsNoTracking()
+            .FirstOrDefaultAsync(s => s.WorkspaceId == workspaceId, cancellationToken);
+
         var project = await db.ProjectSpecs.AsNoTracking()
             .FirstOrDefaultAsync(s => s.ProjectId == task.ProjectId, cancellationToken);
 
@@ -107,23 +127,25 @@ public sealed class ProjectSpecService(IAppDbContext db, IClock clock) : IProjec
                 .FirstOrDefaultAsync(s => s.MilestoneId == milestoneId, cancellationToken)
             : null;
 
-        if (project is null && milestone is null)
+        if (workspace is null && project is null && milestone is null)
         {
             return ProjectSpecDto.Empty(task.ProjectId);
         }
 
-        // 里程碑的那一层优先（更具体的说了算），DoD 是两层叠加
+        // 越具体的越优先（工作区 → 项目 → 里程碑），DoD 是三层叠加
         return new ProjectSpecDto(
             task.ProjectId,
-            Pick(milestone?.Purpose, project?.Purpose),
-            SplitLines(project?.DefinitionOfDone).Concat(SplitLines(milestone?.DefinitionOfDone))
+            Pick(milestone?.Purpose, Pick(project?.Purpose, workspace?.Purpose)),
+            SplitLines(workspace?.DefinitionOfDone)
+                .Concat(SplitLines(project?.DefinitionOfDone))
+                .Concat(SplitLines(milestone?.DefinitionOfDone))
                 .Distinct(StringComparer.Ordinal).ToList(),
-            Pick(milestone?.CommitConvention, project?.CommitConvention),
-            Pick(milestone?.TestCommand, project?.TestCommand),
-            project?.BranchConvention,
-            Pick(milestone?.Guardrails, project?.Guardrails),
-            milestone?.UpdatedAt ?? project?.UpdatedAt,
-            milestone?.UpdatedBy ?? project?.UpdatedBy);
+            Pick(milestone?.CommitConvention, Pick(project?.CommitConvention, workspace?.CommitConvention)),
+            Pick(milestone?.TestCommand, Pick(project?.TestCommand, workspace?.TestCommand)),
+            Pick(project?.BranchConvention, workspace?.BranchConvention),
+            Pick(milestone?.Guardrails, Pick(project?.Guardrails, workspace?.Guardrails)),
+            milestone?.UpdatedAt ?? project?.UpdatedAt ?? workspace?.UpdatedAt,
+            milestone?.UpdatedBy ?? project?.UpdatedBy ?? workspace?.UpdatedBy);
     }
 
     /// <summary>里程碑的那层优先，没填的用项目级的。</summary>
@@ -144,6 +166,7 @@ public sealed class ProjectSpecService(IAppDbContext db, IClock clock) : IProjec
             return [];
         }
 
+        var workspaceDoD = await ReadWorkspaceDoDAsync(task.ProjectId, cancellationToken);
         var projectDoD = await db.ProjectSpecs.AsNoTracking()
             .Where(s => s.ProjectId == task.ProjectId)
             .Select(s => s.DefinitionOfDone)
@@ -156,11 +179,60 @@ public sealed class ProjectSpecService(IAppDbContext db, IClock clock) : IProjec
                 .FirstOrDefaultAsync(cancellationToken)
             : null;
 
-        // 项目级在前、里程碑级在后 —— 顺序稳定，agent 与人看到的列表一样
-        return SplitLines(projectDoD)
+        // 工作区 → 项目 → 里程碑：越具体的越靠后，顺序稳定，agent 与人看到的一样
+        return SplitLines(workspaceDoD)
+            .Concat(SplitLines(projectDoD))
             .Concat(SplitLines(milestoneDoD))
             .Distinct(StringComparer.Ordinal)
             .ToList();
+    }
+
+    public async Task<ProjectSpecDto> GetForWorkspaceAsync(
+        Guid workspaceId,
+        CancellationToken cancellationToken = default)
+    {
+        var spec = await db.WorkspaceSpecs
+            .AsNoTracking()
+            .FirstOrDefaultAsync(s => s.WorkspaceId == workspaceId, cancellationToken);
+
+        return spec is null ? ProjectSpecDto.Empty(workspaceId) : ToDto(spec);
+    }
+
+    public async Task<ProjectSpecDto> UpdateForWorkspaceAsync(
+        Guid workspaceId,
+        ProjectSpecInput input,
+        string? updatedBy = null,
+        CancellationToken cancellationToken = default)
+    {
+        var exists = await db.Workspaces
+            .AnyAsync(w => w.Id == workspaceId, cancellationToken);
+
+        if (!exists)
+        {
+            throw new NotFoundException("工作区", workspaceId);
+        }
+
+        var spec = await db.WorkspaceSpecs
+            .FirstOrDefaultAsync(s => s.WorkspaceId == workspaceId, cancellationToken);
+
+        if (spec is null)
+        {
+            spec = new WorkspaceSpec { WorkspaceId = workspaceId };
+            db.WorkspaceSpecs.Add(spec);
+        }
+
+        spec.Purpose = Trim(input.Purpose);
+        spec.DefinitionOfDone = JoinLines(input.DefinitionOfDone);
+        spec.CommitConvention = Trim(input.CommitConvention);
+        spec.TestCommand = Trim(input.TestCommand);
+        spec.BranchConvention = Trim(input.BranchConvention);
+        spec.Guardrails = Trim(input.Guardrails);
+        spec.UpdatedAt = clock.UtcNow;
+        spec.UpdatedBy = string.IsNullOrWhiteSpace(updatedBy) ? null : updatedBy.Trim();
+
+        await db.SaveChangesAsync(cancellationToken);
+
+        return ToDto(spec);
     }
 
     public async Task<ProjectSpecDto> UpdateAsync(
@@ -270,6 +342,31 @@ public sealed class ProjectSpecService(IAppDbContext db, IClock clock) : IProjec
     /// </summary>
     internal static ProjectSpecDto ToDto(ProjectSpec spec) => new(
         spec.ProjectId,
+        spec.Purpose,
+        SplitLines(spec.DefinitionOfDone),
+        spec.CommitConvention,
+        spec.TestCommand,
+        spec.BranchConvention,
+        spec.Guardrails,
+        spec.UpdatedAt,
+        spec.UpdatedBy);
+
+    /// <summary>这个项目所在工作区的标准完成定义。</summary>
+    private async Task<string?> ReadWorkspaceDoDAsync(Guid projectId, CancellationToken cancellationToken)
+    {
+        var workspaceId = await db.Projects.AsNoTracking()
+            .Where(p => p.Id == projectId)
+            .Select(p => p.WorkspaceId)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        return await db.WorkspaceSpecs.AsNoTracking()
+            .Where(s => s.WorkspaceId == workspaceId)
+            .Select(s => s.DefinitionOfDone)
+            .FirstOrDefaultAsync(cancellationToken);
+    }
+
+    private static ProjectSpecDto ToDto(WorkspaceSpec spec) => new(
+        spec.WorkspaceId,
         spec.Purpose,
         SplitLines(spec.DefinitionOfDone),
         spec.CommitConvention,

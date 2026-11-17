@@ -678,6 +678,40 @@ else
 
     private Task ReloadFromFilterAsync() => ReloadAsync(resetPage: true);
 
+    /// <summary>
+    /// 排进 / 移出人工计划。
+    ///
+    /// 调度建议只是建议 —— 「先干哪个」最终是人的决定，这一条就是人的那把钥匙。
+    /// </summary>
+    private async Task PinAsync(Guid taskId, bool pinned)
+    {
+        if (Busy)
+        {
+            return;
+        }
+
+        Busy = true;
+        Error = null;
+        StateHasChanged();
+
+        try
+        {
+            using var scope = ScopeFactory.CreateScope();
+            await scope.ServiceProvider.GetRequiredService<ITaskService>()
+                .SetPinnedAsync(taskId, pinned);
+
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            Error = PageError.From(ex, pinned ? "排进计划" : "移出计划");
+        }
+        finally
+        {
+            Busy = false;
+        }
+    }
+
     /// <summary>验收里程碑（人的签字：版本做完了由人确认）。</summary>
     private async Task AcceptMilestoneAsync(Guid milestoneId)
     {

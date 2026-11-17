@@ -167,7 +167,8 @@ REST 有每分钟 300 次的限流；`/api` 写方法要求 `Origin` 与 `Host` 
    （`REQ-001` / `BUG-001` / `OPT-001`），各类型独立计数。**改类型不改编号**——编号已被引用。
    可绑分支（之后领取 / 推进开发 / 启动 agent 三处都会校验当前分支）。
 3. **传文档**（任务页）：PRD / 测试用例 / API 文档 / 其它。Markdown / DOCX / PDF / diff 都走 AST 解析，
-   删除线与修订的语义保留（§10）。传完把任务推到「文档就绪」。
+   删除线与修订的语义保留（§10）。**可以一次选多个文件**，某个文件类型不支持只会它自己失败，
+   不会把其它的一起打回。传完把任务推到「文档就绪」。
 4. **接 agent**：打开 `/connect`，复制现成配置进你的客户端（§11）。
    页面上「接上了吗」会显示最近会话心跳；连没连上也可以看 `/audit`。
 5. **agent 领任务干活**：`workbench_claim_task`（带租约，默认 30 分钟，别人抢不走）→
@@ -178,6 +179,10 @@ REST 有每分钟 300 次的限流；`/api` 写方法要求 `Origin` 与 `Host` 
    而是返回审批号；你在 `/approvals` 点头后，agent 带审批号再调一次才真正执行（§7）。
 7. **评审与结项**：推进到「评审中」后开一轮评审（`workbench_start_review`），
    agent 取评审包、逐维度回写结论；**7 个维度全过**才允许「评审中 → 已完成」（§8）。
+8. **离线补报**：网络不通、工作台在维护、活是上一轮会话干的时候，agent 是**先干活、后报**。
+   这时回写时带上 `occurredAt`（实际发生时间，ISO 8601）：账本会同时记下
+   **什么时候发生**与**工作台什么时候知道**，流水上挂「补报」标记并摆出两个时间。
+   未来的时间不收 —— 还没发生的事不能补报。
 
 人全程只做三件事：建项目建任务传文档、批审批、看审计与度量。
 
@@ -309,6 +314,9 @@ REST 有每分钟 300 次的限流；`/api` 写方法要求 `Origin` 与 `Host` 
 - **修订**（DOCX `w:ins` / `w:del` / 移动标记、diff 的 +/- 行）→ 带作者与时间。`doc_get_revisions` 取。
 - **PDF 没有语义级的删除线 / 修订**，工作台不假装能解析出来。
 - 工具：`doc_upload` / `doc_parse` / `doc_get_outline` / `doc_get_text` / `doc_search` / `doc_list_formats`。
+- **批量导入**：`doc_upload` 给 `documents` 数组一次传多个（界面一次选多个、
+  REST `POST /api/tasks/{id}/documents/batch`、CLI `wb doc upload <任务> <文件...>`）。
+  **一个文件失败不牵连其它的** —— 成功的进 `uploaded`，失败的进 `failures`（带文件名与原因）。
 - 渲染 agent 产出的 Markdown 时**原始 HTML 关闭**、URL scheme 白名单
   （只放行 http / https / mailto / 相对路径）——内容来自外部输入，这是 XSS 口子。
 
@@ -372,7 +380,7 @@ wb task launch|assign                 启动 agent（敏感）/ 分派负责人�
 wb task deps|depend|undepend          任务依赖
 wb task events                        导出事件流水（markdown|csv|json）
 wb status set <任务> <状态> [--note]   状态迁移（中文或枚举名都认）
-wb doc upload <任务> <文件> [--kind]   传文档
+wb doc upload <任务> <文件...> [--kind]   传文档（可一次传多个）
 wb approval list|approve|reject       审批（敏感）；batch 批量；revoke 撤销
 wb review start|list|submit|export    评审；submit 带 --pass|--fail --findings --evidence
 wb milestone list|create|delete|assign  里程碑；assign 传 0 摘出来

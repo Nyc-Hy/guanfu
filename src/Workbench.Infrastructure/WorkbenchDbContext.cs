@@ -30,6 +30,7 @@ public sealed class WorkbenchDbContext(DbContextOptions<WorkbenchDbContext> opti
     public DbSet<DbCallRecord> DbCallRecords => Set<DbCallRecord>();
     public DbSet<ProjectSpec> ProjectSpecs => Set<ProjectSpec>();
     public DbSet<MilestoneSpec> MilestoneSpecs => Set<MilestoneSpec>();
+    public DbSet<WorkspaceSpec> WorkspaceSpecs => Set<WorkspaceSpec>();
     public DbSet<SpecVerdict> SpecVerdicts => Set<SpecVerdict>();
 
     /// <inheritdoc />
@@ -248,6 +249,25 @@ public sealed class WorkbenchDbContext(DbContextOptions<WorkbenchDbContext> opti
             e.HasOne<Project>()
                 .WithOne(p => p.Spec)
                 .HasForeignKey<ProjectSpec>(x => x.ProjectId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            e.Property(x => x.Purpose).HasMaxLength(4000);
+            e.Property(x => x.DefinitionOfDone).HasMaxLength(8000);
+            e.Property(x => x.CommitConvention).HasMaxLength(1000);
+            e.Property(x => x.TestCommand).HasMaxLength(1000);
+            e.Property(x => x.BranchConvention).HasMaxLength(500);
+            e.Property(x => x.Guardrails).HasMaxLength(4000);
+            e.Property(x => x.UpdatedBy).HasMaxLength(200);
+        });
+
+        // 工作区级规约：所有项目通用的底线
+        modelBuilder.Entity<WorkspaceSpec>(e =>
+        {
+            e.ToTable("workspace_specs");
+            e.HasKey(x => x.WorkspaceId);
+            e.HasOne<Workspace>()
+                .WithOne(w => w.Spec)
+                .HasForeignKey<WorkspaceSpec>(x => x.WorkspaceId)
                 .OnDelete(DeleteBehavior.Cascade);
 
             e.Property(x => x.Purpose).HasMaxLength(4000);

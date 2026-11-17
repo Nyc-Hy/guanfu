@@ -215,6 +215,12 @@ public static class WorkbenchApi
         });
 
         // 归档 / 取消归档。归档不是删除：流水、产物、评审全都留着。
+        // 排期干预：人把活排进计划（或移出去）。**要人工凭证** ——
+        // 排期是人的决定，agent 不该自己改「先干哪个」。
+        api.MapPost("/tasks/{taskId:guid}/pin", async (
+            Guid taskId, PinTaskRequest request, ITaskService tasks, CancellationToken ct) =>
+            Results.Ok(await tasks.SetPinnedAsync(taskId, request.Pinned, ct)));
+
         api.MapPost("/tasks/{taskId:guid}/archive", async (
             Guid taskId, ArchiveTaskRequest request, ITaskService tasks, CancellationToken ct) =>
             Results.Ok(await tasks.SetArchivedAsync(taskId, request.Archived, ct)));
@@ -316,7 +322,7 @@ public static class WorkbenchApi
             Guid taskId, SetPlanRequest request, ITaskService tasks, CancellationToken ct) =>
             Results.Ok(await tasks.SetPlanAsync(
                 taskId, request.Background, request.Understanding, request.Breakdown,
-                request.AcceptanceCriteria, request.Risks, request.Author, ct)));
+                request.AcceptanceCriteria, request.Risks, request.Author, request.OccurredAt, ct)));
 
         api.MapPost("/tasks/{taskId:guid}/artifacts", async (
             Guid taskId, AddArtifactRequest request, ITaskService tasks, CancellationToken ct) =>
@@ -328,17 +334,19 @@ public static class WorkbenchApi
 
             return Results.Ok(await tasks.AddArtifactAsync(
                 taskId, type, request.Title, request.Content, request.ExternalPath,
-                request.CommitSha, request.Branch, request.Author, ct));
+                request.CommitSha, request.Branch, request.Author, request.OccurredAt, ct));
         });
 
         api.MapPost("/tasks/{taskId:guid}/test-result", async (
             Guid taskId, TestResultRequest request, ITaskService tasks, CancellationToken ct) =>
             Results.Ok(await tasks.ReportTestResultAsync(
-                taskId, request.Total, request.Passed, request.Failures, request.Coverage, request.Author, ct)));
+                taskId, request.Total, request.Passed, request.Failures, request.Coverage, request.Author,
+                request.OccurredAt, ct)));
 
         api.MapPost("/tasks/{taskId:guid}/events", async (
             Guid taskId, PostEventRequest request, ITaskService tasks, CancellationToken ct) =>
-            Results.Ok(await tasks.PostEventAsync(taskId, request.Message, TaskEventSource.Ci, request.Actor, ct)));
+            Results.Ok(await tasks.PostEventAsync(
+                taskId, request.Message, TaskEventSource.Ci, request.Actor, request.OccurredAt, ct)));
 
         // ---- 文档 ----
         api.MapGet("/tasks/{taskId:guid}/documents", async (
@@ -366,6 +374,63 @@ public static class WorkbenchApi
                 taskId, file.FileName, stream, string.IsNullOrWhiteSpace(kind) ? null : kind, ct);
 
             return Results.Created($"/api/documents/{document.Id}", document);
+        });
+
+        // 批量导入：一次给多个文件，一个不行不牵连其它的。
+        // 需求文档常常是「PRD + 接口文档 + 用例」一起来的，
+        // 一个一个传就得让人守着上传按钮。
+        api.MapPost("/tasks/{taskId:guid}/documents/batch", async (
+            Guid taskId, HttpRequest request, IDocumentService documents, CancellationToken ct) =>
+        {
+            if (!request.HasFormContentType)
+            {
+                return Results.BadRequest("需要 multipart/form-data。");
+            }
+
+            var form = await request.ReadFormAsync(ct);
+            if (form.Files.Count == 0)
+            {
+                return Results.BadRequest("缺少文件。");
+            }
+
+            var defaultKind = form["kind"].ToString();
+            var items = new List<DocumentUploadInput>(form.Files.Count);
+            var streams = new List<Stream>(form.Files.Count);
+
+            try
+            {
+                foreach (var file in form.Files)
+                {
+                    // 单个文件可以带自己的类别（字段名与文件名同名），没带就用全局的
+                    var kind = form[file.Name].ToString();
+                    if (string.IsNullOrWhiteSpace(kind))
+                    {
+                        kind = defaultKind;
+                    }
+
+                    var stream = file.OpenReadStream();
+                    streams.Add(stream);
+                    items.Add(new DocumentUploadInput(
+                        file.FileName,
+                        stream,
+                        string.IsNullOrWhiteSpace(kind) ? null : kind));
+                }
+
+                var result = await documents.UploadBatchAsync(taskId, items, ct);
+
+                return Results.Ok(new
+                {
+                    uploaded = result.Uploaded,
+                    failed = result.Failed
+                });
+            }
+            finally
+            {
+                foreach (var stream in streams)
+                {
+                    await stream.DisposeAsync();
+                }
+            }
         });
 
         api.MapGet("/documents/{documentId:guid}/outline", async (
@@ -537,6 +602,26 @@ public static class WorkbenchApi
 
             return Results.Ok(await specs.UpdateForMilestoneAsync(
                 milestone.ProjectId, milestoneId, input, "human", ct));
+        });
+
+        // 工作区标准规约：所有项目通用的底线（公司/团队的规矩）。
+        // 读：开放（agent 也要读）。写：要人工凭证 —— 规矩是人的决定。
+        api.MapGet("/workspaces/{workspaceId:guid}/spec", async (
+            Guid workspaceId, IProjectSpecService specs, CancellationToken ct) =>
+            Results.Ok(await specs.GetForWorkspaceAsync(workspaceId, ct)));
+
+        api.MapPut("/workspaces/{workspaceId:guid}/spec", async (
+            Guid workspaceId, UpdateProjectSpecRequest request, IProjectSpecService specs, CancellationToken ct) =>
+        {
+            var input = new ProjectSpecInput(
+                request.Purpose,
+                SplitLines(request.DefinitionOfDone),
+                request.CommitConvention,
+                request.TestCommand,
+                request.BranchConvention,
+                request.Guardrails);
+
+            return Results.Ok(await specs.UpdateForWorkspaceAsync(workspaceId, input, "human", ct));
         });
 
         api.MapPut("/projects/{projectId:guid}/spec", async (
@@ -948,15 +1033,28 @@ public sealed record ClaimTaskRequest(
     string? WorkPath = null,
     /// <summary>领活时留的上下文（为什么接这个活）。</summary>
     string? Note = null);
+/// <summary>
+/// 回写计划。OccurredAt 是**实际发生时间** —— 离线补报时给「真的那会儿」，
+/// 不给就是「现在」。工作台会拒绝未来的时间。
+/// </summary>
 public sealed record SetPlanRequest(
     string? Background, string? Understanding, string? Breakdown,
-    string? AcceptanceCriteria, string? Risks, string? Author);
+    string? AcceptanceCriteria, string? Risks, string? Author,
+    DateTimeOffset? OccurredAt = null);
+
+/// <summary>登记产物。OccurredAt 同上（实际发生时间）。</summary>
 public sealed record AddArtifactRequest(
     string Title, string Type, string? Content, string? ExternalPath,
-    string? CommitSha, string? Branch, string? Author);
+    string? CommitSha, string? Branch, string? Author,
+    DateTimeOffset? OccurredAt = null);
+
+/// <summary>回写测试结果。OccurredAt 同上（实际跑测试的时间）。</summary>
 public sealed record TestResultRequest(
-    int Total, int Passed, string? Failures, double? Coverage, string? Author);
-public sealed record PostEventRequest(string Message, string? Actor);
+    int Total, int Passed, string? Failures, double? Coverage, string? Author,
+    DateTimeOffset? OccurredAt = null);
+
+/// <summary>写一条流水。OccurredAt 同上（实际发生时间）。</summary>
+public sealed record PostEventRequest(string Message, string? Actor, DateTimeOffset? OccurredAt = null);
 public sealed record DecideApprovalRequest(bool Approve, string? DecidedBy, string? Reason);
 
 /// <summary>人工撤销审批。理由可选，但建议写 —— 账本里要能看懂为什么撤。</summary>
@@ -1045,6 +1143,9 @@ public sealed record SubmitReviewRequest(
 
 /// <summary>归档 / 取消归档。归档不是删除。</summary>
 public sealed record ArchiveTaskRequest(bool Archived = true);
+
+/// <summary>排期干预：排进人工计划 / 移出。</summary>
+public sealed record PinTaskRequest(bool Pinned = true);
 
 /// <summary>分派任务。传 null 的字段不动。</summary>
 public sealed record AssignTaskRequest(

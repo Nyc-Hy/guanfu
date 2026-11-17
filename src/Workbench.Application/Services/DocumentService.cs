@@ -25,6 +25,16 @@ public interface IDocumentService
         string? kind = null,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// 批量上传。<b>一个文件失败不影响其它文件</b> ——
+    /// 批量导入的价值就在这：一个不允许的扩展名不该把整批打回来。
+    /// 成功的进 Uploaded，失败的进 Failed（带文件名与原因）。
+    /// </summary>
+    Task<DocumentBatchDto> UploadBatchAsync(
+        Guid taskId,
+        IReadOnlyList<DocumentUploadInput> items,
+        CancellationToken cancellationToken = default);
+
     Task<IReadOnlyList<DocumentDto>> ListAsync(Guid taskId, CancellationToken cancellationToken = default);
 
     Task<DocumentDto?> GetAsync(Guid documentId, CancellationToken cancellationToken = default);
@@ -55,6 +65,9 @@ public sealed class DocumentService(
     IDocumentStore store,
     IClock clock) : IDocumentService
 {
+    /// <summary>一次批量上传的文件数上限。</summary>
+    private const int MaxBatchFiles = 50;
+
     private static readonly JsonSerializerOptions JsonOptions = WorkbenchJson.Options;
 
     /// <summary>
@@ -89,6 +102,18 @@ public sealed class DocumentService(
         var extension = Path.GetExtension(fileName);
         return !string.IsNullOrEmpty(extension) && AllowedExtensions.Contains(extension);
     }
+
+    /// <summary>
+    /// 从文件名猜文档类别。界面、REST、CLI 共用这一份 ——
+    /// 分类是给人看的标签，各处自己写一套就会互相打架。
+    /// </summary>
+    public static string GuessKind(string fileName) => Path.GetFileName(fileName).ToLowerInvariant() switch
+    {
+        var n when n.Contains("prd") || n.Contains("需求") => "prd",
+        var n when n.Contains("test") || n.Contains("用例") => "testcase",
+        var n when n.Contains("api") || n.Contains("接口") => "apidoc",
+        _ => "other"
+    };
 
     private static void EnsureExtensionAllowed(string fileName)
     {
@@ -136,7 +161,9 @@ public sealed class DocumentService(
             SizeBytes = stored.SizeBytes,
             ContentType = GuessContentType(safeName),
             Format = format,
-            Kind = kind,
+            // 没指定类别就按文件名猜 —— 界面、REST、MCP、CLI 共用这一份，
+            // 不然同一份文档从哪进来就带着不同的类别
+            Kind = string.IsNullOrWhiteSpace(kind) ? GuessKind(safeName) : kind.Trim(),
             UploadedAt = clock.UtcNow
         };
 
@@ -144,6 +171,48 @@ public sealed class DocumentService(
         await db.SaveChangesAsync(cancellationToken);
 
         return TaskService.ToDocumentDto(document);
+    }
+
+    public async Task<DocumentBatchDto> UploadBatchAsync(
+        Guid taskId,
+        IReadOnlyList<DocumentUploadInput> items,
+        CancellationToken cancellationToken = default)
+    {
+        if (items.Count == 0)
+        {
+            return new DocumentBatchDto([], []);
+        }
+
+        if (items.Count > MaxBatchFiles)
+        {
+            throw new WorkbenchException($"一次最多上传 {MaxBatchFiles} 个文件，收到 {items.Count} 个。");
+        }
+
+        var taskExists = await db.Tasks.AnyAsync(t => t.Id == taskId, cancellationToken);
+        if (!taskExists)
+        {
+            throw new NotFoundException("任务", taskId);
+        }
+
+        var uploaded = new List<DocumentDto>();
+        var failed = new List<DocumentBatchFailureDto>();
+
+        foreach (var item in items)
+        {
+            try
+            {
+                uploaded.Add(await UploadAsync(taskId, item.FileName, item.Content, item.Kind, cancellationToken));
+            }
+            catch (Exception ex)
+            {
+                // 一个文件不行不该把整批打回来 —— 批量导入的价值就在这
+                failed.Add(new DocumentBatchFailureDto(
+                    Path.GetFileName(item.FileName) is { Length: > 0 } safe ? safe : item.FileName,
+                    ex.Message));
+            }
+        }
+
+        return new DocumentBatchDto(uploaded, failed);
     }
 
     public async Task<IReadOnlyList<DocumentDto>> ListAsync(Guid taskId, CancellationToken cancellationToken = default)

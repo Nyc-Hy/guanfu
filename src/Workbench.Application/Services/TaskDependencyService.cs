@@ -373,6 +373,9 @@ public static class TaskEventTypes
     public const string Claimed = "task.claimed";
     public const string Released = "task.released";
 
+    /// <summary>人把活排进 / 移出人工计划（排期干预）。</summary>
+    public const string SchedulePinned = "task.schedule_pinned";
+
     /// <summary>任务从一个 agent 转手到另一个 agent（多 agent 协作的交接点）。</summary>
     public const string Handoff = "task.handoff";
     public const string ReviewRoundOpened = "review.round_opened";

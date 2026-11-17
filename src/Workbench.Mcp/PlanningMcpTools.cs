@@ -164,8 +164,9 @@ public sealed class PlanningMcpTools(
             return new SuggestionToolResult { Ok = true, Suggestions = [] };
         }
 
+        // 「谁在问」也要带进去 —— 指派给他的活排前面（人工指派也是干预）
         var suggestions = await dispatch.SuggestAsync(
-            scope.ProjectId, limit, excludeAgentId, cancellationToken);
+            scope.ProjectId, limit, excludeAgentId, cancellationToken, scope.AgentId);
 
         return new SuggestionToolResult { Ok = true, Suggestions = suggestions };
     }

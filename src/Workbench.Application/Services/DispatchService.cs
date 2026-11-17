@@ -32,7 +32,9 @@ public interface IDispatchService
         Guid projectId,
         int limit = 10,
         string? excludeAgentId = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        /// <summary>谁在问。指派给他的活排前面（人工指派也是干预）。</summary>
+        string? forAgentId = null);
 }
 
 /// <summary>调度板上的一条任务。</summary>
@@ -76,7 +78,11 @@ public sealed record DispatchSuggestionDto(
     int Unblocks,
     /// <summary>工位提示（主工作区被占着 → 要自己开 worktree）。空 = 现在就能开工。</summary>
     string? StationHint,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    /// <summary>人工排的位次（为空 = 没排）。</summary>
+    int? PinnedOrder = null,
+    /// <summary>指派给了谁。</summary>
+    string? Assignee = null);
 
 /// <summary>调度板。</summary>
 public sealed record DispatchBoardDto(
@@ -94,7 +100,8 @@ public sealed class DispatchService(IAppDbContext db, IClock clock) : IDispatchS
         Guid projectId,
         int limit = 10,
         string? excludeAgentId = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? forAgentId = null)
     {
         var take = Math.Clamp(limit, 1, 50);
         var now = clock.UtcNow;
@@ -107,7 +114,8 @@ public sealed class DispatchService(IAppDbContext db, IClock clock) : IDispatchS
             .Select(t => new
             {
                 t.Id, t.Key, t.Title, t.Type, t.Priority, t.Weight, t.Status,
-                t.CreatedAt, t.ClaimedByAgentId, t.LeaseExpiresAt, t.WorkPath
+                t.CreatedAt, t.ClaimedByAgentId, t.LeaseExpiresAt, t.WorkPath,
+                t.Assignee, t.PinnedOrder
             })
             .ToListAsync(cancellationToken);
 
@@ -212,6 +220,21 @@ public sealed class DispatchService(IAppDbContext db, IClock clock) : IDispatchS
             var reasons = new List<string>();
             var score = 0d;
 
+            // 人工排的位次：最硬的信号 —— 人说先干它，那就先干它
+            if (task.PinnedOrder is int pinnedOrder)
+            {
+                score += 1000 - Math.Min(pinnedOrder, 999);
+                reasons.Add($"人工排在第 {pinnedOrder} 位");
+            }
+
+            // 指派给谁了：被问的那个人，这活就是他的
+            if (!string.IsNullOrWhiteSpace(forAgentId) &&
+                string.Equals(task.Assignee, forAgentId, StringComparison.Ordinal))
+            {
+                score += 200;
+                reasons.Add("指派给你");
+            }
+
             var priorityPoints = PriorityPoints(task.Priority);
             score += priorityPoints;
             reasons.Add(task.Priority switch
@@ -266,9 +289,12 @@ public sealed class DispatchService(IAppDbContext db, IClock clock) : IDispatchS
                 reasons,
                 unblocks,
                 stationHint,
-                task.CreatedAt));
+                task.CreatedAt,
+                task.PinnedOrder,
+                task.Assignee));
         }
 
+        // 人工排期的在前（分数里已经加了 1000+），其余按分；同分按老的先做
         return suggestions
             .OrderByDescending(s => s.Score)
             .ThenBy(s => s.CreatedAt)

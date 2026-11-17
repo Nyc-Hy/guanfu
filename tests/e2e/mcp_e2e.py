@@ -310,6 +310,75 @@ def main() -> int:
     )
     expect(bool(plan.get("id")), "计划应写入")
 
+    print("\n-- 离线补报（活是过去干的，报上来时给实际发生时间）--")
+    happened_at = "2026-11-16T06:30:00Z"
+    backfilled = mcp.call(
+        "workbench_post_event",
+        {
+            "taskId": task_id,
+            "message": "网络不通时把登录接口写完了",
+            "occurredAt": happened_at,
+        },
+    )
+    expect(bool(backfilled.get("id")), "补报的事件应写进去")
+    expect(
+        (backfilled.get("occurredAt") or "").startswith("2026-11-16"),
+        f"补报要带上实际发生时间（实际：{backfilled.get('occurredAt')}）",
+    )
+    expect(
+        (backfilled.get("createdAt") or "")[:10] != "2026-11-16"
+        or (backfilled.get("createdAt") or "") > "2026-11-16T23:00:00Z",
+        f"记录时间应是「现在」，不能拿发生时间冒充（实际：{backfilled.get('createdAt')}）",
+    )
+    future = mcp.call(
+        "workbench_post_event",
+        {
+            "taskId": task_id,
+            "message": "还没发生的事",
+            "occurredAt": "2099-01-01T00:00:00Z",
+        },
+    )
+    expect(
+        not future.get("ok") and "未来" in (future.get("error") or ""),
+        f"未来的时间不该收下（实际：{future}）",
+    )
+
+    print("\n-- 批量导入文档 --")
+    batch = mcp.call(
+        "doc_upload",
+        {
+            "taskId": task_id,
+            "documents": [
+                {"fileName": "PRD-需求.md", "content": "# 需求\n登录要账号密码"},
+                {"fileName": "接口文档.md", "content": "# 接口\nPOST /api/login"},
+                {"fileName": "坏文件.exe", "content": "x"},
+            ],
+        },
+    )
+    expect(
+        len(batch.get("documents") or []) == 2,
+        f"一次传多个文件，两个该进库（实际：{batch.get('documents')}）",
+    )
+    expect(
+        len(batch.get("failures") or []) == 1
+        and (batch.get("failures") or [{}])[0].get("fileName") == "坏文件.exe",
+        f"不支持的文件类型要单独报出来，别把整批打回（实际：{batch.get('failures')}）",
+    )
+    expect(
+        batch.get("error") and "坏文件.exe" in batch.get("error"),
+        "失败原因要摆在明面上（agent 才知道该改哪个）",
+    )
+    docs = mcp.call("workbench_get_context", {"taskId": task_id})
+    uploaded = docs.get("documents") or []
+    expect(
+        any(d.get("fileName") == "PRD-需求.md" for d in uploaded),
+        "传上去的文档应出现在上下文里（agent 开工时能看到需求）",
+    )
+    expect(
+        all(d.get("kind") for d in uploaded if d.get("fileName") in ("PRD-需求.md", "接口文档.md")),
+        "文档类别应按文件名猜出来（各入口共用一套）",
+    )
+
     print("\n-- 推进到 Review --")
     move_to_review(task_id)
 

@@ -2,6 +2,9 @@
 @rendermode InteractiveServer
 @inject IServiceScopeFactory ScopeFactory
 @inject IMetricsService MetricsService
+@inject IProjectService ProjectService
+@inject IProjectSpecService SpecService
+@inject HumanTokenAccessor Tokens
 @inject NavigationManager Nav
 @implements IAsyncDisposable
 
@@ -33,12 +36,80 @@ else
         <button class="wb-tab @(ActiveTab == "now" ? "wb-tab-active" : "")" @onclick="GoNow">
             现在
         </button>
+        <button class="wb-tab @(ActiveTab == "spec" ? "wb-tab-active" : "")" @onclick="GoSpec">
+            规约
+        </button>
         <button class="wb-tab @(ActiveTab == "projects" ? "wb-tab-active" : "")" @onclick="GoProjects">
             项目
         </button>
     </div>
 
-    @if (ActiveTab == "now")
+    @if (ActiveTab == "spec")
+    {
+    <section class="wb-panel">
+        <div class="wb-card-head">
+            <h3>工作区标准规约</h3>
+            <span class="wb-chip">所有项目通用</span>
+        </div>
+        <p class="wb-hint">
+            公司 / 团队的规矩写在这里，**每个项目都继承**。
+            项目级与里程碑级的规约在它之上叠加（越具体的越优先，完成定义是三层相加）。
+            不然每个项目抄一遍 —— 抄一遍就会抄漏、改一处就忘了另一处。
+        </p>
+
+        @if (WorkspaceId == Guid.Empty)
+        {
+            <p class="wb-muted">还没有项目，先建个项目才有工作区。</p>
+        }
+        else
+        {
+            <div class="wb-form-row">
+                <label class="wb-label">完成定义（DoD）</label>
+                <textarea class="wb-input wb-textarea" rows="6"
+                          placeholder="一行一条，例如&#10;有单测覆盖新增逻辑&#10;文档里的用法同步更新&#10;接口错误码与文档一致"
+                          @bind="WorkspaceDoD" @bind:event="oninput"></textarea>
+            </div>
+            <div class="wb-form-row">
+                <label class="wb-label">提交信息约定</label>
+                <input class="wb-input" placeholder="例如：feat(登录): 补上会话续期；带 REQ-001 编号"
+                       @bind="WorkspaceCommitConvention" @bind:event="oninput" />
+            </div>
+            <div class="wb-form-row">
+                <label class="wb-label">测试命令</label>
+                <input class="wb-input" placeholder="例如：dotnet test Workbench.sln"
+                       @bind="WorkspaceTestCommand" @bind:event="oninput" />
+            </div>
+            <div class="wb-form-row">
+                <label class="wb-label">红线与禁忌</label>
+                <textarea class="wb-input wb-textarea" rows="3"
+                          placeholder="不许碰的东西、要人工确认的动作 —— 一行一条"
+                          @bind="WorkspaceGuardrails" @bind:event="oninput"></textarea>
+            </div>
+            @if (!CanWrite)
+            {
+                <p class="wb-muted">
+                    改标准规约需要人工凭证（工作区里的规矩是所有人共用的，不能由 agent 改）。
+                </p>
+            }
+            <ErrorNotice Error="@CreateError" />
+            <div class="wb-form-row">
+                <button class="wb-btn wb-btn-primary" disabled="@(SavingSpec || !CanWrite)"
+                        @onclick="SaveWorkspaceSpecAsync">保存标准规约</button>
+                @if (WorkspaceSpecUpdatedAt is not null)
+                {
+                    <span class="wb-muted">
+                        上次更新 @WorkspaceSpecUpdatedAt.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm")
+                    </span>
+                }
+            </div>
+            <p class="wb-hint">
+                改标准规约要人工凭证 —— 规矩是人的决定。
+                继承它的项目：@string.Join("、", WorkspaceProjects)
+            </p>
+        }
+    </section>
+    }
+    else if (ActiveTab == "now")
     {
         @if (Data is null || Data.Projects.Count == 0)
         {
@@ -439,14 +510,47 @@ else
     private bool ShowCreate => NewFlag == "1";
 
     /// <summary>带 ?new=1 时落在「项目」页签 —— 直奔表单。</summary>
-    private string ActiveTab => (Tab == "projects" || NewFlag == "1") ? "projects" : "now";
+    private string ActiveTab => Tab switch
+    {
+        "projects" => "projects",
+        "spec" => "spec",
+        _ => NewFlag == "1" ? "projects" : "now"
+    };
+
+    // ---- 工作区标准规约（所有项目通用）----
+    private Guid WorkspaceId { get; set; } = Guid.Empty;
+    private List<string> WorkspaceProjects { get; set; } = [];
+    private string WorkspaceDoD { get; set; } = string.Empty;
+    private string WorkspaceCommitConvention { get; set; } = string.Empty;
+    private string WorkspaceTestCommand { get; set; } = string.Empty;
+    private string WorkspaceGuardrails { get; set; } = string.Empty;
+    private DateTimeOffset? WorkspaceSpecUpdatedAt { get; set; }
+    private bool SavingSpec { get; set; }
+
+    /// <summary>
+    /// 这个页面能不能写（改标准规约要人工凭证）。
+    ///
+    /// 总览页原来只读，没有凭证门禁 —— 现在要能改工作区规约，就得有。
+    /// </summary>
+    private bool CanWrite => TokenGate.Authorized;
+
+    /// <summary>人工凭证门禁（同项目设置页那一套）。</summary>
+    private UiTokenGate TokenGate { get; set; } = default!;
+
+    [CascadingParameter] public HttpContext? RequestContext { get; set; }
 
     /// <summary>自动刷新间隔。agent 在干活时页面得自己动起来。</summary>
     private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(15);
 
     private CancellationTokenSource? _timerCts;
 
-    protected override async Task OnInitializedAsync() => await ReloadAsync();
+    protected override async Task OnInitializedAsync()
+    {
+        TokenGate = new UiTokenGate(Tokens.Token);
+        TokenGate.AuthorizeFromRequest(RequestContext?.Request);
+
+        await ReloadAsync();
+    }
 
     protected override Task OnAfterRenderAsync(bool firstRender)
     {
@@ -465,6 +569,8 @@ else
     private void GoNow() => GoTab("now");
 
     private void GoProjects() => GoTab("projects");
+
+    private void GoSpec() => GoTab("spec");
 
     private ProjectMetricsDto? MetricsFor(Guid projectId) =>
         Metrics.FirstOrDefault(m => m.ProjectId == projectId);
@@ -502,6 +608,82 @@ else
         catch (ObjectDisposedException)
         {
             // 电路已经断了
+        }
+    }
+
+    /// <summary>读工作区标准规约（所有项目通用的底线）。</summary>
+    private async Task LoadWorkspaceSpecAsync()
+    {
+        try
+        {
+            var projects = await ProjectService.ListAsync();
+            var workspaceId = projects.Select(p => p.WorkspaceId).FirstOrDefault(w => w != Guid.Empty);
+
+            if (workspaceId == Guid.Empty)
+            {
+                return;
+            }
+
+            WorkspaceId = workspaceId;
+            WorkspaceProjects = projects.Where(p => p.WorkspaceId == workspaceId).Select(p => p.Name).ToList();
+
+            var spec = await SpecService.GetForWorkspaceAsync(workspaceId);
+
+            WorkspaceDoD = string.Join(Environment.NewLine, spec.DefinitionOfDone);
+            WorkspaceCommitConvention = spec.CommitConvention ?? string.Empty;
+            WorkspaceTestCommand = spec.TestCommand ?? string.Empty;
+            WorkspaceGuardrails = spec.Guardrails ?? string.Empty;
+            WorkspaceSpecUpdatedAt = spec.UpdatedAt;
+        }
+        catch (Exception ex)
+        {
+            // 规约读不到不该把整页搞挂 —— 总览还是要看得见
+            LoadError = PageError.From(ex, "读取工作区规约");
+        }
+    }
+
+    /// <summary>保存工作区标准规约（要人工凭证 —— 规矩是人的决定）。</summary>
+    private async Task SaveWorkspaceSpecAsync()
+    {
+        if (SavingSpec || WorkspaceId == Guid.Empty)
+        {
+            return;
+        }
+
+        if (!CanWrite)
+        {
+            CreateError = PageError.Simple(ApprovalUiGuard.MissingTokenMessage);
+            return;
+        }
+
+        SavingSpec = true;
+        CreateError = null;
+        StateHasChanged();
+
+        try
+        {
+            var input = new ProjectSpecInput(
+                DefinitionOfDone: WorkspaceDoD
+                    .Split('\n')
+                    .Select(l => l.Trim())
+                    .Where(l => l.Length > 0)
+                    .ToList(),
+                CommitConvention: WorkspaceCommitConvention,
+                TestCommand: WorkspaceTestCommand,
+                Guardrails: WorkspaceGuardrails);
+
+            var saved = await SpecService.UpdateForWorkspaceAsync(WorkspaceId, input, "human");
+
+            WorkspaceSpecUpdatedAt = saved.UpdatedAt;
+            CreateError = PageError.Notice("标准规约已保存 —— 所有项目都会继承。");
+        }
+        catch (Exception ex)
+        {
+            CreateError = PageError.From(ex, "保存工作区规约");
+        }
+        finally
+        {
+            SavingSpec = false;
         }
     }
 

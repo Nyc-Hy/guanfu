@@ -459,6 +459,7 @@ public sealed class ProjectService(IAppDbContext db, IClock clock) : IProjectSer
             project.RepoPath,
             project.DefaultBranch,
             project.RepoRemote,
+            project.WorkspaceId,
             project.RepoRoot);
     }
 }

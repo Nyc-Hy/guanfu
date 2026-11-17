@@ -419,7 +419,11 @@ public sealed class WorkbenchMcpTools(
     }
 
     [McpServerTool(Name = "workbench_set_plan")]
-    [Description("回写需求理解与开发计划（由 agent 生成，工作台只存不生成）")]
+    [Description(
+        "回写需求理解与开发计划（由 agent 生成，工作台只存不生成）。" +
+        "离线补报：在工作台够不着的时候就把活干完了，occurredAt 给**实际发生时间**" +
+        "（ISO 8601，如 2026-11-17T06:30:00Z），账本会同时记下「什么时候发生」和「什么时候知道」；" +
+        "不给就是现在。不能给未来的时间。")]
     public async Task<PlanDto> SetPlanAsync(
         Guid taskId,
         string? background = null,
@@ -428,9 +432,10 @@ public sealed class WorkbenchMcpTools(
         string? acceptanceCriteria = null,
         string? risks = null,
         string? author = null,
+        DateTimeOffset? occurredAt = null,
         CancellationToken cancellationToken = default)
         => await tasks.SetPlanAsync(
-            taskId, background, understanding, breakdown, acceptanceCriteria, risks, author, cancellationToken);
+            taskId, background, understanding, breakdown, acceptanceCriteria, risks, author, occurredAt, cancellationToken);
 
     [McpServerTool(Name = "workbench_update_status")]
     [Description(
@@ -504,7 +509,9 @@ public sealed class WorkbenchMcpTools(
     }
 
     [McpServerTool(Name = "workbench_add_artifact")]
-    [Description("上传开发过程产物（代码变更摘要、测试报告、部署单、commit 等）")]
+    [Description(
+        "上传开发过程产物（代码变更摘要、测试报告、部署单、commit 等）。" +
+        "离线补报：occurredAt 给**实际发生时间**（ISO 8601），不给就是现在。")]
     public async Task<ArtifactDto> AddArtifactAsync(
         Guid taskId,
         string title,
@@ -514,6 +521,7 @@ public sealed class WorkbenchMcpTools(
         string? commitSha = null,
         string? branch = null,
         string? author = null,
+        DateTimeOffset? occurredAt = null,
         CancellationToken cancellationToken = default)
     {
         if (!Enum.TryParse<ArtifactType>(type, ignoreCase: true, out var artifactType))
@@ -522,11 +530,13 @@ public sealed class WorkbenchMcpTools(
         }
 
         return await tasks.AddArtifactAsync(
-            taskId, artifactType, title, content, externalPath, commitSha, branch, author, cancellationToken);
+            taskId, artifactType, title, content, externalPath, commitSha, branch, author, occurredAt, cancellationToken);
     }
 
     [McpServerTool(Name = "workbench_report_test_result")]
-    [Description("回写单元测试结果（总数 / 通过数 / 失败明细 / 覆盖率）")]
+    [Description(
+        "回写单元测试结果（总数 / 通过数 / 失败明细 / 覆盖率）。" +
+        "离线补报：occurredAt 给**实际跑测试的时间**（ISO 8601），不给就是现在。")]
     public async Task<TestResultDto> ReportTestResultAsync(
         Guid taskId,
         int total,
@@ -534,23 +544,27 @@ public sealed class WorkbenchMcpTools(
         string? failures = null,
         double? coverage = null,
         string? author = null,
+        DateTimeOffset? occurredAt = null,
         CancellationToken cancellationToken = default)
-        => await tasks.ReportTestResultAsync(taskId, total, passed, failures, coverage, author, cancellationToken);
+        => await tasks.ReportTestResultAsync(taskId, total, passed, failures, coverage, author, occurredAt, cancellationToken);
 
     [McpServerTool(Name = "workbench_post_event")]
-    [Description("往任务流水里写一条事件（不改变状态）")]
+    [Description(
+        "往任务流水里写一条事件（不改变状态）。" +
+        "离线补报：occurredAt 给**实际发生时间**（ISO 8601），流水会同时记下发生时间与记录时间。")]
     public async Task<StatusEventDto> PostEventAsync(
         Guid taskId,
         string message,
         string source = "Agent",
         string? actor = null,
+        DateTimeOffset? occurredAt = null,
         CancellationToken cancellationToken = default)
     {
         var eventSource = Enum.TryParse<TaskEventSource>(source, ignoreCase: true, out var parsedSource)
             ? parsedSource
             : TaskEventSource.Agent;
 
-        return await tasks.PostEventAsync(taskId, message, eventSource, actor, cancellationToken);
+        return await tasks.PostEventAsync(taskId, message, eventSource, actor, occurredAt, cancellationToken);
     }
 
     [McpServerTool(Name = "workbench_list_approvals")]

@@ -9,7 +9,7 @@ using Workbench.Cli;
 //   wb project list|add|show
 //   wb task list|create|show|claim
 //   wb status set <taskId> <status> [--note ...]
-//   wb doc upload <taskId> <file> [--kind prd]
+//   wb doc upload <taskId> <file...> [--kind prd]
 //   wb approval list|approve|reject
 //   wb mcp                                stdio ↔ HTTP 的 MCP 桥接
 
@@ -122,7 +122,7 @@ static void PrintUsage()
           wb task show <任务ID或编号> [--project <项目ID>]
           wb task claim <任务ID> --agent <名称> [--lease 30]
           wb status set <任务ID> <状态> [--note 说明]
-          wb doc upload <任务ID> <文件路径> [--kind prd|testcase|apidoc|other]
+          wb doc upload <任务ID> <文件路径...> [--kind prd|testcase|apidoc|other]
           wb approval list
           wb approval approve <审批ID> [--by 决策人]
           wb approval reject <审批ID> --reason <理由>
@@ -467,7 +467,7 @@ static async Task<int> TaskCommandAsync(string url, List<string> cliArgs)
             {
                 Console.Error.WriteLine(
                     "用法: wb task plan <任务ID> [--background 背景] [--understanding 理解] [--breakdown 拆解]" +
-                    " [--acceptance 验收标准] [--risks 风险] [--author 作者]");
+                    " [--acceptance 验收标准] [--risks 风险] [--author 作者] [--occurred-at 实际发生时间]");
                 return 1;
             }
 
@@ -478,7 +478,8 @@ static async Task<int> TaskCommandAsync(string url, List<string> cliArgs)
                 breakdown = GetOption(cliArgs, "--breakdown"),
                 acceptanceCriteria = GetOption(cliArgs, "--acceptance"),
                 risks = GetOption(cliArgs, "--risks"),
-                author = GetOption(cliArgs, "--author")
+                author = GetOption(cliArgs, "--author"),
+                occurredAt = ParseOccurredAt(GetOption(cliArgs, "--occurred-at"))
             });
 
             Console.WriteLine(plan);
@@ -503,7 +504,7 @@ static async Task<int> TaskCommandAsync(string url, List<string> cliArgs)
             {
                 Console.Error.WriteLine(
                     "用法: wb task artifact <任务ID> <类型> <标题> [--content 内容] [--path 外部路径]" +
-                    " [--sha 提交号] [--branch 分支] [--author 作者]");
+                    " [--sha 提交号] [--branch 分支] [--author 作者] [--occurred-at 实际发生时间]");
                 Console.Error.WriteLine(
                     "类型: Plan / DesignDoc / CodeChange / TestReport / DeployRecord / Screenshot / Commit / Document / Other");
                 return 1;
@@ -517,7 +518,8 @@ static async Task<int> TaskCommandAsync(string url, List<string> cliArgs)
                 externalPath = GetOption(cliArgs, "--path"),
                 commitSha = GetOption(cliArgs, "--sha"),
                 branch = GetOption(cliArgs, "--branch"),
-                author = GetOption(cliArgs, "--author")
+                author = GetOption(cliArgs, "--author"),
+                occurredAt = ParseOccurredAt(GetOption(cliArgs, "--occurred-at"))
             });
 
             Console.WriteLine(artifact);
@@ -530,7 +532,7 @@ static async Task<int> TaskCommandAsync(string url, List<string> cliArgs)
             {
                 Console.Error.WriteLine(
                     "用法: wb task test-result <任务ID> --total 10 --passed 9 [--failures \"用例A,用例B\"]" +
-                    " [--coverage 0.9] [--author 作者]");
+                    " [--coverage 0.9] [--author 作者] [--occurred-at 实际发生时间]");
                 return 1;
             }
 
@@ -544,7 +546,8 @@ static async Task<int> TaskCommandAsync(string url, List<string> cliArgs)
                 passed,
                 failures = GetOption(cliArgs, "--failures"),
                 coverage = coverage is null ? (double?)null : ParseDoubleArg(coverage, "覆盖率"),
-                author = GetOption(cliArgs, "--author")
+                author = GetOption(cliArgs, "--author"),
+                occurredAt = ParseOccurredAt(GetOption(cliArgs, "--occurred-at"))
             });
 
             Console.WriteLine(result);
@@ -715,31 +718,65 @@ static async Task<int> DocCommandAsync(string url, List<string> cliArgs)
 
     if (cliArgs.Count < 3 || !string.Equals(Arg(cliArgs, 0), "upload", StringComparison.OrdinalIgnoreCase))
     {
-        Console.Error.WriteLine("用法: wb doc upload <任务ID> <文件路径> [--kind prd|testcase|apidoc|other]");
+        Console.Error.WriteLine("用法: wb doc upload <任务ID> <文件路径...> [--kind prd|testcase|apidoc|other]");
         return 1;
     }
 
     var taskId = Arg(cliArgs, 1);
-    var filePath = Path.GetFullPath(Arg(cliArgs, 2));
-    if (!File.Exists(filePath))
+    var kind = GetOption(cliArgs, "--kind");
+
+    // 位置参数：第 2 个起都是文件（可以给多个）
+    var positionals = Positionals(cliArgs);
+    var paths = positionals.Skip(2).Select(Path.GetFullPath).ToList();
+
+    var missing = paths.Where(p => !File.Exists(p)).ToList();
+    if (missing.Count > 0)
     {
-        Console.Error.WriteLine($"文件不存在: {filePath}");
+        Console.Error.WriteLine($"文件不存在: {string.Join("、", missing)}");
         return 1;
     }
 
-    var kind = GetOption(cliArgs, "--kind") ?? "other";
-    var fileName = Path.GetFileName(filePath);
-
     using var content = new MultipartFormDataContent();
-    var bytes = await File.ReadAllBytesAsync(filePath);
-    var fileContent = new ByteArrayContent(bytes);
-    fileContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
-    content.Add(fileContent, "file", fileName);
-    content.Add(new StringContent(kind), "kind");
 
-    var response = await client.PostRawAsync($"/api/tasks/{taskId}/documents", content);
-    Console.WriteLine($"已上传 {fileName}: {response}");
-    return 0;
+    foreach (var path in paths)
+    {
+        var bytes = await File.ReadAllBytesAsync(path);
+        var fileContent = new ByteArrayContent(bytes);
+        fileContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
+        content.Add(fileContent, "file", Path.GetFileName(path));
+    }
+
+    if (!string.IsNullOrWhiteSpace(kind))
+    {
+        content.Add(new StringContent(kind), "kind");
+    }
+
+    var response = await client.PostMultipartAsync($"/api/tasks/{taskId}/documents/batch", content);
+
+    // 回执要能一眼看懂：传上去哪些、哪个没传上去、为什么
+    using var payload = JsonDocument.Parse(response);
+    var uploaded = payload.RootElement.GetProperty("uploaded").EnumerateArray().ToList();
+    var failed = payload.RootElement.GetProperty("failed").EnumerateArray().ToList();
+
+    Console.WriteLine($"已上传 {uploaded.Count} 个文件：");
+    foreach (var doc in uploaded)
+    {
+        var name = doc.GetProperty("fileName").GetString();
+        var docKind = doc.GetProperty("kind").GetString();
+        var size = doc.GetProperty("sizeBytes").GetInt64() / 1024;
+        Console.WriteLine($"  · {name}（{docKind}，{size} KB）");
+    }
+
+    if (failed.Count > 0)
+    {
+        Console.WriteLine($"{failed.Count} 个没传上去：");
+        foreach (var item in failed)
+        {
+            Console.WriteLine($"  · {item.GetProperty("fileName").GetString()} —— {item.GetProperty("error").GetString()}");
+        }
+    }
+
+    return failed.Count > 0 ? 1 : 0;
 }
 
 static async Task<int> ApprovalCommandAsync(string url, List<string> cliArgs)
@@ -1231,6 +1268,25 @@ static double ParseDoubleArg(string value, string what)
     return parsed;
 }
 
+/// <summary>
+/// 解析「实际发生时间」（补报用）。没给就 null —— 由工作台按「现在」算。
+/// 认 ISO 8601（2026-11-17T06:30:00Z）与本地写法（2026-11-17 14:30）。
+/// </summary>
+static DateTimeOffset? ParseOccurredAt(string? value)
+{
+    if (string.IsNullOrWhiteSpace(value))
+    {
+        return null;
+    }
+
+    if (DateTimeOffset.TryParse(value, out var parsed))
+    {
+        return parsed;
+    }
+
+    throw new WorkbenchCliException($"实际发生时间不是合法的时间: {value}（用 2026-11-17T06:30:00Z 或 2026-11-17 14:30）");
+}
+
 /// <summary>工具审计查询。agent 干了什么，这里能查。</summary>
 static async Task<int> AuditCommandAsync(string url, List<string> cliArgs)
 {
@@ -1327,6 +1383,19 @@ static string? GetOption(List<string> cliArgs, string name)
 /// </summary>
 static string Arg(List<string> cliArgs, int index)
 {
+    var positionals = Positionals(cliArgs);
+
+    if (index < 0 || index >= positionals.Count)
+    {
+        throw new WorkbenchCliException($"缺少位置参数（第 {index + 1} 个）。");
+    }
+
+    return positionals[index];
+}
+
+/// <summary>全部位置参数（选项和它的值不算）。</summary>
+static List<string> Positionals(List<string> cliArgs)
+{
     var positionals = new List<string>();
 
     for (var i = 0; i < cliArgs.Count; i++)
@@ -1347,12 +1416,7 @@ static string Arg(List<string> cliArgs, int index)
         positionals.Add(arg);
     }
 
-    if (index < 0 || index >= positionals.Count)
-    {
-        throw new WorkbenchCliException($"缺少位置参数（第 {index + 1} 个）。");
-    }
-
-    return positionals[index];
+    return positionals;
 }
 
 static string Truncate(string value, int length) =>

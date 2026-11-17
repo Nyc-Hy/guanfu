@@ -106,6 +106,81 @@ public class DispatchSuggestionTests
     }
 
     [Fact]
+    public async Task 人工排的活排最前()
+    {
+        using var host = new WorkbenchTestHost();
+        var project = await host.Projects.CreateAsync("P");
+
+        var normal = await host.Tasks.CreateAsync(project.Id, "普通的活");
+        var pinned = await host.Tasks.CreateAsync(project.Id, "人排的活");
+
+        await host.Tasks.SetPinnedAsync(pinned.Id, true);
+
+        var suggestions = await new DispatchService(host.Db, host.Clock).SuggestAsync(project.Id);
+
+        Assert.Equal(pinned.Id, suggestions[0].TaskId);
+        Assert.Contains(suggestions[0].Reasons, r => r.Contains("人工排"));
+        Assert.Null(suggestions.Single(s => s.TaskId == normal.Id).PinnedOrder);
+    }
+
+    [Fact]
+    public async Task 排进计划的顺序就是人点的顺序()
+    {
+        using var host = new WorkbenchTestHost();
+        var project = await host.Projects.CreateAsync("P");
+
+        var first = await host.Tasks.CreateAsync(project.Id, "先做的");
+        var second = await host.Tasks.CreateAsync(project.Id, "后做的");
+        var third = await host.Tasks.CreateAsync(project.Id, "最后做的");
+
+        await host.Tasks.SetPinnedAsync(first.Id, true);
+        await host.Tasks.SetPinnedAsync(second.Id, true);
+        await host.Tasks.SetPinnedAsync(third.Id, true);
+
+        var suggestions = await new DispatchService(host.Db, host.Clock).SuggestAsync(project.Id);
+
+        Assert.Equal([first.Id, second.Id, third.Id], suggestions.Select(x => x.TaskId).ToArray());
+    }
+
+    [Fact]
+    public async Task 移出计划就回到按分排()
+    {
+        using var host = new WorkbenchTestHost();
+        var project = await host.Projects.CreateAsync("P");
+        var pinned = await host.Tasks.CreateAsync(project.Id, "排过的");
+        var other = await host.Tasks.CreateAsync(project.Id, "没排的");
+
+        await host.Tasks.SetPinnedAsync(pinned.Id, true);
+        await host.Tasks.SetPinnedAsync(pinned.Id, false);
+
+        var suggestions = await new DispatchService(host.Db, host.Clock).SuggestAsync(project.Id);
+
+        Assert.All(suggestions, s => Assert.Null(s.PinnedOrder));
+        Assert.Equal(2, suggestions.Count);
+        Assert.Contains(suggestions, s => s.TaskId == other.Id);
+    }
+
+    [Fact]
+    public async Task 指派给谁的活排在谁前面()
+    {
+        using var host = new WorkbenchTestHost();
+        var project = await host.Projects.CreateAsync("P");
+
+        var mine = await host.Tasks.CreateAsync(project.Id, "指派给我的");
+        var others = await host.Tasks.CreateAsync(project.Id, "别人的");
+
+        await host.Tasks.SetAssignmentAsync(mine.Id, assignee: "agent-a");
+
+        var suggestions = await new DispatchService(host.Db, host.Clock)
+            .SuggestAsync(project.Id, forAgentId: "agent-a");
+
+        Assert.Equal(mine.Id, suggestions[0].TaskId);
+        Assert.Contains(suggestions[0].Reasons, r => r.Contains("指派给你"));
+        Assert.Equal("agent-a", suggestions[0].Assignee);
+        Assert.Contains(suggestions, s => s.TaskId == others.Id);
+    }
+
+    [Fact]
     public async Task 每条建议都要有理由()
     {
         using var host = new WorkbenchTestHost();

@@ -257,7 +257,8 @@ public sealed class AgentSessionService(IAppDbContext db, IClock clock) : IAgent
             false,
             project.RepoPath,
             project.DefaultBranch,
-            project.RepoRemote);
+            project.RepoRemote,
+            project.WorkspaceId);
     }
 
     public async Task<AgentSessionDto?> GetAsync(Guid sessionId, CancellationToken cancellationToken = default)

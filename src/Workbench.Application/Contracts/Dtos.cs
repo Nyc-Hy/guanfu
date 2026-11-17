@@ -16,6 +16,8 @@ public sealed record ProjectSummaryDto(
     string? RepoPath,
     string? Branch,
     string? RepoRemote,
+    /// <summary>所属工作区（工作区级规约是所有项目通用的底线）。</summary>
+    Guid WorkspaceId,
     /// <summary>
     /// 规范化后的仓库根（绑定键）。为空表示项目还没绑仓库 ——
     /// agent 在这个仓库里干活就落不到本项目上。
@@ -93,7 +95,9 @@ public sealed record StatusEventDto(
     /// <summary>机器可读的事件类型（如 status.changed）。</summary>
     string? EventType = null,
     /// <summary>结构化载荷（JSON 字符串）。</summary>
-    string? Payload = null);
+    string? Payload = null,
+    /// <summary>实际发生时间（补报时与记录时间不同）。为空表示没补报。</summary>
+    DateTimeOffset? OccurredAt = null);
 
 public sealed record DocumentDto(
     Guid Id,
@@ -105,6 +109,17 @@ public sealed record DocumentDto(
     DateTimeOffset UploadedAt,
     string? ParseError,
     string? StoredPath);
+
+/// <summary>批量上传里的一个文件。</summary>
+public sealed record DocumentUploadInput(string FileName, Stream Content, string? Kind = null);
+
+/// <summary>批量上传里失败的一个文件 —— 带文件名与原因，人才知道该补哪一个。</summary>
+public sealed record DocumentBatchFailureDto(string FileName, string Error);
+
+/// <summary>批量上传结果：成功的与失败的分开摆。</summary>
+public sealed record DocumentBatchDto(
+    IReadOnlyList<DocumentDto> Uploaded,
+    IReadOnlyList<DocumentBatchFailureDto> Failed);
 
 public sealed record ArtifactDto(
     Guid Id,

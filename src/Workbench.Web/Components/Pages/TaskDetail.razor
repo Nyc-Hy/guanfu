@@ -205,9 +205,20 @@ else
             <section class="wb-panel">
                 <h3>文档</h3>
                 <div class="wb-form-row">
-                    <InputFile OnChange="UploadAsync" disabled="@Uploading" />
-                    <span class="wb-muted">PRD / 测试用例 / 接口文档等</span>
+                    <InputFile OnChange="UploadAsync" multiple disabled="@Uploading" />
+                    <span class="wb-muted">可一次选多个 · PRD / 测试用例 / 接口文档等</span>
                 </div>
+
+                @if (UploadFailures.Count > 0)
+                {
+                    <p class="wb-error">有 @UploadFailures.Count 个文件没传上去：</p>
+                    <ul class="wb-plain-list">
+                        @foreach (var failure in UploadFailures)
+                        {
+                            <li>《@failure.FileName》—— @failure.Error</li>
+                        }
+                    </ul>
+                }
 
                 @if (Context.Documents.Count == 0)
                 {
@@ -606,9 +617,9 @@ else
                         @foreach (var evt in Events)
                         {
                             <li>
-                                <div class="wb-timeline-when" title="@evt.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")">
+                                <div class="wb-timeline-when" title="@(evt.OccurredAt ?? evt.CreatedAt).ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")">
                                     <span class="@EventColorClass(evt.EventType)">@EventIcon(evt.EventType)</span>
-                                    @Relative(evt.CreatedAt)
+                                    @Relative(evt.OccurredAt ?? evt.CreatedAt)
                                 </div>
                                 <div class="wb-timeline-what">
                                     <span class="wb-chip @EventColorClass(evt.EventType)">
@@ -626,6 +637,15 @@ else
                                     @if (!string.IsNullOrWhiteSpace(evt.Actor))
                                     {
                                         <span class="wb-chip wb-chip-agent">@evt.Actor</span>
+                                    }
+                                    @if (evt.OccurredAt is not null)
+                                    {
+                                        @* 补报：活是那时候干的，工作台是现在才知道的 —— 两个时间都要摆出来 *@
+                                        <span class="wb-chip wb-chip-warn">补报</span>
+                                        <span class="wb-muted">
+                                            实际发生于 @evt.OccurredAt.Value.ToLocalTime().ToString("MM-dd HH:mm")
+                                            · 记录于 @evt.CreatedAt.ToLocalTime().ToString("MM-dd HH:mm")
+                                        </span>
                                     }
                                 </div>
                                 @if (!string.IsNullOrWhiteSpace(evt.Note))
@@ -826,6 +846,13 @@ else
     private PageError? Error { get; set; }
     private PageError? LoadError { get; set; }
     private bool Uploading { get; set; }
+    private IReadOnlyList<UploadFailure> UploadFailures { get; set; } = [];
+
+    /// <summary>一次最多传多少个文件。</summary>
+    private const int MaxUploadFiles = 50;
+
+    /// <summary>单个文件的大小上限。</summary>
+    private const long MaxUploadBytes = 50 * 1024 * 1024;
 
     // ---- 人工凭证（启动 agent 是执行外部命令的入口，必须有人在场）----
     private UiTokenGate Gate { get; set; } = default!;
@@ -1559,47 +1586,80 @@ else
             return;
         }
 
-        var file = args.File;
-        var key = $"{file.Name}:{file.Size}";
-
-        // 同一个文件不重复传：Blazor 的事件排队处理，
-        // 「正在上传」标志在第二个事件被处理时早就复位了
-        if (_uploads.IsLatched(key))
+        IReadOnlyList<IBrowserFile> files;
+        try
         {
-            Error = PageError.Simple($"《{file.Name}》已经传过了。");
+            files = args.GetMultipleFiles(MaxUploadFiles).ToList();
+        }
+        catch (InvalidOperationException)
+        {
+            Error = PageError.Simple($"一次最多传 {MaxUploadFiles} 个文件，请分批传。");
             return;
         }
 
-        _uploads.TryLatch(key);
+        var pending = new List<IBrowserFile>();
+        var duplicated = new List<string>();
+
+        foreach (var file in files)
+        {
+            var key = UploadKey(file);
+
+            // 同一个文件不重复传：Blazor 的事件排队处理，
+            // 「正在上传」标志在第二个事件被处理时早就复位了
+            if (_uploads.IsLatched(key))
+            {
+                duplicated.Add(file.Name);
+                continue;
+            }
+
+            _uploads.TryLatch(key);
+            pending.Add(file);
+        }
+
+        if (pending.Count == 0)
+        {
+            Error = PageError.Simple(duplicated.Count > 0
+                ? $"《{duplicated[0]}》已经传过了。"
+                : "没有选到文件。");
+            return;
+        }
+
         Uploading = true;
+        UploadFailures = [];
         StateHasChanged();
 
-        try
+        var failed = new List<UploadFailure>();
+        var uploaded = 0;
+
+        // 一个一个传：传砸的那个不影响后面的
+        foreach (var file in pending)
         {
-            await using var stream = file.OpenReadStream(50 * 1024 * 1024);
-            await Documents.UploadAsync(TaskId, file.Name, stream, GuessKind(file.Name));
-            Error = null;
-            await RefreshContextAndEventsAsync();
+            try
+            {
+                await using var stream = file.OpenReadStream(MaxUploadBytes);
+                await Documents.UploadAsync(TaskId, file.Name, stream);
+                uploaded++;
+            }
+            catch (Exception ex)
+            {
+                // 失败就放掉，好让人重传
+                _uploads.Release(UploadKey(file));
+                failed.Add(new UploadFailure(file.Name, PageError.From(ex, "上传文档").Message));
+            }
         }
-        catch (Exception ex)
-        {
-            // 失败就放掉，好让人重传
-            _uploads.Release(key);
-            Error = PageError.From(ex, "上传文档");
-        }
-        finally
-        {
-            Uploading = false;
-        }
+
+        Uploading = false;
+        UploadFailures = failed;
+        Error = failed.Count == 0
+            ? null
+            : PageError.Simple($"{uploaded} 个传上去，{failed.Count} 个没传上去。");
+
+        await RefreshContextAndEventsAsync();
     }
 
-    private static string GuessKind(string fileName) => Path.GetFileName(fileName).ToLowerInvariant() switch
-    {
-        var n when n.Contains("prd") || n.Contains("需求") => "prd",
-        var n when n.Contains("test") || n.Contains("用例") => "testcase",
-        var n when n.Contains("api") || n.Contains("接口") => "apidoc",
-        _ => "other"
-    };
+    private sealed record UploadFailure(string FileName, string Error);
+
+    private static string UploadKey(IBrowserFile file) => $"{file.Name}:{file.Size}";
 
     // ---- 事件时间线的展示 ----
 

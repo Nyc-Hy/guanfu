@@ -262,6 +262,7 @@ public sealed class OverviewService(IAppDbContext db, IClock clock) : IOverviewS
                 project.RepoPath,
                 project.DefaultBranch,
                 project.RepoRemote,
+                project.WorkspaceId,
                 project.RepoRoot));
         }
 

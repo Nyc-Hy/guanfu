@@ -139,4 +139,42 @@ public sealed class McpToolContractTests
                 $"写工具 {name} 没有标 [McpRequiresApproval] —— 闸门靠这个标记认人。");
         }
     }
+
+    /// <summary>
+    /// 每个工具的入参 / 返回值都必须能生成 JSON Schema。
+    ///
+    /// 这条踩过坑：DTO 里给 Guid 加了个默认值（<c>Guid WorkspaceId = default</c>），
+    /// SDK 的 schema 生成器把默认值写回 JSON 时转不回 Guid，
+    /// 结果**整个服务起不来**（工具注册阶段抛异常）——
+    /// 而单测全绿，因为谁也没在测试里真的建工具。
+    ///
+    /// 所以这条钉在「把每个工具都建一遍」上：
+    /// 建不出来就说明这个工具会让服务起不来。
+    /// </summary>
+    [Fact]
+    public void 每个工具的Schema都能生成()
+    {
+        var failures = new List<string>();
+
+        foreach (var (name, method) in Tools())
+        {
+            var declaringType = method.DeclaringType!;
+
+            try
+            {
+                McpServerTool.Create(
+                    method,
+                    target: () => System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(declaringType),
+                    options: null);
+            }
+            catch (Exception ex)
+            {
+                failures.Add($"{name}: {ex.GetType().Name} {ex.Message}");
+            }
+        }
+
+        Assert.True(
+            failures.Count == 0,
+            "这些工具生成不了 Schema —— 服务启动时就会炸：\n" + string.Join("\n", failures));
+    }
 }

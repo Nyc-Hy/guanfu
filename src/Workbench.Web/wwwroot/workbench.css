@@ -531,6 +531,10 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--wb-accent); }
 .wb-error { color: var(--wb-danger); font-size: var(--wb-fs); margin: var(--wb-gap-2) 0 0; }
 .wb-faint { color: var(--wb-faint); }
 
+/* 成条罗列（上传失败清单之类）：不要浏览器默认的大缩进与粗体 */
+.wb-plain-list { margin: var(--wb-gap-1) 0 0; padding-left: 1.4em; color: var(--wb-muted); font-size: var(--wb-fs); }
+.wb-plain-list li { margin: var(--wb-gap-1) 0; }
+
 /* 间距助手：固定的间距走类，不写内联 style。
    内联 style 只留给运行时算出来的值（进度条宽度、层级缩进）。 */
 .wb-mt-2 { margin-top: var(--wb-gap-2); }

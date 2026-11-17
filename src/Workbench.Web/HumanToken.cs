@@ -149,6 +149,23 @@ public static class HumanTokenPolicy
             return IsPost(method);
         }
 
+        // /api/workspaces/{id}/spec —— 改工作区标准规约（所有项目通用的底线）。
+        if (segments.Length == 4
+            && segments[1].Equals("workspaces", StringComparison.OrdinalIgnoreCase)
+            && segments[3].Equals("spec", StringComparison.OrdinalIgnoreCase))
+        {
+            return !IsRead(method);
+        }
+
+        // /api/tasks/{id}/pin —— 排期干预（排进人工计划）。
+        // 「先干哪个」是人的决定 —— agent 不该自己改顺序。
+        if (segments.Length == 4
+            && segments[1].Equals("tasks", StringComparison.OrdinalIgnoreCase)
+            && segments[3].Equals("pin", StringComparison.OrdinalIgnoreCase))
+        {
+            return IsPost(method);
+        }
+
         // /api/milestones/{id}/spec —— 改里程碑级规约（这个版本的完成定义）。
         // 规矩是人的决定，agent 不该自己改「这个版本什么算做完」。
         if (segments.Length == 4
