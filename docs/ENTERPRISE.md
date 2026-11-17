@@ -156,6 +156,14 @@ Secret）、跨库（`OtherDb.dbo.T`）、`INSERT … EXEC` 一律判「认不�
 | 落地 | `src/Workbench.Domain/Entities.cs`（`StatusEvent`）、`TaskEventTypes`（固定标识表） |
 | 自动化证据 | 单测 `EventLedgerContractTests`（2）<br>端到端 A：`wb task events --format markdown/csv/json` |
 
+### H2. 时间线不说谎：补报也带实际发生时间
+
+| 项 | 内容 |
+|---|---|
+| 能力 | agent 在工作台够不着的时候把活干完了（网络不通 / 工作台在维护 / 上一轮会话干的），报上来时给**实际发生时间**。账本上两个时间分开记：`OccurredAt`（什么时候发生）与 `CreatedAt`（工作台什么时候知道的）；界面给补报的事件挂「补报」标记并摆出两个时间。**未来的时间不收**（还没发生的事不能补报），离谱的过去也拒 |
+| 落地 | `src/Workbench.Domain/Entities.cs`（`StatusEvent.OccurredAt`）<br>`src/Workbench.Application/Services/TaskService.cs`（`ResolveOccurredAt` / `OccurredAtIfBackdated`）<br>MCP `workbench_set_plan` / `workbench_add_artifact` / `workbench_report_test_result` / `workbench_post_event` 的 `occurredAt` 参数 |
+| 自动化证据 | 单测 `OfflineBackfillTests`（9：发生时间进事件与载荷、不补报时不挂标记、未来的时间被拒、离谱的过去被拒、产物与测试结果同样带发生时间）<br>端到端 A：补报带 `occurredAt` → 事件返回发生时间；给 2099 年的时间 → 被拒并说明原因 |
+
 ### I. 流程控制：状态机 + 评审门禁
 
 | 项 | 内容 |
