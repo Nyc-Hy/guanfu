@@ -103,6 +103,14 @@
 | **文档类别统一猜** | 类别（PRD / 用例 / 接口文档）由文件名猜，**服务层统一算**，界面 / REST / MCP / CLI 共用一份 —— 同一份文档从哪进来都带着同一个类别 |
 | **agent 侧的离线补报** | 回写计划 / 产物 / 测试结果 / 流水事件都能带 `occurredAt`（实际发生时间）。账本上 `OccurredAt` 是发生时间、`CreatedAt` 是「工作台什么时候知道的」；界面给补报的事件挂「补报」标记并摆出两个时间。未来的时间不收，离谱的过去也拒 |
 
+### v0.17 做了什么
+
+| 能力 | 落地 |
+|---|---|
+| **工位自助化** | `workbench_get_workstation`：主工作区被谁占着、这次该用哪个目录、要并行的话建哪个工位、**建它的确切命令**。工作台不替 agent 建 worktree（规矩 35），只给路径与命令，外加事后校验。建议的工位在**仓库旁边**（`<仓库名>-wb-worktrees/<编号>`），不落在仓库里 |
+| **评审的多 agent 分工** | `workbench_claim_review_dimension` / `workbench_claim_spec_item`：维度与完成定义都能**认领**（带租约，到期可接手）；别人持有时不能替他交结论。结论按维度独立，**不需要合并** |
+| **交接包** | `workbench_get_handoff_pack` / `GET /api/tasks/{id}/handoff-pack` / 任务页「交接」页签：一次给全 —— 上一个是谁 / 为什么交出来 / 什么时候交的，加上规约、计划、文档、产物、测试、评审轮、工位、允许的迁移。只放结构化事实，不生成自然语言 |
+
 ### 接下来该往哪儿长
 
 1. **成本不做** —— 工作台不知道 agent 用什么模型什么套餐，自报的数字在审计上站不住；
@@ -478,6 +486,7 @@ MCP 端点**不带**这个门槛 —— agent 走的就是它，它不能有裁�
 | Markdown 链接只防裸 HTML | `[x](javascript:alert(1))` 原样输出 → 点一下就执行脚本 | `LinkUrlPolicy` scheme 白名单，`javascript:`/`data:` 等降级成纯文本 |
 | DTO 的位置记录给 `Guid` 加默认值 | `Guid WorkspaceId = default` → SDK 生成 JSON Schema 时默认值转不回 `Guid` → **整个服务起不来**，而单测全绿 | 别给值类型加默认值（或写 `Guid?`）；`McpToolContractTests` 加一条「每个工具的 Schema 都能生成」 |
 | CLI 的 multipart 走了 JSON 通道 | `wb doc upload` 把 `MultipartFormDataContent` 塞进 JSON 序列化 → 服务端收到一坨 JSON，上传必坏 | 用 `PostMultipartAsync`；端到端补一条 CLI 批量上传的断言 |
+| 建议的工位路径用了规范化后的仓库根 | 给 agent 的命令里是 `/private/var/...`，人填的是 `/var/...` —— agent 敲了命令跟人看到的不是一个地方 | 命令与建议都用**人填的路径**，规范化后的根只用于比较 |
 | shell 白名单是命令串前缀 | `git` 一勾就放行 `git push --force`、`npm` 放行 `npm publish` | 白名单按**词**比较，条目可写子命令（`git status`） |
 | `git status --porcelain` 中文路径 | 输出 `\346\226\207...`，按路径读文件必然找不到 | 调用加 `core.quotePath=false` + 自写 C 转义解码兜底 |
 | `GitInspector` 先同步读完再等退出 | 10 秒超时根本走不到，git 挂住就永久占住线程；父子互等死锁 | 并发读两个流 + `WaitForExitAsync(token)`，超时杀整棵进程树 |

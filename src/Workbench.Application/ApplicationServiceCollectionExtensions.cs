@@ -56,6 +56,9 @@ public static class ApplicationServiceCollectionExtensions
         // 用量与开销：工作台数得出来的（工具调用次数）+ agent 自报的（token / 费用）
         services.AddScoped<ITaskUsageService, TaskUsageService>();
 
+        // 交接包：把散在各处的事实打成一份，接手的人一次拿全
+        services.AddScoped<IHandoffService, HandoffService>();
+
         // 通知：单例 HttpClient（HttpClient 复用是对的，每次 new 才会耗尽端口）
         // 超时压短，通知失败不能拖住审批请求。
         services.AddSingleton<INotifier>(_ => new WebhookNotifier(new HttpClient

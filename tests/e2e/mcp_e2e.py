@@ -343,6 +343,40 @@ def main() -> int:
         f"未来的时间不该收下（实际：{future}）",
     )
 
+    print("\n-- 工位：agent 该去哪儿干活 --")
+    station = mcp.call("workbench_get_workstation", {"taskId": task_id})
+    expect(station.get("ok"), "应能问到工位现状")
+    station_dto = station.get("station") or {}
+    expect(
+        "mainCheckoutAvailable" in station_dto,
+        f"工位要回答「主工作区能不能用」（实际：{station_dto}）",
+    )
+    expect(
+        "effectiveWorkPath" in station_dto,
+        f"工位要回答「这次该用哪个目录」（实际：{station_dto}）",
+    )
+
+    print("\n-- 交接包：接手的人一次拿全 --")
+    pack_result = mcp.call("workbench_get_handoff_pack", {"taskId": task_id})
+    expect(pack_result.get("ok"), "应能取到交接包")
+    handoff_pack = pack_result.get("pack") or {}
+    expect(
+        handoff_pack.get("task", {}).get("id") == task_id,
+        f"交接包应带上任务本身（实际：{handoff_pack.get('task')}）",
+    )
+    expect(
+        (handoff_pack.get("spec") or {}).get("purpose") == "12月版本要支持账号密码登录",
+        "交接包要带上生效的规约（接手的人得知道什么算做完）",
+    )
+    expect(
+        handoff_pack.get("handoff") is not None,
+        "交接包要说明上一个是谁 / 为什么交出来",
+    )
+    expect(
+        bool(handoff_pack.get("allowedTransitions")),
+        "交接包要带上「现在能去哪」（不用再问一次状态机）",
+    )
+
     print("\n-- 批量导入文档 --")
     batch = mcp.call(
         "doc_upload",
@@ -395,8 +429,45 @@ def main() -> int:
     expect(len(spec_items) > 0, "评审包应带上项目的完成定义（逐条判定）")
     print(f"  变更文件: {pack.get('changedFiles')}")
 
+    print("\n-- 评审分工：维度可以被认领 --")
+    claimed = mcp.call(
+        "workbench_claim_review_dimension",
+        {"taskId": task_id, "dimension": "security", "agentId": "e2e-reviewer-1"},
+    )
+    expect(claimed.get("ok"), f"认领维度应成功（实际：{claimed}）")
+    expect(
+        (claimed.get("item") or {}).get("claimedBy") == "e2e-reviewer-1",
+        "认领后要能看到是谁在评",
+    )
+
+    second = mcp.call(
+        "workbench_claim_review_dimension",
+        {"taskId": task_id, "dimension": "security", "agentId": "e2e-reviewer-2"},
+    )
+    expect(
+        not second.get("ok") and "e2e-reviewer-1" in (second.get("error") or ""),
+        f"别人认领的维度不该被抢走（实际：{second}）",
+    )
+
+    # 持有者之外的 agent 不能替他交结论
+    stolen = mcp.call(
+        "workbench_submit_review",
+        {
+            "taskId": task_id,
+            "dimension": "security",
+            "passed": True,
+            "reviewer": "e2e-reviewer-2",
+        },
+    )
+    expect(
+        not stolen.get("ok") and "e2e-reviewer-1" in (stolen.get("error") or ""),
+        f"别人不能替持有者交结论（实际：{stolen}）",
+    )
+
     print("\n-- 逐维度回写（7 条全过） --")
     for dimension in dimensions:
+        # 被认领的维度由持有者自己交 —— 分工就是各交各的
+        reviewer = "e2e-reviewer-1" if dimension["key"] == "security" else "e2e-agent"
         result = mcp.call(
             "workbench_submit_review",
             {
@@ -405,10 +476,10 @@ def main() -> int:
                 "passed": True,
                 "findings": f"{dimension['key']}: 无问题",
                 "evidence": "看了实现与对应单测",
-                "reviewer": "e2e-agent",
+                "reviewer": reviewer,
             },
         )
-        expect(result.get("ok"), f"{dimension['key']} 回写应成功")
+        expect(result.get("ok"), f"{dimension['key']} 回写应成功（实际：{result}）")
 
     print("\n-- 逐条判定完成定义 --")
     for item in spec_items:

@@ -780,6 +780,15 @@ public class SpecVerdict
     public string? Reviewer { get; set; }
 
     public DateTimeOffset? DecidedAt { get; set; }
+
+    /// <summary>谁认领了这条的判定（多 agent 分工）。</summary>
+    public string? ClaimedBy { get; set; }
+
+    /// <summary>认领的时间。</summary>
+    public DateTimeOffset? ClaimedAt { get; set; }
+
+    /// <summary>认领的租约到期时间。到期还没判，别的 agent 可以接手。</summary>
+    public DateTimeOffset? ClaimedUntil { get; set; }
 }
 
 public class DbConnectionConfig
@@ -882,6 +891,21 @@ public class ReviewItem
     public string? Reviewer { get; set; }
 
     public DateTimeOffset? DecidedAt { get; set; }
+
+    /// <summary>
+    /// 谁**认领**了这个维度的评审（多 agent 分工）。
+    /// 为空 = 没人认领，谁都能评。
+    /// </summary>
+    public string? ClaimedBy { get; set; }
+
+    /// <summary>认领的时间。</summary>
+    public DateTimeOffset? ClaimedAt { get; set; }
+
+    /// <summary>
+    /// 认领的租约到期时间。到期还没结论，别的 agent 可以接手 ——
+    /// 认领不是占座城堡，是「我在做，别重复」。
+    /// </summary>
+    public DateTimeOffset? ClaimedUntil { get; set; }
 }
 
 /// <summary>表级白名单规则。写操作一律需要审批，此处只控制是否可免审批。</summary>

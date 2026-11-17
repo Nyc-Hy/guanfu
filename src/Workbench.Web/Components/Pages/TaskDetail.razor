@@ -4,6 +4,7 @@
 @using Microsoft.Extensions.DependencyInjection
 @inject ITaskService Tasks
 @inject IDocumentService Documents
+@inject IHandoffService HandoffService
 @inject IMilestoneService Milestones
 @inject IAgentLauncher Launcher
 @inject IReviewService Reviews
@@ -140,6 +141,10 @@ else
                 <button class="wb-tab @(ActiveTab == "deliver" ? "wb-tab-active" : "")" role="tab"
                         aria-selected="@(ActiveTab == "deliver")" @onclick='() => GoTab("deliver")'>
                     产出 <span class="wb-count">@(Context.Artifacts.Count + FileChangeItems.Count)</span>
+                </button>
+                <button class="wb-tab @(ActiveTab == "handoff" ? "wb-tab-active" : "")" role="tab"
+                        aria-selected="@(ActiveTab == "handoff")" @onclick='() => GoTab("handoff")'>
+                    交接
                 </button>
                 <button class="wb-tab @(ActiveTab == "log" ? "wb-tab-active" : "")" role="tab"
                         aria-selected="@(ActiveTab == "log")" @onclick='() => GoTab("log")'>
@@ -364,7 +369,16 @@ else
                                             <div class="wb-timeline-note">@item.Evidence</div>
                                         }
                                     </td>
-                                    <td class="wb-muted">@item.Reviewer</td>
+                                    <td class="wb-muted">
+                                        @if (!string.IsNullOrWhiteSpace(item.ClaimedBy))
+                                        {
+                                            <span class="wb-chip wb-chip-warn"
+                                                  title="@(item.ClaimedUntil is DateTimeOffset until ? $"认领到 {until:u}" : "已被认领")">
+                                                在评 · @item.ClaimedBy
+                                            </span>
+                                        }
+                                        @item.Reviewer
+                                    </td>
                                     <td>
                                         @* 七个维度每行都摆「输入框 + 三个按钮」= 一屏全是重复的表单控件。
                                            只给还没判的维度摆；判过的收成一个「改结论」入口。 *@
@@ -439,7 +453,16 @@ else
                                             }
                                         </td>
                                         <td class="wb-muted">@item.Note</td>
-                                        <td class="wb-muted">@item.Reviewer</td>
+                                        <td class="wb-muted">
+                                            @if (!string.IsNullOrWhiteSpace(item.ClaimedBy))
+                                            {
+                                                <span class="wb-chip wb-chip-warn"
+                                                      title="@(item.ClaimedUntil is DateTimeOffset until ? $"认领到 {until:u}" : "已被认领")">
+                                                    在判 · @item.ClaimedBy
+                                                </span>
+                                            }
+                                            @item.Reviewer
+                                        </td>
                                         <td>
                                             <div class="wb-form-row">
                                                 <input class="wb-input" placeholder="说明（不适用必填）"
@@ -565,6 +588,218 @@ else
                             </tbody>
                         </table>
                     </div>
+                }
+            </section>
+            }
+            else if (ActiveTab == "handoff")
+            {
+            <section class="wb-panel">
+                <div class="wb-card-head">
+                    <h3>交接包</h3>
+                    <span class="wb-muted">接手的人一次拿全 · 结构化事实，不编故事</span>
+                </div>
+
+                @if (Handoff is null)
+                {
+                    <p class="wb-muted">交接包还没加载。</p>
+                }
+                else
+                {
+                    <div class="wb-table-scroll">
+                        <table class="wb-table">
+                            <thead>
+                            <tr>
+                                <th class="wb-col-dimension">项</th>
+                                <th>内容</th>
+                            </tr>
+                            </thead>
+                            <tbody>
+                            <tr>
+                                <td>上一个是谁</td>
+                                <td>
+                                    @if (!string.IsNullOrWhiteSpace(Handoff.Handoff?.PreviousHolder))
+                                    {
+                                        <span class="wb-chip wb-chip-agent">@Handoff.Handoff!.PreviousHolder</span>
+                                        @if (Handoff.Handoff.At is DateTimeOffset at)
+                                        {
+                                            <span class="wb-muted">@at.ToLocalTime().ToString("MM-dd HH:mm") 交出</span>
+                                        }
+                                    }
+                                    else
+                                    {
+                                        <span class="wb-muted">没有上一个 —— 这个活还没转过手。</span>
+                                    }
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>为什么交出来</td>
+                                <td>
+                                    @if (!string.IsNullOrWhiteSpace(Handoff.Handoff?.Reason))
+                                    {
+                                        @Handoff.Handoff!.Reason
+                                    }
+                                    else
+                                    {
+                                        <span class="wb-muted">他没写理由 —— 接手的人得自己问。</span>
+                                    }
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>现在在谁手上</td>
+                                <td>
+                                    @if (!string.IsNullOrWhiteSpace(Handoff.Task.ClaimedBy))
+                                    {
+                                        <span class="wb-chip wb-chip-agent">@Handoff.Task.ClaimedBy</span>
+                                        @if (Handoff.Task.LeaseExpiresAt is DateTimeOffset lease)
+                                        {
+                                            <span class="wb-muted">租约到 @lease.ToLocalTime().ToString("MM-dd HH:mm")</span>
+                                        }
+                                    }
+                                    else
+                                    {
+                                        <span class="wb-muted">没人持有 —— 接手的人可以直接领。</span>
+                                    }
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>工位</td>
+                                <td>
+                                    @if (!string.IsNullOrWhiteSpace(Handoff.Station?.EffectiveWorkPath))
+                                    {
+                                        <code>@Handoff.Station!.EffectiveWorkPath</code>
+                                        @if (Handoff.Station.Isolated)
+                                        {
+                                            <span class="wb-chip wb-chip-ok">独立工位</span>
+                                        }
+                                        else
+                                        {
+                                            <span class="wb-chip wb-chip-warn">主工作区（共享）</span>
+                                        }
+                                    }
+                                    else
+                                    {
+                                        <span class="wb-muted">项目没绑仓库。</span>
+                                    }
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>分支 / HEAD</td>
+                                <td>
+                                    <span>@(Handoff.Project.Branch ?? "未知")</span>
+                                    @if (!string.IsNullOrWhiteSpace(Handoff.Project.HeadSha))
+                                    {
+                                        <span class="wb-muted">· @Handoff.Project.HeadSha[..Math.Min(8, Handoff.Project.HeadSha.Length)]</span>
+                                    }
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>目标</td>
+                                <td>
+                                    @if (!string.IsNullOrWhiteSpace(Handoff.Spec?.Purpose))
+                                    {
+                                        @Handoff.Spec!.Purpose
+                                    }
+                                    else
+                                    {
+                                        <span class="wb-muted">项目还没填目标。</span>
+                                    }
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>完成定义</td>
+                                <td>
+                                    @if (Handoff.Spec?.DefinitionOfDone is { Count: > 0 } dod)
+                                    {
+                                        <ul class="wb-plain-list">
+                                            @foreach (var item in dod)
+                                            {
+                                                <li>@item</li>
+                                            }
+                                        </ul>
+                                    }
+                                    else
+                                    {
+                                        <span class="wb-muted">还没填完成定义。</span>
+                                    }
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>测试命令</td>
+                                <td>
+                                    @if (!string.IsNullOrWhiteSpace(Handoff.Spec?.TestCommand))
+                                    {
+                                        <code>@Handoff.Spec!.TestCommand</code>
+                                    }
+                                    else
+                                    {
+                                        <span class="wb-muted">没定。</span>
+                                    }
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>文档 / 产物</td>
+                                <td>
+                                    <span class="wb-muted">@Handoff.Documents.Count 个文档 · @Handoff.Artifacts.Count 个产物</span>
+                                    @if (Handoff.LastTestResult is { } test)
+                                    {
+                                        <span class="wb-muted">
+                                            · 最近测试 @test.Passed/@test.Total 通过
+                                            @if (test.Coverage is double cover)
+                                            {
+                                                <text> · 覆盖率 @cover.ToString("P1")</text>
+                                            }
+                                        </span>
+                                    }
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>评审</td>
+                                <td>
+                                    @if (Handoff.Review is { } review)
+                                    {
+                                        <span class="wb-chip">第 @review.Round 轮</span>
+                                        <span class="wb-chip @(review.Verdict == "Passed" ? "wb-chip-ok" : review.Verdict == "Failed" ? "wb-chip-danger" : "")">
+                                            @(review.Verdict == "Passed" ? "通过" : review.Verdict == "Failed" ? "不通过" : "评审中")
+                                        </span>
+                                        <span class="wb-muted">
+                                            @review.Items.Count(i => i.Status == "Pending") 个维度还没结论
+                                        </span>
+                                    }
+                                    else
+                                    {
+                                        <span class="wb-muted">还没开过评审。</span>
+                                    }
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>接下来能去哪</td>
+                                <td>
+                                    @if (Handoff.AllowedTransitions.Count > 0)
+                                    {
+                                        @string.Join("、", Handoff.AllowedTransitions.Select(t => UiText.Status(t)))
+                                    }
+                                    else
+                                    {
+                                        <span class="wb-muted">当前状态没有可去的地方。</span>
+                                    }
+                                </td>
+                            </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    @if (Handoff.Plan is { } plan)
+                    {
+                        <h4>最新开发计划（第 @plan.Version 版）</h4>
+                        @if (!string.IsNullOrWhiteSpace(plan.Understanding))
+                        {
+                            <p class="wb-pre">@plan.Understanding</p>
+                        }
+                        @if (!string.IsNullOrWhiteSpace(plan.Breakdown))
+                        {
+                            <p class="wb-pre">@plan.Breakdown</p>
+                        }
+                    }
                 }
             </section>
             }
@@ -696,6 +931,40 @@ else
                     <div class="wb-muted">用量统计还没加载。</div>
                 }
 
+                <h4>工位</h4>
+                @if (Context.Station is { } station)
+                {
+                    @if (station.MainCheckoutAvailable)
+                    {
+                        <div class="wb-muted">主工作区空着，可以直接用。</div>
+                    }
+                    else
+                    {
+                        <div class="wb-muted">
+                            主工作区被 @station.MainCheckoutHolder 占着
+                            @if (!string.IsNullOrWhiteSpace(station.MainCheckoutTaskKey))
+                            {
+                                <text>（@station.MainCheckoutTaskKey）</text>
+                            }
+                            ，要并行就得另开一个。
+                        </div>
+                    }
+
+                    @if (!string.IsNullOrWhiteSpace(station.SuggestedWorktree))
+                    {
+                        <div class="wb-muted">建议的独立工位：</div>
+                        <pre class="wb-pre">@station.SuggestedWorktree</pre>
+                        @if (station.SetupCommands is { Count: > 0 })
+                        {
+                            <pre class="wb-pre">@string.Join("\n", station.SetupCommands)</pre>
+                        }
+                    }
+                }
+                else
+                {
+                    <div class="wb-muted">项目没绑仓库，没有文件系统面。</div>
+                }
+
                 <h4>迭代版本</h4>
                 <div class="wb-field-row">
                     <select class="wb-input" @bind="SelectedMilestoneId" @bind:after="AssignMilestoneAsync">
@@ -801,6 +1070,7 @@ else
         "docs" => "docs",
         "review" => "review",
         "deliver" => "deliver",
+        "handoff" => "handoff",
         "log" => "log",
         _ => "plan"
     };
@@ -822,6 +1092,9 @@ else
 
     /// <summary>这个任务的用量（工具调用次数等）。</summary>
     private TaskUsageDto? Usage { get; set; }
+
+    /// <summary>交接包（切到「交接」页签时才拉）。</summary>
+    private HandoffPackDto? Handoff { get; set; }
 
     /// <summary>逐条判定的说明（按条目键存）。</summary>
     private readonly Dictionary<string, string> _specNotes = new(StringComparer.Ordinal);
@@ -895,6 +1168,25 @@ else
         {
             _loadedTaskId = TaskId;
             await ReloadAsync(syncInputs: true);
+        }
+
+        // 交接包只有那一页用得上 —— 不切过去就不拉
+        if (ActiveTab == "handoff" && Handoff is null)
+        {
+            await LoadHandoffAsync();
+        }
+    }
+
+    /// <summary>拉交接包。</summary>
+    private async Task LoadHandoffAsync()
+    {
+        try
+        {
+            Handoff = await InScopeAsync(sp => sp.GetRequiredService<IHandoffService>().GetAsync(TaskId));
+        }
+        catch (Exception ex)
+        {
+            Error = PageError.From(ex, "加载交接包");
         }
     }
 

@@ -19,8 +19,30 @@ namespace Workbench.Mcp;
 /// agent 就看不到「错在哪、该改什么」了。所有失败都走 <see cref="ReviewToolResult"/> 的 error 字段。
 /// </summary>
 [McpServerToolType]
-public sealed class ReviewMcpTools(IReviewService reviews)
+public sealed class ReviewMcpTools(IReviewService reviews, IAgentSessionAccessor? sessionAccessor = null)
 {
+    /// <summary>没显式给 agentId 时用会话里的那个（认领得知道是谁认的）。</summary>
+    private async Task<string> ResolveAgentIdAsync(CancellationToken cancellationToken)
+    {
+        var agentId = sessionAccessor?.CurrentAgentId;
+
+        if (string.IsNullOrWhiteSpace(agentId))
+        {
+            var session = sessionAccessor is null
+                ? null
+                : await sessionAccessor.CurrentAsync(cancellationToken);
+
+            agentId = session?.AgentId;
+        }
+
+        if (string.IsNullOrWhiteSpace(agentId))
+        {
+            throw new WorkbenchException("认领要说明是谁认领的：给 agentId，或让会话带上 agent 标识。");
+        }
+
+        return agentId;
+    }
+
     [McpServerTool(Name = "workbench_start_review")]
     [Description(
         "开始一轮评审（专家团）。按固定的七个维度各建一条待办：代码是否合适、注释是否合适、" +
@@ -59,6 +81,64 @@ public sealed class ReviewMcpTools(IReviewService reviews)
         catch (Exception ex) when (ex is WorkbenchException or InvalidOperationException)
         {
             return ReviewToolResult.Fail(ex.Message);
+        }
+    }
+
+    [McpServerTool(Name = "workbench_claim_review_dimension")]
+    [Description(
+        "认领一个评审维度的评审工作（多 agent 分工）。" +
+        "一轮七个维度可以拆给几个 agent 各评各的 —— 先认领再评，别人就不会重复评同一个维度。" +
+        "认领带租约（默认 30 分钟）：到期还没交结论，别人可以接手，不会把维度卡死。" +
+        "维度被别人认领（租约没过）时返回 ok=false，并说清是谁占着；" +
+        "已经有结论的维度不用再认领。agentId 不给就用当前会话的 agent。")]
+    public async Task<ReviewToolResult> ClaimReviewDimensionAsync(
+        Guid taskId,
+        string dimension,
+        string? agentId = null,
+        int leaseMinutes = 30,
+        int? round = null,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var resolvedAgentId = agentId ?? await ResolveAgentIdAsync(cancellationToken);
+            var item = await reviews.ClaimDimensionAsync(
+                taskId, dimension, resolvedAgentId, leaseMinutes, round, cancellationToken);
+
+            var current = await reviews.GetCurrentAsync(taskId, cancellationToken);
+            return new ReviewToolResult { Ok = true, Item = item, Round = current };
+        }
+        catch (Exception ex) when (ex is WorkbenchException or InvalidOperationException)
+        {
+            return ReviewToolResult.Fail(ex.Message);
+        }
+    }
+
+    [McpServerTool(Name = "workbench_claim_spec_item")]
+    [Description(
+        "认领一条完成定义（DoD）的判定工作（多 agent 分工）。" +
+        "跟认领维度一个道理：先认领再判，别人就不会重复判同一条。" +
+        "item 填规约里的原文（评审包里 specItems 那一列给的就是它）。" +
+        "被别人认领（租约没过）时返回 ok=false，并说清是谁占着。")]
+    public async Task<SpecVerdictToolResult> ClaimSpecItemAsync(
+        Guid taskId,
+        string item,
+        string? agentId = null,
+        int leaseMinutes = 30,
+        int? round = null,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var resolvedAgentId = agentId ?? await ResolveAgentIdAsync(cancellationToken);
+            var verdict = await reviews.ClaimSpecItemAsync(
+                taskId, item, resolvedAgentId, leaseMinutes, round, cancellationToken);
+
+            return new SpecVerdictToolResult { Ok = true, Verdict = verdict };
+        }
+        catch (Exception ex) when (ex is WorkbenchException or InvalidOperationException)
+        {
+            return SpecVerdictToolResult.Fail(ex.Message);
         }
     }
 

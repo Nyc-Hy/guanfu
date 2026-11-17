@@ -384,6 +384,12 @@ public static class TaskEventTypes
 
     /// <summary>项目规约（DoD）某一条的判定结果。</summary>
     public const string SpecVerdictResult = "review.spec_verdict";
+
+    /// <summary>某个评审维度被认领（多 agent 分工）。</summary>
+    public const string ReviewDimensionClaimed = "review.dimension_claimed";
+
+    /// <summary>某条完成定义被认领（多 agent 分工）。</summary>
+    public const string SpecVerdictClaimed = "review.spec_claimed";
     public const string AgentLaunched = "agent.launched";
     public const string AgentExited = "agent.exited";
     public const string MilestoneAssigned = "milestone.assigned";

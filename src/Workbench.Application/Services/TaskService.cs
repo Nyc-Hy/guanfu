@@ -157,7 +157,25 @@ public interface ITaskService
         DateTimeOffset? occurredAt = null,
         CancellationToken cancellationToken = default);
 
-    Task<TaskContextDto> GetContextAsync(Guid id, int eventLimit = 20, CancellationToken cancellationToken = default);
+    /// <param name="agentId">
+    /// 问上下文的是谁 —— 工位建议要按它算（「主工作区被我占着」还是「被别人占着」）。
+    /// </param>
+    Task<TaskContextDto> GetContextAsync(
+        Guid id,
+        int eventLimit = 20,
+        CancellationToken cancellationToken = default,
+        string? agentId = null);
+
+    /// <summary>
+    /// 工位现状 + 该去哪儿干活的建议。
+    ///
+    /// agent 领活之前要问的那个问题：「这个目录有人在用吗？我该去哪儿？」
+    /// 主工作区被别人占着时，这里直接给出该建的独立工位路径与建它的命令。
+    /// </summary>
+    Task<WorkStationDto> GetStationAsync(
+        Guid id,
+        string? agentId = null,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// 设置分派信息：负责人、优先级、截止日、权重。
@@ -1612,7 +1630,8 @@ public sealed class TaskService(
     public async Task<TaskContextDto> GetContextAsync(
         Guid id,
         int eventLimit = 20,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? agentId = null)
     {
         var task = await db.Tasks.AsNoTracking().FirstOrDefaultAsync(t => t.Id == id, cancellationToken)
                    ?? throw new NotFoundException("任务", id);
@@ -1671,7 +1690,7 @@ public sealed class TaskService(
         var pending = await PendingDependencyCountsAsync([id], cancellationToken);
 
         // 工位：领活前要知道「哪儿已经有人了」，不然只能靠踩文件发现。
-        var station = await BuildStationAsync(task, project, cancellationToken);
+        var station = await BuildStationAsync(task, project, cancellationToken, agentId);
 
         // 项目级规约：人定的规矩，agent 开工前要读 ——
         // 「什么算做完」「提交怎么写」「测试怎么跑」都在这儿。
@@ -1694,16 +1713,34 @@ public sealed class TaskService(
             specDto);
     }
 
+    /// <summary>工位现状 + 建议（给 agent 单独问「我该去哪儿」用）。</summary>
+    public async Task<WorkStationDto> GetStationAsync(
+        Guid id,
+        string? agentId = null,
+        CancellationToken cancellationToken = default)
+    {
+        var task = await db.Tasks.AsNoTracking().FirstOrDefaultAsync(t => t.Id == id, cancellationToken)
+                   ?? throw new NotFoundException("任务", id);
+
+        var project = await db.Projects.AsNoTracking()
+            .FirstOrDefaultAsync(p => p.Id == task.ProjectId, cancellationToken);
+
+        return await BuildStationAsync(task, project, cancellationToken, agentId);
+    }
+
     /// <summary>
-    /// 工位现状：主工作区被谁占着、并行上限、还剩几个位置。
+    /// 工位现状：主工作区被谁占着、并行上限、还剩几个位置、**我该去哪儿干活**。
     ///
     /// agent 领活之前要看一眼 —— 不然它会以为自己能直接开工，
     /// 结果跟另一个 agent 在同一个目录里互相踩文件。
+    /// 主工作区被占时，这里直接把该用的独立工位路径与建它的命令给出来：
+    /// **工作台不替 agent 建 worktree**（规矩 35），但它得知道该建在哪。
     /// </summary>
     private async Task<WorkStationDto> BuildStationAsync(
         TaskItem task,
         Project? project,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? agentId = null)
     {
         var now = clock.UtcNow;
 
@@ -1721,13 +1758,57 @@ public sealed class TaskService(
             (project?.RepoPath is not null &&
              string.Equals(l.WorkPath, project.RepoPath, StringComparison.OrdinalIgnoreCase)));
 
+        // 主工作区被**别人**占着 = 我不能用它（自己占着当然能用）
+        var heldByOther = mainHolder is not null &&
+                          !string.Equals(mainHolder.ClaimedByAgentId, agentId, StringComparison.Ordinal);
+
+        // 绑定键（比较用，解过软链）与人填的路径（显示与命令用）分开 ——
+        // 给 agent 的命令要用**它认得的那个路径**，不然它敲了命令跟人看到的不是一个地方。
+        var repoRoot = project?.RepoRoot ??
+                       (string.IsNullOrWhiteSpace(project?.RepoPath) ? null : project.RepoPath);
+        var displayRoot = project?.RepoPath;
+
+        // 建议的独立工位：主工作区被别人占着时才给（能直接用主工作区就别多此一举）
+        var suggestedWorktree = heldByOther
+            ? WorkstationAdvice.SuggestWorktree(displayRoot, task.Key)
+            : null;
+
+        var suggestedBranch = suggestedWorktree is null
+            ? null
+            : WorkstationAdvice.SuggestBranch(task.Key, task.Branch);
+
+        // 该用的目录：登记的工位优先，回退主工作区
+        var effective = task.WorkPath;
+        var isolated = false;
+
+        if (!string.IsNullOrWhiteSpace(effective))
+        {
+            var check = WorkPathPolicy.ValidateWorktree(repoRoot ?? effective, effective);
+            isolated = check.Ok && check.IsIsolated;
+
+            if (!check.Ok)
+            {
+                effective = project?.RepoPath;
+            }
+        }
+        else
+        {
+            effective = project?.RepoPath;
+        }
+
         return new WorkStationDto(
             project?.RepoPath,
             mainHolder?.ClaimedByAgentId,
             mainHolder?.Key,
             project?.MaxConcurrentAgents ?? 0,
             leases.Count,
-            task.WorkPath);
+            task.WorkPath,
+            !heldByOther,
+            effective,
+            isolated,
+            suggestedWorktree,
+            suggestedBranch,
+            WorkstationAdvice.SetupCommands(displayRoot, suggestedWorktree, suggestedBranch));
     }
 
     /// <summary>

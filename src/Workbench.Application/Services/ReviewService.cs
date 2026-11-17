@@ -72,6 +72,30 @@ public interface IReviewService : IReviewGate
         CancellationToken cancellationToken = default,
         bool skipped = false);
 
+    /// <summary>
+    /// 认领某个维度的评审（多 agent 分工）。
+    ///
+    /// 一轮七个维度可以拆给几个 agent 各评各的 ——
+    /// 认领就是「这个维度我在做，别重复」，带租约：到期还没结论别人可以接手。
+    /// 别人持有（租约未过期）时拒绝，并说清是谁占着。
+    /// </summary>
+    Task<ReviewItemDto> ClaimDimensionAsync(
+        Guid taskId,
+        string dimension,
+        string agentId,
+        int leaseMinutes = 30,
+        int? round = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>认领某条完成定义（DoD）的判定。跟维度一个道理。</summary>
+    Task<SpecVerdictDto> ClaimSpecItemAsync(
+        Guid taskId,
+        string item,
+        string agentId,
+        int leaseMinutes = 30,
+        int? round = null,
+        CancellationToken cancellationToken = default);
+
     /// <summary>列出全部历史轮次。</summary>
     Task<IReadOnlyList<ReviewRoundDto>> ListAsync(Guid taskId, CancellationToken cancellationToken = default);
 
@@ -260,8 +284,10 @@ public sealed class ReviewService(
 
         var key = TaskKeys.Normalize(text);
 
-        var verdict = current.SpecVerdicts
+        var existing = current.SpecVerdicts
             .FirstOrDefault(v => string.Equals(v.ItemKey, key, StringComparison.Ordinal));
+
+        var verdict = existing;
 
         if (verdict is null)
         {
@@ -278,6 +304,7 @@ public sealed class ReviewService(
         else
         {
             // 同一轮里改了结论 —— 记新的一条，旧的留着（账本不改写）。
+            // 认领要带过去：认的是「这条」，不是「那一行记录」。
             var revised = new SpecVerdict
             {
                 ReviewRoundId = current.Id,
@@ -287,16 +314,36 @@ public sealed class ReviewService(
                 Status = skipped ? ReviewStatus.Skipped : (satisfied ? ReviewStatus.Passed : ReviewStatus.Failed),
                 Note = note,
                 Reviewer = reviewer ?? current.Reviewer,
-                DecidedAt = clock.UtcNow
+                DecidedAt = clock.UtcNow,
+                ClaimedBy = existing.ClaimedBy,
+                ClaimedAt = existing.ClaimedAt,
+                ClaimedUntil = existing.ClaimedUntil
             };
             db.SpecVerdicts.Add(revised);
             verdict = revised;
         }
 
+        var now = clock.UtcNow;
+
+        if (!string.IsNullOrWhiteSpace(verdict.ClaimedBy) &&
+            !string.Equals(verdict.ClaimedBy, reviewer, StringComparison.Ordinal) &&
+            verdict.ClaimedUntil is DateTimeOffset claimedUntil &&
+            claimedUntil > now)
+        {
+            throw new WorkbenchException(
+                $"「{text}」正被 {verdict.ClaimedBy} 判（到 {claimedUntil:u}）。" +
+                "要么等它判完，要么让它放掉再来" +
+                (string.IsNullOrWhiteSpace(reviewer) ? "（你就是它的话，提交时带上 reviewer=你的 id）" : "") + "。");
+        }
+
         verdict.Status = skipped ? ReviewStatus.Skipped : (satisfied ? ReviewStatus.Passed : ReviewStatus.Failed);
         verdict.Note = note;
         verdict.Reviewer = reviewer ?? current.Reviewer;
-        verdict.DecidedAt = clock.UtcNow;
+        verdict.DecidedAt = now;
+
+        // 判完了，认领收工
+        verdict.ClaimedBy = null;
+        verdict.ClaimedUntil = null;
 
         db.StatusEvents.Add(new StatusEvent
         {
@@ -399,7 +446,9 @@ public sealed class ReviewService(
                 (verdict?.Status ?? ReviewStatus.Pending).ToString(),
                 verdict?.Note,
                 verdict?.Reviewer,
-                verdict?.DecidedAt);
+                verdict?.DecidedAt,
+                verdict?.ClaimedBy,
+                verdict?.ClaimedUntil);
         }).ToList();
     }
 
@@ -523,12 +572,32 @@ public sealed class ReviewService(
             }
         }
 
+        // 别人认领了这个维度（租约没过）就别提交 ——
+        // 两个 agent 评同一个维度，后写的把先写的结论盖掉，
+        // 先写的还以为自己评过了。认领是分工，不是软建议。
+        var now = clock.UtcNow;
+
+        if (!string.IsNullOrWhiteSpace(item.ClaimedBy) &&
+            !string.Equals(item.ClaimedBy, reviewer, StringComparison.Ordinal) &&
+            item.ClaimedUntil is DateTimeOffset claimedUntil &&
+            claimedUntil > now)
+        {
+            throw new WorkbenchException(
+                $"「{definition.Name}」正被 {item.ClaimedBy} 评（到 {claimedUntil:u}）。" +
+                "要么等它评完，要么让它放掉再来" +
+                (string.IsNullOrWhiteSpace(reviewer) ? "（你就是它的话，提交时带上 reviewer=你的 id）" : "") + "。");
+        }
+
         item.Status = skipped ? ReviewStatus.Skipped : (passed ? ReviewStatus.Passed : ReviewStatus.Failed);
         item.Findings = findings;
         item.Evidence = evidence;
         item.Recommendation = recommendation;
         item.Reviewer = reviewer ?? current.Reviewer;
-        item.DecidedAt = clock.UtcNow;
+        item.DecidedAt = now;
+
+        // 结论出来了，认领就收工 —— 别让这个维度看起来还在被人占着
+        item.ClaimedBy = null;
+        item.ClaimedUntil = null;
 
         // 汇总：全部维度都有结论才算结束
         var (decided, allPassed) = EvaluateDimensions(current.Items);
@@ -590,6 +659,209 @@ public sealed class ReviewService(
         await db.SaveChangesAsync(cancellationToken);
 
         return ToItemDto(item);
+    }
+
+    /// <summary>
+    /// 认领某个维度的评审。
+    ///
+    /// 为什么要有这个：一轮七个维度，一个 agent 串行评下来很慢，
+    /// 开子 agent 并行评才是常态 —— 但没有认领，两个 agent 会评同一个维度，
+    /// 后写的把先写的结论盖掉。先写的还以为自己评过了。
+    ///
+    /// 认领带租约：认领的人要是掉线了（没交结论就跑了），
+    /// 到期后别人能接手，不至于把这个维度永远卡住。
+    /// </summary>
+    public async Task<ReviewItemDto> ClaimDimensionAsync(
+        Guid taskId,
+        string dimension,
+        string agentId,
+        int leaseMinutes = 30,
+        int? round = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(agentId))
+        {
+            throw new WorkbenchException("agentId 不能为空。");
+        }
+
+        var definition = ReviewDimensions.Find(dimension)
+                         ?? throw new WorkbenchException(
+                             $"未知评审维度: {dimension}。合法值: {string.Join(", ", ReviewDimensions.Keys)}");
+
+        var current = await LoadRoundAsync(taskId, round, cancellationToken)
+                      ?? throw new NotFoundException("评审轮次", round?.ToString() ?? taskId.ToString());
+
+        var item = current.Items.FirstOrDefault(i =>
+                       string.Equals(i.Dimension, definition.Key, StringComparison.OrdinalIgnoreCase))
+                   ?? throw new WorkbenchException($"本轮没有「{definition.Name}」这个维度。");
+
+        var now = clock.UtcNow;
+
+        if (item.Status != ReviewStatus.Pending)
+        {
+            throw new WorkbenchException(
+                $"「{definition.Name}」已经有结论了（{item.Status}），不用再认领。");
+        }
+
+        var heldByOther = !string.IsNullOrWhiteSpace(item.ClaimedBy) &&
+                          !string.Equals(item.ClaimedBy, agentId, StringComparison.Ordinal) &&
+                          item.ClaimedUntil is DateTimeOffset until &&
+                          until > now;
+
+        if (heldByOther)
+        {
+            throw new WorkbenchException(
+                $"「{definition.Name}」正被 {item.ClaimedBy} 评（到 {item.ClaimedUntil:u}）。" +
+                "换个维度评，或者等租约到期。");
+        }
+
+        var expiresAt = now.AddMinutes(Math.Clamp(leaseMinutes, 1, 24 * 60));
+
+        // 原子认领：占用判断与写入必须是一条 UPDATE ——
+        // 分两步的话两个 agent 会同时看到「没人认领」，然后一起认领同一个维度。
+        var affected = await db.ReviewItems
+            .Where(i => i.Id == item.Id &&
+                        i.Status == ReviewStatus.Pending &&
+                        (i.ClaimedBy == null ||
+                         i.ClaimedUntil == null ||
+                         i.ClaimedUntil <= now ||
+                         i.ClaimedBy == agentId))
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(i => i.ClaimedBy, agentId)
+                .SetProperty(i => i.ClaimedAt, now)
+                .SetProperty(i => i.ClaimedUntil, expiresAt), cancellationToken);
+
+        if (affected == 0)
+        {
+            throw new WorkbenchException(
+                $"「{definition.Name}」刚被别人认领了，重新看一眼再认。");
+        }
+
+        // ExecuteUpdateAsync 绕过变更跟踪 —— 不同步的话后面任何一次保存都会把旧值写回去
+        item.ClaimedBy = agentId;
+        item.ClaimedAt = now;
+        item.ClaimedUntil = expiresAt;
+
+        db.StatusEvents.Add(new StatusEvent
+        {
+            TaskId = taskId,
+            FromStatus = null,
+            ToStatus = null,
+            Source = TaskEventSource.Agent,
+            Actor = agentId,
+            Note = $"认领评审维度[{definition.Name}]，到 {expiresAt:u} 到期",
+            EventType = TaskEventTypes.ReviewDimensionClaimed,
+            Payload = WorkbenchJson.Serialize(new
+            {
+                round = current.Round,
+                dimension = definition.Key,
+                agentId,
+                claimedUntil = expiresAt
+            }),
+            CreatedAt = now
+        });
+
+        await db.SaveChangesAsync(cancellationToken);
+
+        return ToItemDto(item);
+    }
+
+    /// <summary>认领某条完成定义的判定（跟维度一个道理）。</summary>
+    public async Task<SpecVerdictDto> ClaimSpecItemAsync(
+        Guid taskId,
+        string item,
+        string agentId,
+        int leaseMinutes = 30,
+        int? round = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(agentId))
+        {
+            throw new WorkbenchException("agentId 不能为空。");
+        }
+
+        if (string.IsNullOrWhiteSpace(item))
+        {
+            throw new WorkbenchException("规约条目不能为空。");
+        }
+
+        var current = await LoadRoundAsync(taskId, round, cancellationToken)
+                      ?? throw new NotFoundException("评审轮次", round?.ToString() ?? taskId.ToString());
+
+        var dod = await LoadDefinitionOfDoneAsync(current.TaskId, cancellationToken);
+        var text = dod.FirstOrDefault(d => string.Equals(TaskKeys.Normalize(d), TaskKeys.Normalize(item), StringComparison.Ordinal))
+                   ?? throw new WorkbenchException(
+                       $"「{item}」不在这个项目当前的完成定义里。" +
+                       (dod.Count == 0 ? "（项目还没填完成定义）" : $"当前有：{string.Join("；", dod)}"));
+
+        var key = TaskKeys.Normalize(text);
+        var now = clock.UtcNow;
+
+        var verdict = current.SpecVerdicts
+            .FirstOrDefault(v => string.Equals(v.ItemKey, key, StringComparison.Ordinal));
+
+        if (verdict is not null && verdict.Status != ReviewStatus.Pending)
+        {
+            throw new WorkbenchException($"「{text}」已经有判定了（{verdict.Status}），不用再认领。");
+        }
+
+        if (verdict is not null)
+        {
+            var heldByOther = !string.IsNullOrWhiteSpace(verdict.ClaimedBy) &&
+                              !string.Equals(verdict.ClaimedBy, agentId, StringComparison.Ordinal) &&
+                              verdict.ClaimedUntil is DateTimeOffset until &&
+                              until > now;
+
+            if (heldByOther)
+            {
+                throw new WorkbenchException(
+                    $"「{text}」正被 {verdict.ClaimedBy} 判（到 {verdict.ClaimedUntil:u}）。" +
+                    "换一条判，或者等租约到期。");
+            }
+        }
+
+        var expiresAt = now.AddMinutes(Math.Clamp(leaseMinutes, 1, 24 * 60));
+
+        if (verdict is null)
+        {
+            verdict = new SpecVerdict
+            {
+                ReviewRoundId = current.Id,
+                TaskId = taskId,
+                ItemKey = key,
+                ItemText = text
+            };
+
+            current.SpecVerdicts.Add(verdict);
+            db.SpecVerdicts.Add(verdict);
+        }
+
+        verdict.ClaimedBy = agentId;
+        verdict.ClaimedAt = now;
+        verdict.ClaimedUntil = expiresAt;
+
+        db.StatusEvents.Add(new StatusEvent
+        {
+            TaskId = taskId,
+            FromStatus = null,
+            ToStatus = null,
+            Source = TaskEventSource.Agent,
+            Actor = agentId,
+            Note = $"认领规约判定[{text}]，到 {expiresAt:u} 到期",
+            EventType = TaskEventTypes.SpecVerdictClaimed,
+            Payload = WorkbenchJson.Serialize(new
+            {
+                round = current.Round,
+                item = text,
+                agentId,
+                claimedUntil = expiresAt
+            }),
+            CreatedAt = now
+        });
+
+        await db.SaveChangesAsync(cancellationToken);
+
+        return ToSpecVerdictDto(verdict);
     }
 
     public async Task<IReadOnlyList<ReviewRoundDto>> ListAsync(Guid taskId, CancellationToken cancellationToken = default)
@@ -875,7 +1147,9 @@ public sealed class ReviewService(
         verdict.Status.ToString(),
         verdict.Note,
         verdict.Reviewer,
-        verdict.DecidedAt);
+        verdict.DecidedAt,
+        verdict.ClaimedBy,
+        verdict.ClaimedUntil);
 
     private static ReviewItemDto ToItemDto(ReviewItem item) =>
         new(
@@ -888,7 +1162,9 @@ public sealed class ReviewService(
             item.Evidence,
             item.Recommendation,
             item.Reviewer,
-            item.DecidedAt);
+            item.DecidedAt,
+            item.ClaimedBy,
+            item.ClaimedUntil);
 
     /// <summary>
     /// 读仓库当前 HEAD。项目没配仓库、git 读不出来（不是仓库、git 不可用、HEAD 为空）

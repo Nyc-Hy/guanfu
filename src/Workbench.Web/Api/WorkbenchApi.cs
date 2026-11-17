@@ -165,6 +165,11 @@ public static class WorkbenchApi
             Guid taskId, ITaskService tasks, int? eventLimit, CancellationToken ct) =>
             Results.Ok(await tasks.GetContextAsync(taskId, eventLimit ?? 20, ct)));
 
+        // 交接包：接手一个别人放下的活时，一次拿全（含上一个是谁、为什么交出来）。
+        api.MapGet("/tasks/{taskId:guid}/handoff-pack", async (
+            Guid taskId, IHandoffService handoff, CancellationToken ct) =>
+            Results.Ok(await handoff.GetAsync(taskId, ct)));
+
         // 事件流水：账本不能只写不看。倒序（新的在前），limit 上限 500。
         api.MapGet("/tasks/{taskId:guid}/events", async (
             Guid taskId, ITaskService tasks, int? limit, CancellationToken ct) =>

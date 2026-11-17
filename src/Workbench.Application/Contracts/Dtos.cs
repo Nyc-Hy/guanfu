@@ -223,6 +223,43 @@ public sealed record TaskContextDto(
     /// </summary>
     ProjectSpecDto? Spec = null);
 
+/// <summary>
+/// 交接包：这个活现在是什么样、上一位留下了什么。
+///
+/// 交接的难点不是「把文件传过去」，是**接手的人不知道该从哪儿下手**：
+/// 上一个 agent 做到哪一步、为什么卡住、哪些坑别再踩。
+/// 这些散在计划、文档、产物、流水、租约里 —— 打包成一份，接手的人一次拿全。
+///
+/// 只放**结构化事实** —— 工作台不生成自然语言总结（它不调模型，也不该假装会）。
+/// </summary>
+public sealed record HandoffPackDto(
+    TaskSummaryDto Task,
+    ProjectContextDto Project,
+    PlanDto? Plan,
+    IReadOnlyList<DocumentDto> Documents,
+    IReadOnlyList<ArtifactDto> Artifacts,
+    TestResultDto? LastTestResult,
+    ReviewRoundDto? Review,
+    WorkStationDto? Station,
+    ProjectSpecDto? Spec,
+    IReadOnlyList<StatusEventDto> RecentEvents,
+    IReadOnlyList<string> AllowedTransitions,
+    HandoffInfoDto? Handoff,
+    DateTimeOffset GeneratedAt);
+
+/// <summary>上一个是谁、为什么交出来、现在在谁手上。</summary>
+public sealed record HandoffInfoDto(
+    /// <summary>上一个持有者（agent id）。</summary>
+    string? PreviousHolder,
+    /// <summary>为什么交出来（他放手时写的理由，或接活时留的上下文）。</summary>
+    string? Reason,
+    /// <summary>交接发生的时间。</summary>
+    DateTimeOffset? At,
+    /// <summary>现在的持有者（没人持有就是 null）。</summary>
+    string? CurrentHolder,
+    /// <summary>现在持有者的租约到期时间。</summary>
+    DateTimeOffset? LeaseExpiresAt);
+
 /// <summary>工位（工作区）现状。</summary>
 public sealed record WorkStationDto(
     /// <summary>项目主工作区（仓库根）。为空 = 项目没绑仓库，没有文件系统面。</summary>
@@ -236,7 +273,22 @@ public sealed record WorkStationDto(
     /// <summary>项目里当前活着的租约数。</summary>
     int ActiveLeases = 0,
     /// <summary>这个任务登记的工位（null = 主工作区）。</summary>
-    string? WorkPath = null);
+    string? WorkPath = null,
+    /// <summary>主工作区现在能不能用（没被**别人**占着就是 true）。</summary>
+    bool MainCheckoutAvailable = true,
+    /// <summary>这次调用该用的目录（登记的工位优先，回退主工作区）。</summary>
+    string? EffectiveWorkPath = null,
+    /// <summary>该用的目录是不是独立 worktree（true = 不跟别人共用）。</summary>
+    bool Isolated = false,
+    /// <summary>建议的独立工位路径（主工作区被占时用它）。</summary>
+    string? SuggestedWorktree = null,
+    /// <summary>建议的分支名。</summary>
+    string? SuggestedBranch = null,
+    /// <summary>
+    /// 建这个工位的确切命令。**工作台不替 agent 建 worktree** ——
+    /// 它自己仓库里的事，工作台只给路径与命令，外加事后校验。
+    /// </summary>
+    IReadOnlyList<string>? SetupCommands = null);
 
 /// <summary>单个评审维度的结论。</summary>
 public sealed record ReviewItemDto(
@@ -249,7 +301,11 @@ public sealed record ReviewItemDto(
     string? Evidence,
     string? Recommendation,
     string? Reviewer,
-    DateTimeOffset? DecidedAt);
+    DateTimeOffset? DecidedAt,
+    /// <summary>谁认领了这个维度的评审（多 agent 分工）。为空 = 没人认领。</summary>
+    string? ClaimedBy = null,
+    /// <summary>认领的租约到期时间。</summary>
+    DateTimeOffset? ClaimedUntil = null);
 
 /// <summary>一轮评审。</summary>
 public sealed record ReviewRoundDto(
@@ -302,7 +358,11 @@ public sealed record SpecItemDto(
     string Status,
     string? Note,
     string? Reviewer,
-    DateTimeOffset? DecidedAt);
+    DateTimeOffset? DecidedAt,
+    /// <summary>谁认领了这条的判定（多 agent 分工）。为空 = 没人认领。</summary>
+    string? ClaimedBy = null,
+    /// <summary>认领的租约到期时间。</summary>
+    DateTimeOffset? ClaimedUntil = null);
 
 /// <summary>一条 DoD 判定。</summary>
 public sealed record SpecVerdictDto(
@@ -313,7 +373,11 @@ public sealed record SpecVerdictDto(
     string Status,
     string? Note,
     string? Reviewer,
-    DateTimeOffset? DecidedAt);
+    DateTimeOffset? DecidedAt,
+    /// <summary>谁认领了这条的判定（多 agent 分工）。为空 = 没人认领。</summary>
+    string? ClaimedBy = null,
+    /// <summary>认领的租约到期时间。</summary>
+    DateTimeOffset? ClaimedUntil = null);
 
 /// <summary>评审门禁状态。状态机用它决定 Review → Done 放不放行。</summary>
 public sealed record ReviewGateDto(

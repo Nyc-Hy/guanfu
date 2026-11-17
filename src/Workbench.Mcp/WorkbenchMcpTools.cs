@@ -28,7 +28,8 @@ public sealed class WorkbenchMcpTools(
     IAgentSessionService? sessions = null,
     IAuditChainArchiveService? archive = null,
     IAgentSessionAccessor? sessionAccessor = null,
-    ITaskUsageService? usage = null)
+    ITaskUsageService? usage = null,
+    IHandoffService? handoff = null)
 {
     /// <summary>
     /// 算出这次调用算在哪个项目上。
@@ -309,6 +310,62 @@ public sealed class WorkbenchMcpTools(
             .ToList();
     }
 
+    [McpServerTool(Name = "workbench_get_handoff_pack")]
+    [Description(
+        "取交接包：这个活现在是什么样、上一位 agent 留下了什么。" +
+        "包含：任务与项目、当前分支与 HEAD、生效的规约（目标 / 完成定义 / 提交约定 / 测试命令）、" +
+        "最新计划、文档清单、产物、最近一次测试、当前评审轮、当前工位、" +
+        "**上一个是谁 / 为什么交出来 / 什么时候交的**、最近流水、当前允许的状态迁移。" +
+        "接手一个别人放下的活时先调这个 —— 比自己把十个接口挨个问一遍快得多。")]
+    public async Task<HandoffToolResult> GetHandoffPackAsync(
+        Guid? taskId = null,
+        string? taskKey = null,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var id = await ResolveTaskIdAsync(taskId, taskKey, cancellationToken);
+            var pack = await handoff.GetAsync(id, cancellationToken);
+
+            return new HandoffToolResult(true, pack);
+        }
+        catch (Exception ex) when (ex is WorkbenchException or InvalidOperationException or NotFoundException)
+        {
+            return HandoffToolResult.Fail(ex.Message);
+        }
+    }
+
+    [McpServerTool(Name = "workbench_get_workstation")]
+    [Description(
+        "问「我该在哪个目录干活」：主工作区被谁占着、这次调用该用哪个目录、" +
+        "主工作区被别人占时建议建哪个独立工位（worktree）以及**建它的确切命令**。" +
+        "工作台不替 agent 建 worktree —— 它是你自己仓库里的事，" +
+        "这里给的是路径与命令，建好之后用 workbench_claim_task 的 worktree 参数把工位报上来。")]
+    public async Task<WorkstationToolResult> GetWorkstationAsync(
+        Guid? taskId = null,
+        string? agentId = null,
+        string? taskKey = null,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var scope = scopeResolver is null
+                ? null
+                : await scopeResolver.ResolveOrNullAsync(null, cancellationToken);
+
+            var resolvedId = await ResolveTaskIdAsync(taskId, taskKey, cancellationToken);
+            var resolvedAgentId = agentId ?? scope?.AgentId;
+
+            var station = await tasks.GetStationAsync(resolvedId, resolvedAgentId, cancellationToken);
+
+            return new WorkstationToolResult(true, station);
+        }
+        catch (Exception ex) when (ex is WorkbenchException or InvalidOperationException or NotFoundException)
+        {
+            return WorkstationToolResult.Fail(ex.Message);
+        }
+    }
+
     [McpServerTool(Name = "workbench_claim_task")]
     [Description(
         "领取一个待认领任务，带租约。taskId 不给就用 taskKey（如 REQ-001）——在会话绑定的项目里找；" +
@@ -415,7 +472,14 @@ public sealed class WorkbenchMcpTools(
         CancellationToken cancellationToken = default)
     {
         var id = await ResolveTaskIdAsync(taskId, taskKey, cancellationToken);
-        return await tasks.GetContextAsync(id, eventLimit, cancellationToken);
+
+        // 工位建议要按「谁在问」算：自己占着主工作区跟自己说「可用」，
+        // 跟看到「被别人占着，要另开工位」是两回事。
+        var scope = scopeResolver is null
+            ? null
+            : await scopeResolver.ResolveOrNullAsync(null, cancellationToken);
+
+        return await tasks.GetContextAsync(id, eventLimit, cancellationToken, scope?.AgentId);
     }
 
     [McpServerTool(Name = "workbench_set_plan")]
@@ -891,6 +955,24 @@ public sealed record ClaimResult(
     string? PreviousHolder = null,
     /// <summary>为什么交出来（上一位说的，或上一位接活时留的上下文）。</summary>
     string? HandoffReason = null);
+
+/// <summary>交接包。失败时 error 给出原因，不抛异常。</summary>
+public sealed record HandoffToolResult(
+    bool Ok,
+    HandoffPackDto? Pack = null,
+    string? Error = null)
+{
+    public static HandoffToolResult Fail(string error) => new(false, null, error);
+}
+
+/// <summary>工位现状。失败时 error 给出原因，不抛异常。</summary>
+public sealed record WorkstationToolResult(
+    bool Ok,
+    WorkStationDto? Station = null,
+    string? Error = null)
+{
+    public static WorkstationToolResult Fail(string error) => new(false, null, error);
+}
 
 /// <summary>
 /// 按编号查任务的结果。找不到时不抛异常 —— MCP 会把异常吞成一句泛化信息，
