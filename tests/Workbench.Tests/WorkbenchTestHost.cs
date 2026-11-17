@@ -40,7 +40,7 @@ public sealed class WorkbenchTestHost : IDisposable
         Clock = new TestClock(DateTimeOffset.UtcNow);
 
         Git = new FakeGitInspector();
-        Reviews = new ReviewService(_db, Clock, Git);
+        Reviews = new ReviewService(_db, Clock, Git, Specs);
         BranchGuard = new BranchGuard(_db, Git);
         Tasks = new TaskService(_db, Clock, Git, Reviews, BranchGuard);
     }
@@ -84,7 +84,10 @@ public sealed class WorkbenchTestHost : IDisposable
 
     /// <summary>可改的 git 状态（默认「测试环境无 git」）。</summary>
     public FakeGitInspector Git { get; }
-    public MilestoneService Milestones => new(_db, Clock);
+    /// <summary>项目级规约服务。</summary>
+    public ProjectSpecService Specs => new(_db, Clock);
+
+    public MilestoneService Milestones => new(_db, Clock, Specs);
     public MetricsService Metrics => new(_db, Clock);
     public FileSystemService Files => new(_db);
     public TaskDependencyService Dependencies => new(_db, Clock);

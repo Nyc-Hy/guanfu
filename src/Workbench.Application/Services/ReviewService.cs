@@ -338,25 +338,35 @@ public sealed class ReviewService(
             return await specs.GetEffectiveDefinitionOfDoneAsync(taskId, cancellationToken);
         }
 
-        var projectId = await db.Tasks.AsNoTracking()
+        var task = await db.Tasks.AsNoTracking()
             .Where(t => t.Id == taskId)
-            .Select(t => t.ProjectId)
+            .Select(t => new { t.ProjectId, t.MilestoneId })
             .FirstOrDefaultAsync(cancellationToken);
 
-        var spec = await db.ProjectSpecs.AsNoTracking()
-            .FirstOrDefaultAsync(s => s.ProjectId == projectId, cancellationToken);
-
-        if (spec is null || string.IsNullOrWhiteSpace(spec.DefinitionOfDone))
+        if (task is null)
         {
             return [];
         }
 
-        return spec.DefinitionOfDone
-            .Split('\n')
-            .Select(l => l.Trim())
-            .Where(l => l.Length > 0)
+        var project = await db.ProjectSpecs.AsNoTracking()
+            .FirstOrDefaultAsync(s => s.ProjectId == task.ProjectId, cancellationToken);
+
+        var milestone = task.MilestoneId is Guid milestoneId
+            ? await db.MilestoneSpecs.AsNoTracking()
+                .FirstOrDefaultAsync(s => s.MilestoneId == milestoneId, cancellationToken)
+            : null;
+
+        // 两层都算（项目级 + 里程碑级）—— 退路也得跟正路一个口径
+        return SplitLines(project?.DefinitionOfDone)
+            .Concat(SplitLines(milestone?.DefinitionOfDone))
+            .Distinct(StringComparer.Ordinal)
             .ToList();
     }
+
+    private static IReadOnlyList<string> SplitLines(string? text) =>
+        string.IsNullOrWhiteSpace(text)
+            ? []
+            : text.Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).ToList();
 
     /// <summary>当前轮的规约判定：条目 + 结论（没判的算待判定）。</summary>
     private async Task<IReadOnlyList<SpecItemDto>> BuildSpecItemsAsync(

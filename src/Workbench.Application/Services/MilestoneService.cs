@@ -70,7 +70,10 @@ public interface IMilestoneService
     Task<MilestoneDto> UnacceptAsync(Guid id, CancellationToken cancellationToken = default);
 }
 
-public sealed class MilestoneService(IAppDbContext db, IClock clock) : IMilestoneService
+public sealed class MilestoneService(
+    IAppDbContext db,
+    IClock clock,
+    IProjectSpecService? specs = null) : IMilestoneService
 {
     public async Task<MilestoneDto> GetAsync(Guid id, CancellationToken cancellationToken = default)
     {
@@ -454,6 +457,17 @@ public sealed class MilestoneService(IAppDbContext db, IClock clock) : IMileston
                 $"（{string.Join("、", names)}{(pending.Count > 5 ? " 等" : "")}）。");
         }
 
+        // 完成定义也要判过 —— 活做完不等于「这个版本该满足的都满足了」。
+        // 判定的证据在评审轮次里（每个活评的是**生效**的那份完成定义，
+        // 项目级 + 这个里程碑自己那层），这里把它们汇总起来看：
+        // 有条目一条都没判过 → 没人确认过；被判成不满足 → 明确没过。
+        var dodProblem = await CheckDefinitionOfDoneAsync(milestone, scope, cancellationToken);
+        if (dodProblem is not null)
+        {
+            throw new WorkbenchException(
+                $"还不能验收「{milestone.Name}」：{dodProblem}");
+        }
+
         milestone.AcceptedAt = clock.UtcNow;
         milestone.AcceptedBy = string.IsNullOrWhiteSpace(acceptedBy) ? "human" : acceptedBy.Trim();
 
@@ -482,6 +496,112 @@ public sealed class MilestoneService(IAppDbContext db, IClock clock) : IMileston
 
         return Build(milestone, tasks);
     }
+
+    /// <summary>
+    /// 这个版本的完成定义判过没有。
+    ///
+    /// 返回 null = 没问题（没填完成定义，或都判过了且没有不满足的）；
+    /// 返回一段话 = 差在哪（能照着改）。
+    /// </summary>
+    private async Task<string?> CheckDefinitionOfDoneAsync(
+        Milestone milestone,
+        IReadOnlyCollection<Guid> scope,
+        CancellationToken cancellationToken)
+    {
+        if (specs is null)
+        {
+            return null;
+        }
+
+        // 生效的完成定义：项目级 + 这个里程碑自己那层
+        var dod = new List<string>();
+        dod.AddRange(SplitLines(await ReadProjectDoDAsync(milestone.ProjectId, cancellationToken)));
+        dod.AddRange(SplitLines(await ReadMilestoneDoDAsync(milestone.Id, cancellationToken)));
+        dod = dod.Distinct(StringComparer.Ordinal).ToList();
+
+        if (dod.Count == 0)
+        {
+            return null;
+        }
+
+        // 这些活开过的评审轮次 → 里面的逐条判定
+        var taskIds = await db.Tasks.AsNoTracking()
+            .Where(t => t.MilestoneId.HasValue && scope.Contains(t.MilestoneId!.Value))
+            .Select(t => t.Id)
+            .ToListAsync(cancellationToken);
+
+        var roundIds = taskIds.Count == 0
+            ? []
+            : await db.ReviewRounds.AsNoTracking()
+                .Where(r => taskIds.Contains(r.TaskId))
+                .Select(r => r.Id)
+                .ToListAsync(cancellationToken);
+
+        var verdicts = roundIds.Count == 0
+            ? []
+            : await db.SpecVerdicts.AsNoTracking()
+                .Where(v => roundIds.Contains(v.ReviewRoundId))
+                .Select(v => new { v.ItemKey, v.Status })
+                .ToListAsync(cancellationToken);
+
+        var judged = verdicts
+            .GroupBy(v => v.ItemKey, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.Ordinal);
+
+        var unjudged = new List<string>();
+        var failed = new List<string>();
+
+        foreach (var item in dod)
+        {
+            var key = TaskKeys.Normalize(item);
+
+            if (!judged.TryGetValue(key, out var itemVerdicts) || itemVerdicts.Count == 0)
+            {
+                unjudged.Add(item);
+                continue;
+            }
+
+            if (itemVerdicts.Any(v => v.Status == ReviewStatus.Failed))
+            {
+                failed.Add(item);
+            }
+        }
+
+        var parts = new List<string>();
+
+        if (unjudged.Count > 0)
+        {
+            parts.Add($"完成定义还有 {unjudged.Count} 条没判过（{string.Join("、", unjudged.Take(3))}）");
+        }
+
+        if (failed.Count > 0)
+        {
+            parts.Add($"完成定义有 {failed.Count} 条被判成不满足（{string.Join("、", failed.Take(3))}）");
+        }
+
+        return parts.Count == 0 ? null : string.Join("；", parts);
+    }
+
+    private async Task<string?> ReadProjectDoDAsync(Guid projectId, CancellationToken cancellationToken)
+    {
+        var spec = await db.ProjectSpecs.AsNoTracking()
+            .FirstOrDefaultAsync(s => s.ProjectId == projectId, cancellationToken);
+
+        return spec?.DefinitionOfDone;
+    }
+
+    private async Task<string?> ReadMilestoneDoDAsync(Guid milestoneId, CancellationToken cancellationToken)
+    {
+        var spec = await db.MilestoneSpecs.AsNoTracking()
+            .FirstOrDefaultAsync(s => s.MilestoneId == milestoneId, cancellationToken);
+
+        return spec?.DefinitionOfDone;
+    }
+
+    private static IReadOnlyList<string> SplitLines(string? text) =>
+        string.IsNullOrWhiteSpace(text)
+            ? []
+            : text.Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).ToList();
 
     /// <summary>这个里程碑下面（含所有子里程碑）的里程碑 id。</summary>
     private async Task<HashSet<Guid>> CollectScopeAsync(Guid rootId, CancellationToken cancellationToken)

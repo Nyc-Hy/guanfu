@@ -106,7 +106,7 @@ Secret）、跨库（`OtherDb.dbo.T`）、`INSERT … EXEC` 一律判「认不�
 
 | 项 | 内容 |
 |---|---|
-| 能力 | 里程碑验收（人的签字，签过之后里面的活不许回退）；每任务工具调用上限（可执行的节流阀）；用量统计（**只记工作台数得出来的**：工具调用次数 / 工具种类 / 事件数 / 租约时长。token 与费用**刻意不记** —— 工作台不知道用的哪个模型什么套餐，自报的数字在审计上站不住） |
+| 能力 | 里程碑验收（人的签字：子树里的活做完 **且** 这个版本的完成定义逐条判过；签过之后里面的活不许回退）；每任务工具调用上限（可执行的节流阀）；用量统计（**只记工作台数得出来的**：工具调用次数 / 工具种类 / 事件数 / 租约时长。token 与费用**刻意不记** —— 工作台不知道用的哪个模型什么套餐，自报的数字在审计上站不住） |
 | 落地 | `src/Workbench.Application/Services/MilestoneService.cs`（验收 / 撤销验收）<br>`src/Workbench.Application/Services/TaskUsageService.cs`<br>MCP 中央过滤器（`McpServiceCollectionExtensions`）里的用量闸门 |
 | 自动化证据 | 单测 `MilestoneAcceptanceTests`（6）、`TaskUsageTests`（5）、`AgentHandoffTests`（3）<br>端到端 F4.2（超上限后工具调用被拦下，错误信息给出上限） |
 

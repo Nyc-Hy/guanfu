@@ -322,6 +322,8 @@ def main() -> int:
     dimensions = pack.get("dimensions") or []
     expect(len(dimensions) == 7, "评审包应有 7 个维度")
     expect(all(d.get("checklist") for d in dimensions), "每个维度都该有检查清单")
+    spec_items = pack.get("specItems") or []
+    expect(len(spec_items) > 0, "评审包应带上项目的完成定义（逐条判定）")
     print(f"  变更文件: {pack.get('changedFiles')}")
 
     print("\n-- 逐维度回写（7 条全过） --")
@@ -339,6 +341,20 @@ def main() -> int:
         )
         expect(result.get("ok"), f"{dimension['key']} 回写应成功")
 
+    print("\n-- 逐条判定完成定义 --")
+    for item in spec_items:
+        verdict = mcp.call(
+            "workbench_submit_spec_verdict",
+            {
+                "taskId": task_id,
+                "item": item["text"],
+                "satisfied": True,
+                "note": "对照着看过了",
+                "reviewer": "e2e-agent",
+            },
+        )
+        expect(verdict.get("ok"), f"完成定义「{item['text']}」判定应成功（实际：{verdict.get('error')}）")
+
     current = (mcp.call("workbench_get_review", {"taskId": task_id}).get("round")) or {}
     expect(current.get("verdict") == "Passed", "当前轮判定应为 Passed")
 
@@ -355,6 +371,64 @@ def main() -> int:
 
     done = mcp.call("workbench_update_status", {"taskId": task_id, "status": "Done", "actor": "e2e-agent"})
     expect(done.get("ok"), "评审全过（含规约逐条判定）后应能结项")
+
+    print("\n-- 里程碑验收 × 完成定义 --")
+    ms = mcp.call(
+        "workbench_create_milestone",
+        {"projectId": project_id, "name": f"e2e 版本 {suffix}"},
+    )
+    # 另起一个名字：主线那个 milestone_id 还被 new_task 用着
+    accept_milestone_id = (ms.get("milestone") or {}).get("id")
+    expect(bool(accept_milestone_id), f"应能建里程碑（实际：{ms}）")
+
+    # 用**独立的活**做这个场景：验收后里程碑里的活状态会被冻住，
+    # 拿主线那个任务来验收会连累后面 B 链的用例。
+    milestone_task = mcp.call(
+        "workbench_create_task",
+        {"projectId": project_id, "title": f"版本里的活 {suffix}", "type": "requirement"},
+    )
+    milestone_task_id = milestone_task.get("id")
+    mcp.call(
+        "workbench_assign_milestone",
+        {"taskId": milestone_task_id, "milestoneId": accept_milestone_id},
+    )
+
+    move_to_review(milestone_task_id)
+    mcp.call("workbench_start_review", {"taskId": milestone_task_id, "reviewer": "e2e-agent"})
+    for dimension in dimensions:
+        mcp.call(
+            "workbench_submit_review",
+            {
+                "taskId": milestone_task_id,
+                "dimension": dimension["key"],
+                "passed": True,
+                "findings": "无问题",
+                "evidence": "单测通过",
+                "reviewer": "e2e-agent",
+            },
+        )
+    for item in spec_items:
+        mcp.call(
+            "workbench_submit_spec_verdict",
+            {
+                "taskId": milestone_task_id,
+                "item": item["text"],
+                "satisfied": True,
+                "note": "对照着看过了",
+                "reviewer": "e2e-agent",
+            },
+        )
+    mcp.call(
+        "workbench_update_status",
+        {"taskId": milestone_task_id, "status": "Done", "actor": "e2e-agent"},
+    )
+
+    # 活做完了、完成定义也逐条判过了 → 验收该放行
+    accepted = rest_json(rest, "POST", f"/api/milestones/{accept_milestone_id}/accept", {})
+    expect(
+        accepted.get("acceptedAt") is not None,
+        f"里程碑验收应通过（实际：{accepted}）",
+    )
 
     history = mcp.call("workbench_list_reviews", {"taskId": task_id}).get("rounds") or []
     expect(len(history) == 1 and len(history[0].get("items") or []) == 7, "历史应留一轮 7 条")

@@ -1,3 +1,4 @@
+using Workbench.Application.Contracts;
 using Workbench.Domain;
 
 namespace Workbench.Tests;
@@ -124,6 +125,104 @@ public class MilestoneAcceptanceTests
 
         var accepted = await host.Milestones.AcceptAsync(version.Id, "验收人");
         Assert.NotNull(accepted.AcceptedAt);
+    }
+
+    [Fact]
+    public async Task 完成定义没判过不许验收()
+    {
+        using var host = new WorkbenchTestHost();
+        var project = await host.Projects.CreateAsync("P");
+        var milestone = await host.Milestones.CreateAsync(project.Id, "12月版本");
+        var task = await host.Tasks.CreateAsync(project.Id, "做完了的活");
+        await host.Milestones.AssignTaskAsync(task.Id, milestone.Id);
+
+        // 这个版本额外要满足的条件
+        await host.Specs.UpdateForMilestoneAsync(project.Id, milestone.Id, new ProjectSpecInput(
+            DefinitionOfDone: ["额外写迁移说明"]));
+
+        await FinishAsync(host, task.Id);
+
+        // 活做完了，但完成定义一条都没判过 → 没人确认过这个版本
+        var ex = await Assert.ThrowsAsync<WorkbenchException>(
+            async () => await host.Milestones.AcceptAsync(milestone.Id, "验收人"));
+
+        Assert.Contains("没判过", ex.Message);
+    }
+
+    [Fact]
+    public async Task 完成定义判成不满足不许验收()
+    {
+        using var host = new WorkbenchTestHost();
+        var project = await host.Projects.CreateAsync("P");
+        var milestone = await host.Milestones.CreateAsync(project.Id, "12月版本");
+        var task = await host.Tasks.CreateAsync(project.Id, "做完了的活");
+        await host.Milestones.AssignTaskAsync(task.Id, milestone.Id);
+
+        await host.Specs.UpdateForMilestoneAsync(project.Id, milestone.Id, new ProjectSpecInput(
+            DefinitionOfDone: ["额外写迁移说明"]));
+
+        // 先判满足 → 活做完了
+        await ReviewAsync(host, task.Id, specVerdict: ("额外写迁移说明", true));
+
+        // 之后有人改判成「不满足」（复核时发现问题）→ 验收要拦住
+        await host.Reviews.SubmitSpecVerdictAsync(
+            task.Id, "额外写迁移说明", false, "复核时发现没写", "复核人");
+
+        var ex = await Assert.ThrowsAsync<WorkbenchException>(
+            async () => await host.Milestones.AcceptAsync(milestone.Id, "验收人"));
+
+        Assert.Contains("不满足", ex.Message);
+    }
+
+    [Fact]
+    public async Task 完成定义判过了就能验收()
+    {
+        using var host = new WorkbenchTestHost();
+        var project = await host.Projects.CreateAsync("P");
+        var milestone = await host.Milestones.CreateAsync(project.Id, "12月版本");
+        var task = await host.Tasks.CreateAsync(project.Id, "做完了的活");
+        await host.Milestones.AssignTaskAsync(task.Id, milestone.Id);
+
+        await host.Specs.UpdateForMilestoneAsync(project.Id, milestone.Id, new ProjectSpecInput(
+            DefinitionOfDone: ["额外写迁移说明"]));
+
+        await ReviewAsync(host, task.Id, specVerdict: ("额外写迁移说明", true));
+
+        var accepted = await host.Milestones.AcceptAsync(milestone.Id, "验收人");
+        Assert.NotNull(accepted.AcceptedAt);
+    }
+
+    /// <summary>
+    /// 走完一轮评审：七维度全过，完成定义按给定结论判。
+    /// </summary>
+    private static async Task ReviewAsync(
+        WorkbenchTestHost host,
+        Guid taskId,
+        (string Item, bool Satisfied)? specVerdict = null)
+    {
+        foreach (var status in new[]
+                 {
+                     TaskStatus.DocsReady, TaskStatus.Planned, TaskStatus.InDev,
+                     TaskStatus.Testing, TaskStatus.Review
+                 })
+        {
+            await host.Tasks.ChangeStatusAsync(taskId, status);
+        }
+
+        await host.Reviews.StartAsync(taskId, "评审人");
+
+        foreach (var key in ReviewDimensions.Keys)
+        {
+            await host.Reviews.SubmitAsync(taskId, key, true, "无问题", "单测通过", null, "评审人");
+        }
+
+        if (specVerdict is { } verdict)
+        {
+            await host.Reviews.SubmitSpecVerdictAsync(
+                taskId, verdict.Item, verdict.Satisfied, "判据", "评审人");
+        }
+
+        await host.Tasks.ChangeStatusAsync(taskId, TaskStatus.Done);
     }
 
     /// <summary>把一个任务推到「已完成」。</summary>
