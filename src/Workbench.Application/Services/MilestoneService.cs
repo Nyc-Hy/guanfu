@@ -19,7 +19,11 @@ public sealed record MilestoneDto(
     /// <summary>种类：迭代版本还是需求组。</summary>
     MilestoneKind Kind = MilestoneKind.Release,
     /// <summary>直接子里程碑的 id。</summary>
-    IReadOnlyList<Guid>? Children = null);
+    IReadOnlyList<Guid>? Children = null,
+    /// <summary>验收时间。非空 = 已签字验收。</summary>
+    DateTimeOffset? AcceptedAt = null,
+    /// <summary>验收人。</summary>
+    string? AcceptedBy = null);
 
 public interface IMilestoneService
 {
@@ -50,6 +54,17 @@ public interface IMilestoneService
 
     /// <summary>把任务挂到里程碑下（传 null 表示摘出来）。</summary>
     Task AssignTaskAsync(Guid taskId, Guid? milestoneId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 验收一个里程碑（人签字：这个版本做完了）。
+    ///
+    /// 条件：它下面（含子里程碑）的活**全都做完了**。
+    /// 验收之后，里面的活不能悄悄回退 —— 要改先撤销验收。
+    /// </summary>
+    Task<MilestoneDto> AcceptAsync(Guid id, string? acceptedBy = null, CancellationToken cancellationToken = default);
+
+    /// <summary>撤销验收（改动了就得先撤销 —— 签字不是永久的）。</summary>
+    Task<MilestoneDto> UnacceptAsync(Guid id, CancellationToken cancellationToken = default);
 }
 
 public sealed class MilestoneService(IAppDbContext db, IClock clock) : IMilestoneService
@@ -308,6 +323,22 @@ public sealed class MilestoneService(IAppDbContext db, IClock clock) : IMileston
         var task = await db.Tasks.FirstOrDefaultAsync(t => t.Id == taskId, cancellationToken)
                    ?? throw new NotFoundException("任务", taskId);
 
+        // 已验收的里程碑不许再往里加活 —— 签过字了，内容就定了。
+        if (milestoneId is Guid target)
+        {
+            var scope = await CollectScopeAsync(target, cancellationToken);
+            var accepted = await db.Milestones.AsNoTracking()
+                .Where(m => m.AcceptedAt != null && scope.Contains(m.Id))
+                .Select(m => m.Name)
+                .FirstOrDefaultAsync(cancellationToken);
+
+            if (accepted is not null)
+            {
+                throw new WorkbenchException(
+                    $"「{accepted}」已经验收，不能再往里加任务。要加先撤销验收。");
+            }
+        }
+
         string? milestoneName = null;
 
         if (milestoneId is not null)
@@ -376,6 +407,90 @@ public sealed class MilestoneService(IAppDbContext db, IClock clock) : IMileston
             Math.Round(progress, 4),
             milestone.ParentId,
             milestone.Kind,
-            []);
+            [],
+            milestone.AcceptedAt,
+            milestone.AcceptedBy);
+    }
+
+    public async Task<MilestoneDto> AcceptAsync(
+        Guid id,
+        string? acceptedBy = null,
+        CancellationToken cancellationToken = default)
+    {
+        var milestone = await db.Milestones.FirstOrDefaultAsync(m => m.Id == id, cancellationToken)
+                        ?? throw new NotFoundException("里程碑", id);
+
+        // 验收看的是**整棵子树**：版本 → 需求组 → 需求。
+        // 只看直接挂着的活的话，需求组里没做完的活会被漏掉。
+        var scope = await CollectScopeAsync(milestone.Id, cancellationToken);
+
+        var pending = await db.Tasks.AsNoTracking()
+            .Where(t => scope.Contains(t.MilestoneId ?? Guid.Empty) && !t.IsArchived)
+            .Where(t => t.Status != TaskStatus.Done && t.Status != TaskStatus.Cancelled)
+            .Select(t => new { t.Id, t.Key, t.Title })
+            .ToListAsync(cancellationToken);
+
+        if (pending.Count > 0)
+        {
+            var names = pending.Take(5).Select(t => t.Key ?? t.Title).ToList();
+            throw new WorkbenchException(
+                $"还不能验收「{milestone.Name}」：下面还有 {pending.Count} 个活没做完" +
+                $"（{string.Join("、", names)}{(pending.Count > 5 ? " 等" : "")}）。");
+        }
+
+        milestone.AcceptedAt = clock.UtcNow;
+        milestone.AcceptedBy = string.IsNullOrWhiteSpace(acceptedBy) ? "human" : acceptedBy.Trim();
+
+        await db.SaveChangesAsync(cancellationToken);
+
+        var tasks = await db.Tasks.AsNoTracking()
+            .Where(t => t.MilestoneId == milestone.Id)
+            .ToListAsync(cancellationToken);
+
+        return Build(milestone, tasks);
+    }
+
+    public async Task<MilestoneDto> UnacceptAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        var milestone = await db.Milestones.FirstOrDefaultAsync(m => m.Id == id, cancellationToken)
+                        ?? throw new NotFoundException("里程碑", id);
+
+        milestone.AcceptedAt = null;
+        milestone.AcceptedBy = null;
+
+        await db.SaveChangesAsync(cancellationToken);
+
+        var tasks = await db.Tasks.AsNoTracking()
+            .Where(t => t.MilestoneId == milestone.Id)
+            .ToListAsync(cancellationToken);
+
+        return Build(milestone, tasks);
+    }
+
+    /// <summary>这个里程碑下面（含所有子里程碑）的里程碑 id。</summary>
+    private async Task<HashSet<Guid>> CollectScopeAsync(Guid rootId, CancellationToken cancellationToken)
+    {
+        var all = await db.Milestones.AsNoTracking()
+            .Select(m => new { m.Id, m.ParentId })
+            .ToListAsync(cancellationToken);
+
+        var scope = new HashSet<Guid> { rootId };
+        var grew = true;
+
+        while (grew)
+        {
+            grew = false;
+            foreach (var milestone in all)
+            {
+                if (milestone.ParentId is Guid parent &&
+                    scope.Contains(parent) &&
+                    scope.Add(milestone.Id))
+                {
+                    grew = true;
+                }
+            }
+        }
+
+        return scope;
     }
 }

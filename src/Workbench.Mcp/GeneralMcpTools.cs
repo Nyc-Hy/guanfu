@@ -59,7 +59,8 @@ public sealed class GeneralMcpTools(
     IClock clock,
     IGitInspector? gitInspector = null,
     IProjectScopeResolver? scopeResolver = null,
-    IFileChangeService? fileChanges = null)
+    IFileChangeService? fileChanges = null,
+    IWorkstationResolver? workstations = null)
 {
     /// <summary>
     /// 算出这次调用算在哪个项目上。
@@ -98,7 +99,8 @@ public sealed class GeneralMcpTools(
         try
         {
             var scope = await ResolveScopeAsync(projectId, cancellationToken);
-            var result = await files.ListAsync(scope.ProjectId, path, cancellationToken);
+            var result = await files.ListAsync(
+                scope.ProjectId, path, cancellationToken, scope.TaskId, scope.AgentId);
 
             await audit.RecordAsync(new ToolAuditEntry(
                 "fs_list", callerId ?? scope.AgentId, scope.ProjectId, scope.TaskId, path ?? ".",
@@ -143,7 +145,8 @@ public sealed class GeneralMcpTools(
             }
 
             var scope = await ResolveScopeAsync(projectId, cancellationToken);
-            var result = await files.ReadAsync(scope.ProjectId, path, maxBytes, cancellationToken);
+            var result = await files.ReadAsync(
+                scope.ProjectId, path, maxBytes, cancellationToken, scope.TaskId, scope.AgentId);
 
             await audit.RecordAsync(new ToolAuditEntry(
                 "fs_read", callerId ?? scope.AgentId, scope.ProjectId, scope.TaskId, path ?? string.Empty,
@@ -207,12 +210,15 @@ public sealed class GeneralMcpTools(
                 return new WriteToolResult(false, Guid.Empty, "Rejected", "该项目没有配置仓库路径，无法提交。");
             }
 
+            // 工作目录 = 这次任务的工位（自己的 worktree）；没有工位就是主工作区。
+            var workDir = await ResolveWorkDirAsync(scope, config.RepoPath!, cancellationToken);
+
             // 审批绑内容（P0-3）：先取待提交内容的指纹。读不到仓库状态就拒 ——
             // 不能让人批一个连内容都看不见的提交。gitInspector 缺省时跳过绑定（兼容旧宿主）。
             string? fingerprint = null;
             if (gitInspector is not null)
             {
-                fingerprint = gitInspector.GetPendingCommitFingerprint(config.RepoPath!);
+                fingerprint = gitInspector.GetPendingCommitFingerprint(workDir);
                 if (fingerprint is null)
                 {
                     await AuditAsync("git_commit", callerId, projectId, taskId, message ?? string.Empty,
@@ -228,6 +234,8 @@ public sealed class GeneralMcpTools(
             {
                 project = config.Name,
                 repoPath = config.RepoPath,
+                // 绑实际要写的目录 —— 批了「在 worktree A 提交」不能拿去提交 worktree B
+                workDir,
                 message,
                 fingerprint
             });
@@ -266,7 +274,7 @@ public sealed class GeneralMcpTools(
                         }
                     }
 
-                    var result = await git.CommitAsync(config.RepoPath!, message, cancellationToken);
+                    var result = await git.CommitAsync(workDir, message, cancellationToken);
 
                     await AuditAsync("git_commit", callerId, projectId, taskId, payload,
                         result.Ok ? "success" : "error",
@@ -282,7 +290,7 @@ public sealed class GeneralMcpTools(
                     if (result.Ok)
                     {
                         await CaptureCommitFilesAsync(
-                            taskId, scope, config.RepoPath!, callerId, cancellationToken);
+                            taskId, scope, workDir, callerId, cancellationToken);
                     }
 
                     return new WriteToolResult(
@@ -346,6 +354,27 @@ public sealed class GeneralMcpTools(
         }
     }
 
+    /// <summary>
+    /// 这次调用该在哪个目录上干活 —— 任务登记了工位就用工位，没有就是项目主工作区。
+    ///
+    /// 工具认工位是必须的：agent 在自己的 worktree 里写代码，
+    /// 工作台却去读主工作区的话，产出采集会把**主工作区**的改动记成这个任务的产出。
+    /// </summary>
+    private async Task<string> ResolveWorkDirAsync(
+        ProjectScope scope,
+        string fallback,
+        CancellationToken cancellationToken)
+    {
+        if (workstations is null)
+        {
+            return fallback;
+        }
+
+        var station = await workstations.ResolveAsync(
+            scope.ProjectId, scope.TaskId, scope.AgentId, cancellationToken);
+        return string.IsNullOrWhiteSpace(station) ? fallback : station;
+    }
+
     /// <summary>提交审批摘要：带上改动文件数与清单，人批的时候看得见到底要提交什么。</summary>
     private string BuildCommitSummary(string projectName, string message, string repoPath)
     {
@@ -359,9 +388,18 @@ public sealed class GeneralMcpTools(
         {
             var state = gitInspector.Inspect(repoPath);
             summary += $"；改动 {state.ChangedFiles} 个文件";
+
+            // 清单别全列：一次改动上百个文件时，摘要会长到没法看 ——
+            // 列前几个 + 总数，人要细看还有别的入口。
             if (state.ChangedFilePaths.Count > 0)
             {
-                summary += $"：{string.Join(", ", state.ChangedFilePaths)}";
+                var head = state.ChangedFilePaths.Take(MaxFilesInSummary).ToList();
+                var more = state.ChangedFilePaths.Count - head.Count;
+                summary += $"：{string.Join(", ", head)}";
+                if (more > 0)
+                {
+                    summary += $" 等 {state.ChangedFilePaths.Count} 个";
+                }
             }
         }
         catch (Exception)
@@ -371,6 +409,9 @@ public sealed class GeneralMcpTools(
 
         return summary;
     }
+
+    /// <summary>审批摘要里最多列几个文件名。</summary>
+    private const int MaxFilesInSummary = 8;
 
     [McpServerTool(Name = "git_push")]
     [McpRequiresApproval]
@@ -406,12 +447,37 @@ public sealed class GeneralMcpTools(
                 ? (string.IsNullOrWhiteSpace(branch) ? "默认远端与分支" : $"分支 {branch}")
                 : $"远端 {remote}" + (string.IsNullOrWhiteSpace(branch) ? "" : $" 分支 {branch}");
 
+            // 工作目录 = 工位（跟提交一致：在哪个 worktree 提交，就推哪个 worktree 的分支）
+            var workDir = await ResolveWorkDirAsync(scope, config.RepoPath!, cancellationToken);
+
+            // 审批绑内容：把 HEAD 一起算进指纹。
+            // 只绑「推分支 X 到远端 Y」不够 —— 等待人工期间又跑了一次被批准的
+            // git_commit，推出去的 commit 就比人当时看到的多了。
+            string? headSha = null;
+            if (gitInspector is not null)
+            {
+                headSha = gitInspector.GetHeadSha(workDir);
+                if (string.IsNullOrWhiteSpace(headSha))
+                {
+                    // 读不到 HEAD（仓库还没有提交 / 不是 git 仓库）：推不出东西去，
+                    // 直接拒，别让人批一条注定失败的推送。
+                    await AuditAsync("git_push", callerId, projectId, taskId, branch ?? string.Empty,
+                        "denied", "读不到仓库状态，无法推送。", started, approvalId, cancellationToken);
+
+                    return new WriteToolResult(
+                        false, approvalId ?? Guid.Empty, nameof(ApprovalStatus.Rejected),
+                        "读不到仓库状态（仓库可能还没有任何提交），无法推送。");
+                }
+            }
+
             var payload = WorkbenchJson.Serialize(new
             {
                 project = config.Name,
                 repoPath = config.RepoPath,
+                workDir,
                 branch,
-                remote
+                remote,
+                headSha
             });
 
             var gate = await approvalGate.AcquireAsync(
@@ -432,10 +498,26 @@ public sealed class GeneralMcpTools(
                 gate.ApprovalId,
                 async () =>
                 {
+                    // 批准之后、推送之前再核一次 HEAD：等待期间多了提交就拒 ——
+                    // 人批的是「那些 commit」，不是「推送这个动作」。
+                    if (gitInspector is not null && !string.IsNullOrWhiteSpace(headSha))
+                    {
+                        var currentHead = gitInspector.GetHeadSha(workDir);
+                        if (currentHead != headSha)
+                        {
+                            await AuditAsync("git_push", callerId, projectId, taskId, payload,
+                                "denied", "仓库 HEAD 已变化，请重新申请。", started, gate.ApprovalId, cancellationToken);
+
+                            return new WriteToolResult(
+                                false, gate.ApprovalId, nameof(ApprovalStatus.Executed),
+                                "仓库 HEAD 已变化，要推送的内容跟当初审批的不一致，请重新申请。（审批已消费）");
+                        }
+                    }
+
                     GitCommandResult result;
                     try
                     {
-                        result = await git.PushAsync(config.RepoPath!, branch, remote, cancellationToken);
+                        result = await git.PushAsync(workDir, branch, remote, cancellationToken);
                     }
                     catch (ArgumentException ex)
                     {
@@ -520,6 +602,9 @@ public sealed class GeneralMcpTools(
                 return new WriteToolResult(false, Guid.Empty, "Rejected", "该项目没有配置仓库路径，无法执行命令。");
             }
 
+            // 工作目录 = 工位：agent 的命令要在它自己的 worktree 里跑
+            var workDir = await ResolveWorkDirAsync(scope, config.RepoPath!, cancellationToken);
+
             var gate = await approvalGate.AcquireAsync(
                 "shell_run", "shell.write", command,
                 $"在 {config.Name} 执行：{command}",
@@ -538,7 +623,7 @@ public sealed class GeneralMcpTools(
                 gate.ApprovalId,
                 async () =>
                 {
-                    var result = await shell.RunAsync(config.RepoPath!, command, cancellationToken);
+                    var result = await shell.RunAsync(workDir, command, cancellationToken);
 
                     await AuditAsync("shell_run", callerId, projectId, taskId, command,
                         result.Ok ? "success" : "error",
@@ -589,7 +674,11 @@ public sealed class GeneralMcpTools(
         {
             try
             {
-                await approvalGate.CompleteAsync(approvalId, summary, cancellationToken);
+                // 收尾用**不可取消**的 token：调用方断开（客户端取消 / HTTP 断开）时
+                // 审批已经占住了，这时候最需要把它收干净。
+                // 用原来的 token 的话，取消一旦发生，收尾必然失败，
+                // 审批就卡在 Executing 直到 30 分钟超时回收。
+                await approvalGate.CompleteAsync(approvalId, summary, CancellationToken.None);
             }
             catch (Exception)
             {

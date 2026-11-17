@@ -116,6 +116,32 @@ public sealed class ProjectScopeResolver(
         return null;
     }
 
+    /// <summary>
+    /// 这个目录算不算在项目的仓库范围内。
+    ///
+    /// 两种算：在仓库根里面（子目录），或者是**这个仓库的 worktree**
+    /// （兄弟目录，但属于同一个仓库 —— agent 并行干活时都待在那儿）。
+    /// </summary>
+    private static bool IsInsideProjectRepo(string projectRepoRoot, string sessionPath)
+    {
+        if (PathBoundary.IsSameOrInside(projectRepoRoot, sessionPath))
+        {
+            return true;
+        }
+
+        var owner = WorkPathPolicy.TryGetOwningRepoRoot(sessionPath);
+        if (owner is null)
+        {
+            return false;
+        }
+
+        // 两边都解软链再比（macOS 上 /tmp 其实是 /private/tmp）
+        return string.Equals(
+            PathBoundary.ResolveRealPath(projectRepoRoot),
+            PathBoundary.ResolveRealPath(owner),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
     private async Task<ProjectScope> BuildAsync(
         Guid projectId,
         AgentSessionDto? session,
@@ -133,10 +159,13 @@ public sealed class ProjectScopeResolver(
         // 会话的工作目录必须落在项目绑定的仓库范围内。
         // 绑会话时已经按这个规则挑过项目，这里再查一遍是防「配置改了」：
         // agent 绑完之后项目换了仓库，它还拿着旧会话往下写。
+        //
+        // **worktree 也算数**：它在仓库根外面（是兄弟目录），但属于同一个仓库 ——
+        // agent 在自己的 worktree 里干活是正常用法，不该被当成越界。
         if (session is not null &&
             !string.IsNullOrWhiteSpace(session.RepoPath) &&
             !string.IsNullOrWhiteSpace(project.RepoRoot) &&
-            !PathBoundary.IsSameOrInside(project.RepoRoot, session.RepoPath))
+            !IsInsideProjectRepo(project.RepoRoot, session.RepoPath))
         {
             throw new WorkbenchException(
                 $"会话的工作目录不在项目「{project.Name}」绑定的仓库范围内" +
@@ -148,7 +177,10 @@ public sealed class ProjectScopeResolver(
             project.Name,
             session?.Id,
             session?.TaskId,
-            session?.AgentId,
+            // 没有会话时也带上 agent 身份（请求头里的）——
+            // 工位是「这个 agent 手上那个活」的属性，
+            // 身份丢了就找不到它在哪个目录干活。
+            session?.AgentId ?? sessions?.CurrentAgentId,
             session?.RepoPath);
     }
 }

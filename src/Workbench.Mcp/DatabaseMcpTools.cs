@@ -334,6 +334,36 @@ public sealed class DatabaseMcpTools(
                 ? analysis.AllTargetTables
                 : SqlReadTargetExtractor.Extract(sql);
 
+            // 禁写表：配了「禁止写」的表写不进去 —— 连人工审批都不放行。
+            // 审批是流程，禁写才是保证：真正不能碰的表得有一道硬门。
+            foreach (var table in analysis.AllTargetTables)
+            {
+                if (await connections.IsWriteAllowedAsync(config.Id, table, cancellationToken))
+                {
+                    continue;
+                }
+
+                var forbiddenReason =
+                    $"表 {table} 配了「禁止写」，写操作已被拒绝（人工审批也不放行）。" +
+                    "要写这张表，请先让人把规则改掉。";
+
+                await AuditAsync("db_execute", requestedBy, scope.ProjectId, taskId, sql,
+                    requiredApproval: true, approvalId: approvalId, outcome: "denied",
+                    summary: forbiddenReason, started, rowsAffected: null, cancellationToken);
+
+                await RecordDbCallAsync(
+                    "db_execute", scope, taskId, config, sql,
+                    kind: kind,
+                    targetTables: analysis.AllTargetTables,
+                    rowsAffected: null,
+                    outcome: "denied",
+                    approvalId: approvalId,
+                    callerId: requestedBy,
+                    started, cancellationToken);
+
+                return Fail(forbiddenReason, approvalId ?? Guid.Empty, nameof(ApprovalStatus.Rejected));
+            }
+
             // 免审批判定：每一条都是可识别的写，且**所有**目标表规则都免审批，才免。
             var requiresApproval = true;
             if (analysis.AllIdentifiableWrites)
@@ -391,6 +421,10 @@ public sealed class DatabaseMcpTools(
                 return new DbExecuteToolResult(false, gate.ApprovalId, gate.Status, null, gate.Message, gate.Message);
             }
 
+            // 审批收尾时要写的结果摘要 —— 成功失败都写，
+            // 免得审批历史上留一片空白（跟 git 那边的口径一致）。
+            string? approvalSummary = null;
+
             try
             {
                 // 审批通过后、真正执行前，再取一次默认连接：等待人工期间它可能被换掉了。
@@ -420,6 +454,8 @@ public sealed class DatabaseMcpTools(
 
                 var result = await runner.ExecuteAsync(execConfig, sql, cancellationToken);
 
+                approvalSummary = $"影响 {result.RowsAffected} 行";
+
                 await AuditAsync("db_execute", requestedBy, scope.ProjectId, taskId, sql,
                     requiredApproval: true, approvalId: gate.ApprovalId, outcome: "success",
                     summary: $"影响 {result.RowsAffected} 行", started, rowsAffected: result.RowsAffected, cancellationToken);
@@ -439,6 +475,8 @@ public sealed class DatabaseMcpTools(
             }
             catch (Exception ex)
             {
+                approvalSummary = $"执行失败: {ex.Message}";
+
                 await AuditAsync("db_execute", callerId, projectId, taskId, sql ?? string.Empty,
                     requiredApproval: true, approvalId: gate.ApprovalId, outcome: "error",
                     summary: ex.Message, started, rowsAffected: null, cancellationToken);
@@ -463,7 +501,9 @@ public sealed class DatabaseMcpTools(
                 // 审批已经占住了，收尾一下 —— 不收尾它就卡在 Executing。
                 try
                 {
-                    await approvalGate.CompleteAsync(gate.ApprovalId, null, cancellationToken);
+                    // 用不可取消的 token 收尾：调用方断开时更需要把审批收干净。
+                    // 原来用调用方的 token，一取消收尾就失败，审批卡死 30 分钟。
+                    await approvalGate.CompleteAsync(gate.ApprovalId, approvalSummary, CancellationToken.None);
                 }
                 catch (Exception)
                 {
@@ -547,13 +587,27 @@ public sealed class DatabaseMcpTools(
     [Description(
         "试连一个数据库连接（跑 SELECT 1），确认服务器名 / 库名 / 凭证真的连得上。" +
         "配置存进去了不等于连得上——db_execute / db_query 报连接错误时，先用本工具定位是配置问题还是网络问题。" +
+        "连接必须属于当前项目（绑了会话就是会话那个项目），否则拒绝 —— 别拿别的项目的连接来探。" +
         "返回 ok=true 表示连通；ok=false 时 error 给出原因。")]
     public async Task<DbTestConnectionToolResult> TestConnectionAsync(
         Guid connectionId,
+        Guid? projectId = null,
         CancellationToken cancellationToken = default)
     {
         try
         {
+            var scope = await ResolveScopeAsync(projectId, cancellationToken);
+
+            // 连接必须属于这个项目。以前只按 connectionId 查，
+            // 绑在 A 项目的 agent 可以拿 B 项目的连接来探活 ——
+            // 探活会暴露内网可达性，错误信息里还带得出服务器名。
+            var owned = await connections.GetAsync(scope.ProjectId, connectionId, cancellationToken);
+            if (owned is null)
+            {
+                return new DbTestConnectionToolResult(
+                    false, $"找不到连接 {connectionId}，或它不属于项目「{scope.ProjectName}」。");
+            }
+
             var (ok, error) = await connections.TestAsync(connectionId, cancellationToken);
             return new DbTestConnectionToolResult(ok, error);
         }
@@ -709,8 +763,23 @@ public sealed class DatabaseMcpTools(
             ? string.Join("；", analysis.Statements.Select(s => $"{s.StatementType} → {string.Join(", ", s.TargetTables)}"))
             : analysis.Reason ?? "（无法逐语句识别）";
 
-        return $"对 {config.Server}/{config.Database} 执行写操作。目标表：{tableText}。逐语句：{perStatement}。SQL：{sql}";
+        // SQL 原文别整条塞进摘要：几百行的语句会把审批卡撑爆，
+        // 人扫一眼反而看不出重点。截断 + 标出原长度。
+        var snippet = Collapse(sql);
+        if (snippet.Length > MaxSqlCharsInSummary)
+        {
+            snippet = string.Concat(snippet.AsSpan(0, MaxSqlCharsInSummary), $"…（全文 {sql.Length} 字）");
+        }
+
+        return $"对 {config.Server}/{config.Database} 执行写操作。目标表：{tableText}。逐语句：{perStatement}。SQL：{snippet}";
     }
+
+    /// <summary>审批摘要里最多放多少字 SQL。</summary>
+    private const int MaxSqlCharsInSummary = 300;
+
+    /// <summary>把空白压成单个空格。</summary>
+    private static string Collapse(string sql) =>
+        string.Join(' ', sql.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
 
     /// <summary>
     /// 从审批的 payload 里取出当初绑定的 connectionId。

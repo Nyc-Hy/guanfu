@@ -24,7 +24,17 @@ public sealed record BranchCheckResult(
 /// <summary>分支守卫。任务项绑了分支，运行前必须确认仓库当前就在那个分支上。</summary>
 public interface IBranchGuard
 {
-    Task<BranchCheckResult> CheckAsync(Guid taskId, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// 检查任务绑定分支与「当前分支」是否一致。
+    ///
+    /// <paramref name="repoPath"/>：看哪个目录的当前分支。
+    /// 不给就是项目仓库根 —— 但 **agent 在自己的 worktree 里干活时，
+    /// 当前分支是 worktree 的分支**，不看工位就会把对的分支判成不对。
+    /// </summary>
+    Task<BranchCheckResult> CheckAsync(
+        Guid taskId,
+        CancellationToken cancellationToken = default,
+        string? repoPath = null);
 }
 
 /// <summary>当前分支与任务绑定的分支不一致。</summary>
@@ -42,7 +52,10 @@ public class BranchMismatchException(BranchCheckResult check) : WorkbenchExcepti
 /// </summary>
 public sealed class BranchGuard(IAppDbContext db, IGitInspector git) : IBranchGuard
 {
-    public async Task<BranchCheckResult> CheckAsync(Guid taskId, CancellationToken cancellationToken = default)
+    public async Task<BranchCheckResult> CheckAsync(
+        Guid taskId,
+        CancellationToken cancellationToken = default,
+        string? repoPath = null)
     {
         var task = await db.Tasks.AsNoTracking()
             .FirstOrDefaultAsync(t => t.Id == taskId, cancellationToken);
@@ -68,7 +81,8 @@ public sealed class BranchGuard(IAppDbContext db, IGitInspector git) : IBranchGu
                 $"任务绑定了分支「{bound}」，但项目没有配置仓库路径，无法确认当前分支，不予运行。");
         }
 
-        var state = git.Inspect(project.RepoPath!);
+        // 看工位（worktree）的分支；没给工位就看主工作区
+        var state = git.Inspect(repoPath ?? project.RepoPath!);
 
         if (string.IsNullOrWhiteSpace(state.Branch))
         {

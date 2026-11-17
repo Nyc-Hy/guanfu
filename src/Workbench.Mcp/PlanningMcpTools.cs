@@ -15,6 +15,8 @@ public sealed class PlanningMcpTools(
     IMetricsService metrics,
     IProjectService projects,
     ITaskService tasks,
+    IProjectSpecService? specs = null,
+    IDispatchService? dispatch = null,
     IProjectScopeResolver? scopeResolver = null)
 {
     /// <summary>
@@ -90,7 +92,51 @@ public sealed class PlanningMcpTools(
         return await projects.GetConfigAsync(scope.ProjectId, cancellationToken);
     }
 
-    [McpServerTool(Name = "project_create")]
+    [McpServerTool(Name = "workbench_get_project_spec")]
+    [Description(
+        "读取这个项目的**规约**（人定的规矩）：项目目标、完成定义（DoD，逐条）、" +
+        "提交信息约定、测试命令、分支命名约定、红线与禁忌。" +
+        "**开工前先读它** —— 「什么算做完」「提交怎么写」「测试怎么跑」在这儿，" +
+        "别自己猜。评审时它就是尺子。" +
+        "没填过会返回空规约（不是错误）。已绑定会话时不用传 projectId。")]
+    public async Task<ProjectSpecDto> GetProjectSpecAsync(
+        Guid? projectId = null,
+        CancellationToken cancellationToken = default)
+    {
+        var scope = await ResolveScopeAsync(projectId, cancellationToken);
+
+        if (specs is null)
+        {
+            return ProjectSpecDto.Empty(scope.ProjectId);
+        }
+
+        return await specs.GetAsync(scope.ProjectId, cancellationToken);
+    }
+
+    [McpServerTool(Name = "workbench_get_dispatch_board")]
+    [Description(
+        "调度板：这个项目**现在什么能干什么卡着谁在干**。" +
+        "三个桶：ready（前置全清、没人占着 —— 可以直接领）、" +
+        "inProgress（有人领着，租约还活着）、" +
+        "blocked（还有前置没做完，带上卡它的是谁、阻塞链多深）。" +
+        "选活之前先看这个，别自己 list 一堆任务再猜。" +
+        "已绑定会话时不用传 projectId。")]
+    public async Task<DispatchBoardDto> GetDispatchBoardAsync(
+        Guid? projectId = null,
+        int limit = 20,
+        CancellationToken cancellationToken = default)
+    {
+        var scope = await ResolveScopeAsync(projectId, cancellationToken);
+
+        if (dispatch is null)
+        {
+            return new DispatchBoardDto(scope.ProjectId, [], [], [], 0, 0, 0);
+        }
+
+        return await dispatch.GetAsync(scope.ProjectId, limit, cancellationToken);
+    }
+
+    [McpServerTool(Name = "workbench_create_project")]
     [Description(
         "创建一个新项目。name 必填，description 可选。返回 ok=true 与项目信息（含 id）；" +
         "失败时 error 给出原因（如名称为空），据此修正后重试。")]
@@ -110,7 +156,7 @@ public sealed class PlanningMcpTools(
         }
     }
 
-    [McpServerTool(Name = "milestone_create")]
+    [McpServerTool(Name = "workbench_create_milestone")]
     [Description(
         "在项目下创建里程碑。kind 传 release（迭代版本，默认）或 group（需求组）；" +
         "parentId 把它挂到父里程碑下（构成 版本→需求组 层级）；dueAt 是截止日。" +
@@ -152,7 +198,7 @@ public sealed class PlanningMcpTools(
         }
     }
 
-    [McpServerTool(Name = "milestone_update")]
+    [McpServerTool(Name = "workbench_update_milestone")]
     [Description(
         "更新里程碑。不传的字段保持原值。要**清空**父里程碑用 clearParent=true，要**清空**截止日用 clearDue=true" +
         "——因为 parentId/dueAt 传 null 表示「不改」，没法表达「清空」，所以单独给两个布尔。" +
@@ -195,7 +241,7 @@ public sealed class PlanningMcpTools(
         }
     }
 
-    [McpServerTool(Name = "milestone_delete")]
+    [McpServerTool(Name = "workbench_delete_milestone")]
     [Description(
         "删除一个里程碑。返回 ok=true；失败时 error 给出原因（如里程碑不存在、下面还挂着任务或子里程碑），" +
         "据此先清理关联再重试。")]

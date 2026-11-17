@@ -47,7 +47,9 @@ public sealed record TaskSummaryDto(
     /// <summary>在项目进度里的权重。</summary>
     double Weight = 1d,
     /// <summary>还没完成的前置任务数。大于 0 表示这任务现在动不了。</summary>
-    int PendingDependencies = 0);
+    int PendingDependencies = 0,
+    /// <summary>agent 干活的工作目录（自己的 git worktree）。为空 = 用项目主工作区。</summary>
+    string? WorkPath = null);
 
 /// <summary>项目配置。跟概览分开：概览是给人看的汇总，配置是给人和 agent 改的字段集合。</summary>
 public sealed record ProjectConfigDto(
@@ -74,7 +76,11 @@ public sealed record ProjectConfigDto(
     ///
     /// 在绑定的那一刻就讲清楚，别等 agent 撞了墙才发现。
     /// </summary>
-    string? RepoWarning = null);
+    string? RepoWarning = null,
+    /// <summary>同时最多几个 agent 能领活（0 = 不限）。</summary>
+    int MaxConcurrentAgents = 0,
+    /// <summary>每个任务最多能调多少次工具（0 = 不限）。</summary>
+    int MaxToolCallsPerTask = 0);
 
 public sealed record StatusEventDto(
     Guid Id,
@@ -190,7 +196,32 @@ public sealed record TaskContextDto(
     /// <summary>仓库当前分支。跟任务绑定的分支不一致时，agent 不该贸然开跑。</summary>
     string? CurrentBranch = null,
     /// <summary>当前分支是否满足任务绑定的分支要求。</summary>
-    bool BranchReady = true);
+    bool BranchReady = true,
+    /// <summary>
+    /// 工位现状：主工作区被谁占着、并行上限、这个任务登记的工位。
+    /// agent 领活前要看 —— 不然只能靠踩文件发现有人在同目录干活。
+    /// </summary>
+    WorkStationDto? Station = null,
+    /// <summary>
+    /// 项目级规约（人定的规矩）。agent 开工前要读 ——
+    /// 「什么算做完」「提交怎么写」「测试怎么跑」都在这儿。
+    /// </summary>
+    ProjectSpecDto? Spec = null);
+
+/// <summary>工位（工作区）现状。</summary>
+public sealed record WorkStationDto(
+    /// <summary>项目主工作区（仓库根）。为空 = 项目没绑仓库，没有文件系统面。</summary>
+    string? MainCheckout,
+    /// <summary>主工作区现在被谁占着（agentId）。没人占就是 null。</summary>
+    string? MainCheckoutHolder,
+    /// <summary>占着主工作区的那个任务编号。</summary>
+    string? MainCheckoutTaskKey,
+    /// <summary>这个项目的并行上限（0 = 不限）。</summary>
+    int MaxConcurrentAgents = 0,
+    /// <summary>项目里当前活着的租约数。</summary>
+    int ActiveLeases = 0,
+    /// <summary>这个任务登记的工位（null = 主工作区）。</summary>
+    string? WorkPath = null);
 
 /// <summary>单个评审维度的结论。</summary>
 public sealed record ReviewItemDto(
@@ -237,7 +268,37 @@ public sealed record ReviewPackDto(
     IReadOnlyList<ArtifactDto> Artifacts,
     IReadOnlyList<DocumentDto> Documents,
     IReadOnlyList<string> ChangedFiles,
-    IReadOnlyList<ReviewDimensionDto> Dimensions);
+    IReadOnlyList<ReviewDimensionDto> Dimensions,
+    /// <summary>项目级规约（人定的规矩）—— 评审时的尺子。</summary>
+    ProjectSpecDto? Spec = null,
+    /// <summary>
+    /// 规约（DoD）的逐条判定。维度是通用的，规约是这个项目特有的 ——
+    /// 评审时要一条一条对着判，没判的算「待判定」。
+    /// </summary>
+    IReadOnlyList<SpecItemDto>? SpecItems = null);
+
+/// <summary>规约里的一条 DoD，以及它在当前轮的判定。</summary>
+public sealed record SpecItemDto(
+    /// <summary>条目的稳定键（归一化形式）。</summary>
+    string ItemKey,
+    /// <summary>条目原文。</summary>
+    string Text,
+    /// <summary>Pending / Passed / Failed / Skipped。</summary>
+    string Status,
+    string? Note,
+    string? Reviewer,
+    DateTimeOffset? DecidedAt);
+
+/// <summary>一条 DoD 判定。</summary>
+public sealed record SpecVerdictDto(
+    Guid Id,
+    Guid TaskId,
+    string ItemKey,
+    string Text,
+    string Status,
+    string? Note,
+    string? Reviewer,
+    DateTimeOffset? DecidedAt);
 
 /// <summary>评审门禁状态。状态机用它决定 Review → Done 放不放行。</summary>
 public sealed record ReviewGateDto(
@@ -249,7 +310,11 @@ public sealed record ReviewGateDto(
     /// 维度之外的拦截理由（如「评审后代码已变更」）。
     /// 非空即不放行 —— 门禁不只有维度这一道。
     /// </summary>
-    string? BlockReason = null);
+    string? BlockReason = null,
+    /// <summary>规约里还没判定的 DoD 条目。</summary>
+    IReadOnlyList<string>? PendingSpecItems = null,
+    /// <summary>规约里判定为不满足的 DoD 条目。</summary>
+    IReadOnlyList<string>? FailedSpecItems = null);
 
 /// <summary>
 /// 数据库连接配置。**不含密码**（明文与密文都不出去），只告诉调用方有没有配密码。
@@ -336,3 +401,44 @@ public sealed record DbCallHitDto(
     string? Outcome,
     string? CallerId,
     DateTimeOffset CreatedAt);
+
+/// <summary>规约的内容。DoD 是**逐条**的 —— agent 逐条对着做，人逐条对着判。</summary>
+public sealed record ProjectSpecInput(
+    /// <summary>项目目标 / 背景。</summary>
+    string? Purpose = null,
+    /// <summary>完成定义（DoD），一条一项。</summary>
+    IReadOnlyList<string>? DefinitionOfDone = null,
+    /// <summary>提交信息约定。</summary>
+    string? CommitConvention = null,
+    /// <summary>测试命令。</summary>
+    string? TestCommand = null,
+    /// <summary>分支命名约定。</summary>
+    string? BranchConvention = null,
+    /// <summary>红线 / 禁忌。</summary>
+    string? Guardrails = null);
+
+/// <summary>规约的对外形状。</summary>
+public sealed record ProjectSpecDto(
+    Guid ProjectId,
+    string? Purpose,
+    IReadOnlyList<string> DefinitionOfDone,
+    string? CommitConvention,
+    string? TestCommand,
+    string? BranchConvention,
+    string? Guardrails,
+    DateTimeOffset? UpdatedAt,
+    string? UpdatedBy)
+{
+    /// <summary>空规约（还没填过）。</summary>
+    public static ProjectSpecDto Empty(Guid projectId) =>
+        new(projectId, null, [], null, null, null, null, null, null);
+
+    /// <summary>这份规约有没有内容（一条都没有 = 没填）。</summary>
+    public bool IsEmpty =>
+        string.IsNullOrWhiteSpace(Purpose)
+        && DefinitionOfDone.Count == 0
+        && string.IsNullOrWhiteSpace(CommitConvention)
+        && string.IsNullOrWhiteSpace(TestCommand)
+        && string.IsNullOrWhiteSpace(BranchConvention)
+        && string.IsNullOrWhiteSpace(Guardrails);
+}

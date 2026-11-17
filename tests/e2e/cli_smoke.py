@@ -208,6 +208,11 @@ def main() -> int:
                    expect_code=2)
     expect("401" in out, f"没凭证改项目配置应报 401（输出：{out.strip()[:160]}）")
 
+    # 建项目同样要凭证 —— 项目一创建就把一个文件系统根目录授给了它，
+    # 不设门的话 agent 自己建个项目指向 /etc 就能把文件读出去。
+    code, out = wb("project", "add", "无凭证建的项目", token="", expect_code=2)
+    expect("401" in out, f"没凭证建项目应报 401（输出：{out.strip()[:160]}）")
+
     # 带凭证要能改 —— 而且要顺手把仓库路径与白名单配好，
     # 后面的 shell_run 要靠它造出待审审批。
     repo_dir = tempfile.mkdtemp(prefix="wb-e2e-cli-repo-")

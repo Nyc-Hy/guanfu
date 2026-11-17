@@ -11,8 +11,8 @@
     <div>
         <h1>总览</h1>
         <p class="wb-muted">
-            工作台做三件事：<strong>追踪任务进度</strong>、<strong>记录开发产出的文件</strong>、
-            <strong>留下数据库调用的记录</strong>。
+            <strong>给 agent 用的项目管理工具</strong>：任务、里程碑、依赖、状态机在这里，
+            干活的是 agent；审计与审批是让人敢信这个看板的底座。
         </p>
     </div>
     <div class="wb-form-row">
@@ -133,7 +133,7 @@ else
                         <div class="wb-table-scroll">
                             <table class="wb-table">
                                 <thead>
-                                <tr><th>任务</th><th>项目</th><th>状态</th><th>在谁手上</th><th>最后动静</th></tr>
+                                <tr><th>任务</th><th>项目</th><th>状态</th><th>在谁手上</th><th>工位</th><th>最后动静</th></tr>
                                 </thead>
                                 <tbody>
                                 @foreach (var t in Data.ActiveTasks)
@@ -150,6 +150,24 @@ else
                                             else
                                             {
                                                 <span class="wb-muted">还没人领</span>
+                                            }
+                                        </td>
+                                        <td class="wb-muted">
+                                            @if (!string.IsNullOrWhiteSpace(t.AgentId) && string.IsNullOrWhiteSpace(t.WorkPath))
+                                            {
+                                                <span class="wb-chip">⌂ 主工作区</span>
+                                            }
+                                            else if (t.IsMainCheckout)
+                                            {
+                                                <span class="wb-chip" title="@t.WorkPath">⌂ 主工作区</span>
+                                            }
+                                            else if (!string.IsNullOrWhiteSpace(t.WorkPath))
+                                            {
+                                                <span class="wb-chip wb-chip-ok" title="@t.WorkPath">⌂ @System.IO.Path.GetFileName(t.WorkPath)</span>
+                                            }
+                                            else
+                                            {
+                                                <span>—</span>
                                             }
                                         </td>
                                         <td class="wb-muted" title="@(t.LastActivityAt is null ? "" : Absolute(t.LastActivityAt.Value))">@(t.LastActivityAt is null ? "—" : Relative(t.LastActivityAt.Value))</td>

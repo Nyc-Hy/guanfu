@@ -240,6 +240,43 @@ def main() -> int:
     context = mcp.call("workbench_get_context", {"taskId": task_id})
     expect("allowedTransitions" in context, "上下文应带出允许的状态迁移")
 
+    print("\n-- 调度板（现在什么能干）--")
+    board = mcp.call("workbench_get_dispatch_board", {"projectId": project_id})
+    expect(
+        isinstance(board, dict) and "ready" in board and "blocked" in board,
+        f"调度板应返回三个桶（实际：{board}）",
+    )
+    expect(
+        (board.get("inProgress") or [{}])[0].get("id") == task_id,
+        "刚领的活应出现在「有人在干」那一桶",
+    )
+    expect(
+        board.get("readyCount", 0) >= 0 and board.get("blockedCount", 0) >= 0,
+        "调度板应给出各桶的总数",
+    )
+
+    print("\n-- 项目级规约（人定规矩，agent 读得到）--")
+    rest_json(rest, "PUT", f"/api/projects/{project_id}/spec", {
+        "purpose": "12月版本要支持账号密码登录",
+        "definitionOfDone": "有单测覆盖新增逻辑\n文档里的用法同步更新",
+        "testCommand": "dotnet test Workbench.sln",
+    })
+    spec = mcp.call("workbench_get_project_spec", {"projectId": project_id})
+    expect(
+        isinstance(spec, dict) and spec.get("projectId") == project_id,
+        f"agent 应能读到项目规约（实际：{spec}）",
+    )
+    expect(spec.get("purpose") == "12月版本要支持账号密码登录", "规约里的目标应原样带回")
+    expect(
+        "有单测覆盖新增逻辑" in (spec.get("definitionOfDone") or []),
+        f"DoD 应逐条带给 agent（实际：{spec.get('definitionOfDone')}）",
+    )
+    ctx_with_spec = mcp.call("workbench_get_context", {"taskId": task_id})
+    expect(
+        (ctx_with_spec.get("spec") or {}).get("testCommand") == "dotnet test Workbench.sln",
+        "上下文包里也应带着规约（agent 一次拿全，不用再调一次工具）",
+    )
+
     plan = mcp.call(
         "workbench_set_plan",
         {
@@ -285,8 +322,19 @@ def main() -> int:
     current = (mcp.call("workbench_get_review", {"taskId": task_id}).get("round")) or {}
     expect(current.get("verdict") == "Passed", "当前轮判定应为 Passed")
 
+    # 规约的 DoD 也要一条一条判 —— 没判完不许结项
+    spec_items = pack.get("specItems") or []
+    expect(len(spec_items) > 0, "评审包应带上项目的完成定义")
+    for item in spec_items:
+        verdict = mcp.call(
+            "workbench_submit_spec_verdict",
+            {"taskId": task_id, "item": item["text"], "satisfied": True,
+             "note": "已核对", "reviewer": "e2e-agent"},
+        )
+        expect(verdict.get("ok"), f"规约条目「{item['text']}」判定应成功（实际：{verdict.get('error')}）")
+
     done = mcp.call("workbench_update_status", {"taskId": task_id, "status": "Done", "actor": "e2e-agent"})
-    expect(done.get("ok"), "评审全过后应能结项")
+    expect(done.get("ok"), "评审全过（含规约逐条判定）后应能结项")
 
     history = mcp.call("workbench_list_reviews", {"taskId": task_id}).get("rounds") or []
     expect(len(history) == 1 and len(history[0].get("items") or []) == 7, "历史应留一轮 7 条")

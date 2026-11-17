@@ -19,6 +19,16 @@ public interface IReviewService : IReviewGate
     /// <summary>开一轮评审。按固定的七个维度各建一条待办。</summary>
     Task<ReviewRoundDto> StartAsync(Guid taskId, string? reviewer = null, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// 当前（或指定）轮次里，项目规约（DoD）的逐条判定。
+    ///
+    /// 没有判定的一律算「待判定」—— 人和 agent 看到的必须是同一份。
+    /// </summary>
+    Task<IReadOnlyList<SpecItemDto>> GetSpecItemsAsync(
+        Guid taskId,
+        int? round = null,
+        CancellationToken cancellationToken = default);
+
     /// <summary>取评审包：维度清单 + 任务上下文 + 变更文件。agent 照着这个逐维度评审。</summary>
     Task<ReviewPackDto> GetPackAsync(Guid taskId, int? round = null, CancellationToken cancellationToken = default);
 
@@ -40,6 +50,23 @@ public interface IReviewService : IReviewGate
         string? findings = null,
         string? evidence = null,
         string? recommendation = null,
+        string? reviewer = null,
+        int? round = null,
+        CancellationToken cancellationToken = default,
+        bool skipped = false);
+
+    /// <summary>
+    /// 回写**项目规约（DoD）某一条**的判定。
+    ///
+    /// 七个维度是通用的，规约是这个项目特有的 —— 评审时要一条一条对着判，
+    /// 否则「全都满足」没法复核，也不值当尺子。
+    /// 判定按**条目的归一化形式**存：规约改了文字，旧判定就不算数了。
+    /// </summary>
+    Task<SpecVerdictDto> SubmitSpecVerdictAsync(
+        Guid taskId,
+        string item,
+        bool satisfied,
+        string? note = null,
         string? reviewer = null,
         int? round = null,
         CancellationToken cancellationToken = default,
@@ -78,13 +105,27 @@ public class ReviewGateException(ReviewGateDto gate)
             parts.Add($"不通过: {string.Join("、", gate.FailedDimensions)}");
         }
 
+        if (gate.PendingSpecItems is { Count: > 0 })
+        {
+            parts.Add($"规约待判定: {string.Join("、", gate.PendingSpecItems)}");
+        }
+
+        if (gate.FailedSpecItems is { Count: > 0 })
+        {
+            parts.Add($"规约不满足: {string.Join("、", gate.FailedSpecItems)}");
+        }
+
         if (gate.BlockReason is not null)
         {
             parts.Add(gate.BlockReason);
         }
 
-        return $"评审还没过（{string.Join("；", parts)}）。" +
-               "到任务详情页的评审区逐维度回写结论（agent 走评审回写工具），全部通过后才能结项。";
+        // 回写指引要说清是哪种回写 —— 维度回写与规约逐条判定是两条路。
+        var how = gate.PendingSpecItems is { Count: > 0 }
+            ? "到任务详情页的评审区逐维度回写结论、逐条回写规约判定（agent 走评审回写工具）"
+            : "到任务详情页的评审区逐维度回写结论（agent 走评审回写工具）";
+
+        return $"评审还没过（{string.Join("；", parts)}）。{how}，全部通过后才能结项。";
     }
 }
 
@@ -183,6 +224,175 @@ public sealed class ReviewService(IAppDbContext db, IClock clock, IGitInspector 
         return ToDto(round);
     }
 
+    public async Task<SpecVerdictDto> SubmitSpecVerdictAsync(
+        Guid taskId,
+        string item,
+        bool satisfied,
+        string? note = null,
+        string? reviewer = null,
+        int? round = null,
+        CancellationToken cancellationToken = default,
+        bool skipped = false)
+    {
+        if (string.IsNullOrWhiteSpace(item))
+        {
+            throw new WorkbenchException("规约条目不能为空。");
+        }
+
+        var current = await LoadRoundAsync(taskId, round, cancellationToken)
+                      ?? throw new NotFoundException("评审轮次", round?.ToString() ?? taskId.ToString());
+
+        // 条目必须是**当前规约**里的 —— 拿着别的轮次/别的项目的条目来判没有意义。
+        var dod = await LoadDefinitionOfDoneAsync(current.TaskId, cancellationToken);
+        var text = dod.FirstOrDefault(d => string.Equals(TaskKeys.Normalize(d), TaskKeys.Normalize(item), StringComparison.Ordinal))
+                   ?? throw new WorkbenchException(
+                       $"「{item}」不在这个项目当前的完成定义里。" +
+                       (dod.Count == 0 ? "（项目还没填完成定义）" : $"当前有：{string.Join("；", dod)}"));
+
+        if (skipped && string.IsNullOrWhiteSpace(note))
+        {
+            throw new WorkbenchException("判定为「不适用」必须写明理由。");
+        }
+
+        var key = TaskKeys.Normalize(text);
+
+        var verdict = current.SpecVerdicts
+            .FirstOrDefault(v => string.Equals(v.ItemKey, key, StringComparison.Ordinal));
+
+        if (verdict is null)
+        {
+            verdict = new SpecVerdict
+            {
+                ReviewRoundId = current.Id,
+                TaskId = taskId,
+                ItemKey = key,
+                ItemText = text
+            };
+            current.SpecVerdicts.Add(verdict);
+            db.SpecVerdicts.Add(verdict);
+        }
+        else
+        {
+            // 同一轮里改了结论 —— 记新的一条，旧的留着（账本不改写）。
+            var revised = new SpecVerdict
+            {
+                ReviewRoundId = current.Id,
+                TaskId = taskId,
+                ItemKey = key,
+                ItemText = text,
+                Status = skipped ? ReviewStatus.Skipped : (satisfied ? ReviewStatus.Passed : ReviewStatus.Failed),
+                Note = note,
+                Reviewer = reviewer ?? current.Reviewer,
+                DecidedAt = clock.UtcNow
+            };
+            db.SpecVerdicts.Add(revised);
+            verdict = revised;
+        }
+
+        verdict.Status = skipped ? ReviewStatus.Skipped : (satisfied ? ReviewStatus.Passed : ReviewStatus.Failed);
+        verdict.Note = note;
+        verdict.Reviewer = reviewer ?? current.Reviewer;
+        verdict.DecidedAt = clock.UtcNow;
+
+        db.StatusEvents.Add(new StatusEvent
+        {
+            TaskId = taskId,
+            FromStatus = null,
+            ToStatus = null,
+            Source = TaskEventSource.Agent,
+            Actor = verdict.Reviewer,
+            Note = $"规约判定[{text}] {(skipped ? "不适用" : (satisfied ? "满足" : "不满足"))}" +
+                   (string.IsNullOrWhiteSpace(note) ? "" : $"：{note}"),
+            EventType = TaskEventTypes.SpecVerdictResult,
+            Payload = WorkbenchJson.Serialize(new
+            {
+                round = current.Round,
+                item = text,
+                result = verdict.Status.ToString(),
+                reviewer = verdict.Reviewer
+            }),
+            CreatedAt = clock.UtcNow
+        });
+
+        await db.SaveChangesAsync(cancellationToken);
+
+        return ToSpecVerdictDto(verdict);
+    }
+
+    /// <summary>项目当前的完成定义（逐条）。</summary>
+    private async Task<IReadOnlyList<string>> LoadDefinitionOfDoneAsync(
+        Guid taskId,
+        CancellationToken cancellationToken)
+    {
+        var projectId = await db.Tasks.AsNoTracking()
+            .Where(t => t.Id == taskId)
+            .Select(t => t.ProjectId)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        var spec = await db.ProjectSpecs.AsNoTracking()
+            .FirstOrDefaultAsync(s => s.ProjectId == projectId, cancellationToken);
+
+        if (spec is null || string.IsNullOrWhiteSpace(spec.DefinitionOfDone))
+        {
+            return [];
+        }
+
+        return spec.DefinitionOfDone
+            .Split('\n')
+            .Select(l => l.Trim())
+            .Where(l => l.Length > 0)
+            .ToList();
+    }
+
+    /// <summary>当前轮的规约判定：条目 + 结论（没判的算待判定）。</summary>
+    private async Task<IReadOnlyList<SpecItemDto>> BuildSpecItemsAsync(
+        ReviewRound current,
+        CancellationToken cancellationToken)
+    {
+        var dod = await LoadDefinitionOfDoneAsync(current.TaskId, cancellationToken);
+        if (dod.Count == 0)
+        {
+            return [];
+        }
+
+        var verdicts = await db.SpecVerdicts.AsNoTracking()
+            .Where(v => v.ReviewRoundId == current.Id)
+            .ToListAsync(cancellationToken);
+
+        var latest = verdicts
+            .GroupBy(v => v.ItemKey, StringComparer.Ordinal)
+            .Select(g => g.OrderByDescending(v => v.DecidedAt ?? DateTimeOffset.MinValue).First())
+            .ToDictionary(v => v.ItemKey, v => v, StringComparer.Ordinal);
+
+        return dod.Select(text =>
+        {
+            var key = TaskKeys.Normalize(text);
+            var verdict = latest.TryGetValue(key, out var found) ? found : null;
+
+            return new SpecItemDto(
+                key,
+                text,
+                (verdict?.Status ?? ReviewStatus.Pending).ToString(),
+                verdict?.Note,
+                verdict?.Reviewer,
+                verdict?.DecidedAt);
+        }).ToList();
+    }
+
+    public async Task<IReadOnlyList<SpecItemDto>> GetSpecItemsAsync(
+        Guid taskId,
+        int? round = null,
+        CancellationToken cancellationToken = default)
+    {
+        var current = await LoadRoundAsync(taskId, round, cancellationToken);
+        if (current is null)
+        {
+            return [];
+        }
+
+        return await BuildSpecItemsAsync(current, cancellationToken);
+    }
+
     public async Task<ReviewPackDto> GetPackAsync(
         Guid taskId,
         int? round = null,
@@ -222,6 +432,17 @@ public sealed class ReviewService(IAppDbContext db, IClock clock, IGitInspector 
         // 抄的那份漏了 IsArchived/Assignee/Priority/DueAt/Weight/PendingDependencies/Stale。
         var pending = await PendingDependencyCounts.CountAsync(db, [taskId], cancellationToken);
 
+        // 项目级规约也进评审包：七个维度是通用的，规约是这个项目特有的 ——
+        // 评审 agent 得知道「这个项目怎么算做完」才能判。
+        var spec = await db.ProjectSpecs.AsNoTracking()
+            .FirstOrDefaultAsync(s => s.ProjectId == task.ProjectId, cancellationToken);
+        var specDto = spec is null
+            ? ProjectSpecDto.Empty(task.ProjectId)
+            : ProjectSpecService.ToDto(spec);
+
+        // 规约的逐条判定也要进评审包 —— 评审时要一条一条对着判。
+        var specItems = await BuildSpecItemsAsync(current, cancellationToken);
+
         return new ReviewPackDto(
             ToDto(current),
             TaskService.ToSummary(task, project, clock.UtcNow, pending.GetValueOrDefault(taskId)),
@@ -231,7 +452,9 @@ public sealed class ReviewService(IAppDbContext db, IClock clock, IGitInspector 
             changedFiles,
             ReviewDimensions.All
                 .Select(d => new ReviewDimensionDto(d.Key, d.Name, d.Question, d.Checklist))
-                .ToList());
+                .ToList(),
+            specDto,
+            specItems);
     }
 
     public async Task<ReviewItemDto> SubmitAsync(
@@ -435,12 +658,26 @@ public sealed class ReviewService(IAppDbContext db, IClock clock, IGitInspector 
         // 这里不再重复校验：老数据里可能有超限/无理由的 Skipped，
         // 拿新规则去判历史轮次会把本来能结项的任务卡死。
 
+        // 规约（DoD）的逐条判定也是门禁的一部分：
+        // 七个维度全过，但项目自己的完成定义一条都没判 —— 不能就这么结项。
+        var specItems = await BuildSpecItemsAsync(current, cancellationToken);
+        var pendingSpec = specItems
+            .Where(i => i.Status == nameof(ReviewStatus.Pending))
+            .Select(i => i.Text)
+            .ToList();
+        var failedSpec = specItems
+            .Where(i => i.Status == nameof(ReviewStatus.Failed))
+            .Select(i => i.Text)
+            .ToList();
+
         return new ReviewGateDto(
             true,
             current.Verdict.ToString(),
             failed,
             pending,
-            await CheckCommitAsync(taskId, current, cancellationToken));
+            await CheckCommitAsync(taskId, current, cancellationToken),
+            pendingSpec,
+            failedSpec);
     }
 
     /// <summary>
@@ -605,6 +842,16 @@ public sealed class ReviewService(IAppDbContext db, IClock clock, IGitInspector 
             round.FinishedAt,
             (items ?? round.Items).OrderBy(i => i.Order).Select(ToItemDto).ToList(),
             round.CommitHash);
+
+    private static SpecVerdictDto ToSpecVerdictDto(SpecVerdict verdict) => new(
+        verdict.Id,
+        verdict.TaskId,
+        verdict.ItemKey,
+        verdict.ItemText,
+        verdict.Status.ToString(),
+        verdict.Note,
+        verdict.Reviewer,
+        verdict.DecidedAt);
 
     private static ReviewItemDto ToItemDto(ReviewItem item) =>
         new(

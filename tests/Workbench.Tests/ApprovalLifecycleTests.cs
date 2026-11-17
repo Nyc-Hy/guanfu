@@ -292,7 +292,10 @@ public class ApprovalLifecycleTests
 
         var row = await host.Db.Approvals.AsNoTracking().FirstAsync(a => a.Id == request.Id);
         Assert.Equal(ApprovalStatus.Expired, row.Status);
-        Assert.Equal("执行中断，请重新申请", row.DecisionReason);
+        Assert.Contains("执行中断", row.DecisionReason);
+
+        // 执行方没收尾 → 这次写操作可能已经生效了，必须标「结果未知」交人工确认
+        Assert.True(row.OutcomeUnknown);
         Assert.Equal("system", row.DecidedBy);
     }
 

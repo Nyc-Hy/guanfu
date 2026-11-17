@@ -1,3 +1,4 @@
+using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Workbench.Domain;
 
@@ -15,21 +16,40 @@ public sealed record FileReadResult(string RelativePath, string Content, long Si
 /// </summary>
 public interface IFileSystemService
 {
-    Task<FileListResult> ListAsync(Guid projectId, string? relativePath = null, CancellationToken cancellationToken = default);
+    Task<FileListResult> ListAsync(
+        Guid projectId,
+        string? relativePath = null,
+        CancellationToken cancellationToken = default,
+        /// <summary>
+        /// 这次调用属于哪个任务 —— 有活跃租约且登记了工位时，文件工具按**工位**走。
+        /// </summary>
+        Guid? taskId = null,
+        /// <summary>
+        /// 这次调用的 agent。会话没挂任务时靠它找回工位。
+        /// </summary>
+        string? agentId = null);
 
-    Task<FileReadResult> ReadAsync(Guid projectId, string relativePath, int maxBytes = 512 * 1024, CancellationToken cancellationToken = default);
+    Task<FileReadResult> ReadAsync(
+        Guid projectId,
+        string relativePath,
+        int maxBytes = 512 * 1024,
+        CancellationToken cancellationToken = default,
+        Guid? taskId = null,
+        string? agentId = null);
 }
 
-public sealed class FileSystemService(IAppDbContext db) : IFileSystemService
+public sealed class FileSystemService(IAppDbContext db, IWorkstationResolver? workstations = null) : IFileSystemService
 {
     public const int DefaultMaxBytes = 512 * 1024;
 
     public async Task<FileListResult> ListAsync(
         Guid projectId,
         string? relativePath = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Guid? taskId = null,
+        string? agentId = null)
     {
-        var root = await ResolveRootAsync(projectId, cancellationToken);
+        var root = await ResolveRootAsync(projectId, taskId, agentId, cancellationToken);
         var target = ResolveInside(root, relativePath);
 
         if (!Directory.Exists(target))
@@ -62,14 +82,16 @@ public sealed class FileSystemService(IAppDbContext db) : IFileSystemService
         Guid projectId,
         string relativePath,
         int maxBytes = DefaultMaxBytes,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Guid? taskId = null,
+        string? agentId = null)
     {
         if (string.IsNullOrWhiteSpace(relativePath))
         {
             throw new WorkbenchException("文件路径不能为空。");
         }
 
-        var root = await ResolveRootAsync(projectId, cancellationToken);
+        var root = await ResolveRootAsync(projectId, taskId, agentId, cancellationToken);
         var target = ResolveInside(root, relativePath);
 
         if (!File.Exists(target))
@@ -103,18 +125,108 @@ public sealed class FileSystemService(IAppDbContext db) : IFileSystemService
         // 以实际读到的字节数为准：文件比上限大、或读的过程中被改小，都要如实标注
         var truncated = info.Length > total;
 
-        // 二进制文件不做文本解码，直接告诉调用方
-        if (bytes.Contains((byte)0))
+        // 二进制文件不做文本解码，直接告诉调用方。
+        if (LooksBinary(bytes))
         {
             return new FileReadResult(relativePath, string.Empty, info.Length, truncated, "binary");
         }
 
-        var content = System.Text.Encoding.UTF8.GetString(bytes);
+        var content = DecodeText(bytes);
         return new FileReadResult(relativePath, content, info.Length, truncated, null);
     }
 
-    private async Task<string> ResolveRootAsync(Guid projectId, CancellationToken cancellationToken)
+    /// <summary>
+    /// 是不是二进制文件。
+    ///
+    /// 判断不能只看「有没有 0 字节」：UTF-16 的文本里就有 0 字节
+    /// （中英文混排的 .txt / .csv 常见），照旧判成二进制，agent 就读不到内容了；
+    /// 反过来，普通文本里混进一个 0 字节就被当成二进制，同样误导人。
+    ///
+    /// 现在的口径：**带 BOM 的 UTF-8 / UTF-16 都算文本**（按对应编码解码），
+    /// 其余情况下出现 0 字节判二进制，控制字符占比过高也判二进制。
+    /// </summary>
+    internal static bool LooksBinary(byte[] bytes)
     {
+        if (bytes.Length == 0)
+        {
+            return false;
+        }
+
+        if (HasUtf16Bom(bytes) || HasUtf8Bom(bytes))
+        {
+            return false;
+        }
+
+        var suspicious = 0;
+        foreach (var b in bytes)
+        {
+            if (b == 0)
+            {
+                return true;
+            }
+
+            // 0x09~0x0D（制表、换行、回车）之外的 C0 控制字符
+            if (b < 0x09 || (b > 0x0D && b < 0x20))
+            {
+                suspicious++;
+            }
+        }
+
+        // 控制字符超过 5% → 多半是二进制
+        return suspicious > bytes.Length / 20;
+    }
+
+    /// <summary>按 BOM 决定编码；没有 BOM 就按 UTF-8 解。</summary>
+    internal static string DecodeText(byte[] bytes)
+    {
+        if (bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE)
+        {
+            return Encoding.Unicode.GetString(bytes, 2, bytes.Length - 2);
+        }
+
+        if (bytes.Length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF)
+        {
+            return Encoding.BigEndianUnicode.GetString(bytes, 2, bytes.Length - 2);
+        }
+
+        if (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
+        {
+            return Encoding.UTF8.GetString(bytes, 3, bytes.Length - 3);
+        }
+
+        return Encoding.UTF8.GetString(bytes);
+    }
+
+    private static bool HasUtf8Bom(byte[] bytes) =>
+        bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF;
+
+    private static bool HasUtf16Bom(byte[] bytes) =>
+        bytes.Length >= 2 &&
+        ((bytes[0] == 0xFF && bytes[1] == 0xFE) || (bytes[0] == 0xFE && bytes[1] == 0xFF));
+
+    /// <summary>
+    /// 这次访问的根目录。
+    ///
+    /// **按工位走**：任务登记了工位（自己的 git worktree）且租约还活着，
+    /// 就以工位为根 —— agent 在哪儿干活，工具就跟着看哪儿。
+    /// 不然它在自己的 worktree 里写代码，工作台却去读主工作区，
+    /// 产出采集还会把主工作区的改动记成这个任务的产出。
+    /// </summary>
+    private async Task<string> ResolveRootAsync(
+        Guid projectId,
+        Guid? taskId,
+        string? agentId,
+        CancellationToken cancellationToken)
+    {
+        var station = workstations is null
+            ? null
+            : await workstations.ResolveAsync(projectId, taskId, agentId, cancellationToken);
+
+        if (!string.IsNullOrWhiteSpace(station))
+        {
+            return station;
+        }
+
         var project = await db.Projects
             .AsNoTracking()
             .FirstOrDefaultAsync(p => p.Id == projectId, cancellationToken)

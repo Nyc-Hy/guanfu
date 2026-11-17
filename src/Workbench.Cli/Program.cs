@@ -555,14 +555,18 @@ static async Task<int> TaskCommandAsync(string url, List<string> cliArgs)
         {
             if (cliArgs.Count < 2)
             {
-                Console.Error.WriteLine("用法: wb task claim <任务ID> --agent <名称> [--lease 30]");
+                Console.Error.WriteLine("用法: wb task claim <任务ID> --agent <名称> [--lease 30] [--worktree <目录>]");
                 return 1;
             }
 
             var agent = GetOption(cliArgs, "--agent") ?? "cli";
             var lease = ParseIntArg(GetOption(cliArgs, "--lease") ?? "30", "租约分钟数", 30);
+
+            // --worktree：自己在哪个工作目录干活。不给 = 项目主工作区（同一时刻只允许一个 agent）。
+            var worktree = GetOption(cliArgs, "--worktree");
             var task = await client.PostAsync<TaskSummaryDto>(
-                $"/api/tasks/{Arg(cliArgs, 1)}/claim", new { agentId = agent, leaseMinutes = lease });
+                $"/api/tasks/{Arg(cliArgs, 1)}/claim",
+                new { agentId = agent, leaseMinutes = lease, workPath = worktree });
             Console.WriteLine($"已认领 {task.Id}，租约至 {task.LeaseExpiresAt}");
             return 0;
         }

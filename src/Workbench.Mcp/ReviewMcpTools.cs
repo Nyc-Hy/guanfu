@@ -129,6 +129,34 @@ public sealed class ReviewMcpTools(IReviewService reviews)
             return ReviewToolResult.Fail(ex.Message);
         }
     }
+    [McpServerTool(Name = "workbench_submit_spec_verdict")]
+    [Description(
+        "回写**项目规约（DoD）某一条**的判定：满足 / 不满足 / 不适用。" +
+        "item 填规约里的原文（评审包里 specItems 那一列给的就是它）。" +
+        "七个维度是通用的，规约是这个项目特有的 —— 评审时要一条一条对着判；" +
+        "DoD 没判完不许结项（结项门禁会拦）。" +
+        "判定为不适用必须写明理由。")]
+    public async Task<SpecVerdictToolResult> SubmitSpecVerdictAsync(
+        Guid taskId,
+        string item,
+        bool satisfied,
+        string? note = null,
+        string? reviewer = null,
+        int? round = null,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var verdict = await reviews.SubmitSpecVerdictAsync(
+                taskId, item, satisfied, note, reviewer, round, cancellationToken);
+
+            return new SpecVerdictToolResult { Ok = true, Verdict = verdict };
+        }
+        catch (Exception ex) when (ex is WorkbenchException or InvalidOperationException)
+        {
+            return new SpecVerdictToolResult { Ok = false, Error = ex.Message };
+        }
+    }
 }
 
 /// <summary>
@@ -151,4 +179,16 @@ public sealed record ReviewToolResult
     public IReadOnlyList<ReviewRoundDto>? Rounds { get; init; }
 
     public static ReviewToolResult Fail(string error) => new() { Ok = false, Error = error };
+}
+
+/// <summary>规约逐条判定的返回形状。</summary>
+public sealed record SpecVerdictToolResult
+{
+    public bool Ok { get; init; }
+
+    public string? Error { get; init; }
+
+    public SpecVerdictDto? Verdict { get; init; }
+
+    public static SpecVerdictToolResult Fail(string error) => new() { Ok = false, Error = error };
 }

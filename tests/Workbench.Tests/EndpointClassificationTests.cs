@@ -34,7 +34,6 @@ public class EndpointClassificationTests
     /// </summary>
     private static readonly HashSet<string> OpenWriteEndpoints = new(StringComparer.OrdinalIgnoreCase)
     {
-        "POST /api/projects",
         "POST /api/projects/{projectId:guid}/tasks",
         "PATCH /api/tasks/{taskId:guid}",
         "POST /api/tasks/{taskId:guid}/archive",
@@ -50,6 +49,7 @@ public class EndpointClassificationTests
         "POST /api/tasks/{taskId:guid}/documents",
         "POST /api/tasks/{taskId:guid}/milestone",
         "POST /api/tasks/{taskId:guid}/review",
+        "POST /api/tasks/{taskId:guid}/review/spec-verdict",
         "POST /api/tasks/{taskId:guid}/review/{dimension}",
         "POST /api/projects/{projectId:guid}/milestones",
         "PUT /api/milestones/{milestoneId:guid}",
@@ -65,7 +65,11 @@ public class EndpointClassificationTests
         "POST /api/approvals/{approvalId:guid}/decide",
         "POST /api/approvals/{approvalId:guid}/revoke",
         "POST /api/approvals/batch-decide",
+        "POST /api/projects",
         "PUT /api/projects/{projectId:guid}/config",
+        "PUT /api/projects/{projectId:guid}/spec",
+        "POST /api/milestones/{milestoneId:guid}/accept",
+        "POST /api/milestones/{milestoneId:guid}/unaccept",
         "POST /api/projects/{projectId:guid}/db-connections",
         "POST /api/tasks/{taskId:guid}/launch-agent",
         "POST /api/db-connections/{connectionId:guid}/rules",

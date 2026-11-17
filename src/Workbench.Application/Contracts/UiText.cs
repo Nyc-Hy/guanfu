@@ -213,7 +213,7 @@ public static class UiText
         "db_test_connection" => "测试数据库连接",
 
         // 审批
-        "approval_revoke" => "撤销审批",
+        "workbench_revoke_approval" => "撤销审批",
 
         // 文档
         "doc_parse" => "解析文档",
@@ -263,10 +263,10 @@ public static class UiText
         "workbench_get_project_config" => "查看项目配置",
 
         // 项目 / 里程碑
-        "project_create" => "新建项目",
-        "milestone_create" => "新建里程碑",
-        "milestone_update" => "改里程碑",
-        "milestone_delete" => "删里程碑",
+        "workbench_create_project" => "新建项目",
+        "workbench_create_milestone" => "新建里程碑",
+        "workbench_update_milestone" => "改里程碑",
+        "workbench_delete_milestone" => "删里程碑",
         "workbench_assign_milestone" => "归组里程碑",
 
         _ => tool

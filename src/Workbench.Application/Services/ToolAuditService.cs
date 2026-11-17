@@ -155,46 +155,74 @@ public sealed class ToolAuditService(IAppDbContext db, IClock clock) : IToolAudi
     ///
     /// 改一条内容 → 那条的哈希对不上；删一条 → 后一条的链接断了。
     /// 两种都能查出来。
+    ///
+    /// **分批走，不把全表装进内存**：审计表只增不减（企业合规要求留痕），
+    /// 十万条记录一次性 ToList 会吃光内存，验链本身就成了故障源。
     /// </summary>
     public async Task<AuditChainReport> VerifyChainAsync(CancellationToken cancellationToken = default)
     {
-        var rows = await db.ToolCallAudits
-            .AsNoTracking()
-            .OrderBy(a => a.Sequence)
-            .ToListAsync(cancellationToken);
-
         string? expectedPrev = null;
         var chained = 0;
+        var total = 0;
+        long lastSequence = 0;
 
-        foreach (var row in rows)
+        while (true)
         {
-            // 链启用前的老数据没有哈希：不参与校验，也不打断链。
-            if (string.IsNullOrEmpty(row.Hash))
+            // 按 Sequence 游标翻页（不能用 Skip：越翻越慢，而且中途可能有新记录插进来）。
+            var rows = await db.ToolCallAudits
+                .AsNoTracking()
+                .Where(a => a.Sequence > lastSequence)
+                .OrderBy(a => a.Sequence)
+                .Take(VerifyBatchSize)
+                .ToListAsync(cancellationToken);
+
+            if (rows.Count == 0)
             {
-                continue;
+                break;
             }
 
-            var recomputed = ComputeHash(row, row.PrevHash);
-            if (!string.Equals(recomputed, row.Hash, StringComparison.Ordinal))
+            foreach (var row in rows)
             {
-                return new AuditChainReport(
-                    false, rows.Count, chained, row.Id,
-                    "这条记录的内容跟哈希对不上 —— 它被改过。");
+                total++;
+
+                // 链启用前的老数据没有哈希：不参与校验，也不打断链。
+                if (string.IsNullOrEmpty(row.Hash))
+                {
+                    continue;
+                }
+
+                var recomputed = ComputeHash(row, row.PrevHash);
+                if (!string.Equals(recomputed, row.Hash, StringComparison.Ordinal))
+                {
+                    return new AuditChainReport(
+                        false, total, chained, row.Id,
+                        "这条记录的内容跟哈希对不上 —— 它被改过。");
+                }
+
+                if (!string.Equals(row.PrevHash, expectedPrev, StringComparison.Ordinal))
+                {
+                    return new AuditChainReport(
+                        false, total, chained, row.Id,
+                        "跟上一条的链接断了 —— 中间有记录被删掉或换过。");
+                }
+
+                expectedPrev = row.Hash;
+                chained++;
             }
 
-            if (!string.Equals(row.PrevHash, expectedPrev, StringComparison.Ordinal))
-            {
-                return new AuditChainReport(
-                    false, rows.Count, chained, row.Id,
-                    "跟上一条的链接断了 —— 中间有记录被删掉或换过。");
-            }
+            lastSequence = rows[^1].Sequence;
 
-            expectedPrev = row.Hash;
-            chained++;
+            if (rows.Count < VerifyBatchSize)
+            {
+                break;
+            }
         }
 
-        return new AuditChainReport(true, rows.Count, chained, null, null);
+        return new AuditChainReport(true, total, chained, null, null);
     }
+
+    /// <summary>验链时一批读多少条。</summary>
+    private const int VerifyBatchSize = 500;
 
     /// <summary>截断到上限并留标记（标记也算在上限内）；null / 短文本原样返回。</summary>
     internal static string? CapSummary(string? summary)

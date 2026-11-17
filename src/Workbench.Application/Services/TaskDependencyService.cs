@@ -372,9 +372,18 @@ public static class TaskEventTypes
     public const string Note = "note";
     public const string Claimed = "task.claimed";
     public const string Released = "task.released";
+
+    /// <summary>任务从一个 agent 转手到另一个 agent（多 agent 协作的交接点）。</summary>
+    public const string Handoff = "task.handoff";
     public const string ReviewRoundOpened = "review.round_opened";
     public const string ReviewDimensionResult = "review.dimension_result";
     public const string ReviewRoundClosed = "review.round_closed";
+
+    /// <summary>agent 自报了这个任务的 token / 费用用量。</summary>
+    public const string CostReported = "usage.cost_reported";
+
+    /// <summary>项目规约（DoD）某一条的判定结果。</summary>
+    public const string SpecVerdictResult = "review.spec_verdict";
     public const string AgentLaunched = "agent.launched";
     public const string AgentExited = "agent.exited";
     public const string MilestoneAssigned = "milestone.assigned";

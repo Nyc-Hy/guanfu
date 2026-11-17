@@ -58,6 +58,18 @@ public interface IDbConnectionService
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// 这张表允不允许写（<see cref="DbTableRule.WriteForbidden"/>）。
+    ///
+    /// 配了「禁止写」的表，写不进去 —— 连人工审批都不放行。
+    /// 审批是流程，禁写才是保证：真正不能碰的表得有一道硬门。
+    /// 没有匹配规则时放行（默认不禁写）。
+    /// </summary>
+    Task<bool> IsWriteAllowedAsync(
+        Guid connectionId,
+        string? tableName,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// 试连一下（跑 SELECT 1）。配置存进去了不等于连得上 ——
     /// 以前要等到 agent 真的执行 SQL 才发现服务器名写错了。
     /// </summary>
@@ -75,6 +87,7 @@ public interface IDbConnectionService
         string tableName,
         bool allowRead = true,
         bool writeRequiresApproval = true,
+        bool writeForbidden = false,
         CancellationToken cancellationToken = default);
 
     /// <summary>删一条表级规则。</summary>
@@ -88,7 +101,9 @@ public sealed record DbTableRuleDto(
     string SchemaName,
     string TableName,
     bool AllowRead,
-    bool WriteRequiresApproval);
+    bool WriteRequiresApproval,
+    /// <summary>true = 这张表一律不许写（连人工审批都不放行）。</summary>
+    bool WriteForbidden = false);
 
 /// <param name="probe">
 /// 连接探活器。Infrastructure 用 SQL 执行器适配进来（跑 SELECT 1）。
@@ -200,6 +215,15 @@ public sealed class DbConnectionService(
         // 只有规则明确写了 AllowRead=false 的表才拦。
         var rule = await FindRuleAsync(connectionId, tableName, cancellationToken);
         return rule is null || rule.AllowRead;
+    }
+
+    public async Task<bool> IsWriteAllowedAsync(
+        Guid connectionId,
+        string? tableName,
+        CancellationToken cancellationToken = default)
+    {
+        var rule = await FindRuleAsync(connectionId, tableName, cancellationToken);
+        return rule is null || !rule.WriteForbidden;
     }
 
     public async Task<(bool Ok, string? Error)> TestAsync(
@@ -328,7 +352,8 @@ public sealed class DbConnectionService(
             .Where(r => r.ConnectionId == connectionId)
             .OrderBy(r => r.SchemaName).ThenBy(r => r.TableName)
             .Select(r => new DbTableRuleDto(
-                r.Id, r.ConnectionId, r.SchemaName, r.TableName, r.AllowRead, r.WriteRequiresApproval))
+                r.Id, r.ConnectionId, r.SchemaName, r.TableName, r.AllowRead,
+                r.WriteRequiresApproval, r.WriteForbidden))
             .ToListAsync(cancellationToken);
     }
 
@@ -338,6 +363,7 @@ public sealed class DbConnectionService(
         string tableName,
         bool allowRead = true,
         bool writeRequiresApproval = true,
+        bool writeForbidden = false,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(tableName))
@@ -359,14 +385,16 @@ public sealed class DbConnectionService(
             SchemaName = schema,
             TableName = tableName.Trim(),
             AllowRead = allowRead,
-            WriteRequiresApproval = writeRequiresApproval
+            WriteRequiresApproval = writeRequiresApproval,
+            WriteForbidden = writeForbidden
         };
 
         db.DbTableRules.Add(rule);
         await db.SaveChangesAsync(cancellationToken);
 
         return new DbTableRuleDto(
-            rule.Id, rule.ConnectionId, rule.SchemaName, rule.TableName, rule.AllowRead, rule.WriteRequiresApproval);
+            rule.Id, rule.ConnectionId, rule.SchemaName, rule.TableName, rule.AllowRead,
+            rule.WriteRequiresApproval, rule.WriteForbidden);
     }
 
     public async Task DeleteRuleAsync(

@@ -17,7 +17,11 @@
 
 ## 一、先说清楚工作台是什么
 
-在 AI 参与开发的前提下，工作台回答的是**「事后说得清」**这个问题。它做三件事：
+**它是一个给 agent 用的项目管理工具** —— 第一公民是 agent，人也要用。
+任务、里程碑、依赖、状态机是内核；MCP 工具集把这些原语喂给 agent；
+审计与审批是让人敢信这个看板的底座。
+
+这条定位落到具体，是三件事：
 
 1. **追踪任务进度** —— 状态机 + append-only 事件账本 + 评审门禁；
 2. **记录开发产出的文件** —— 工作台自己从 git 里数，不是 agent 自报的；
@@ -78,19 +82,49 @@
 | 落地 | `src/Workbench.Infrastructure/SqlStatementClassifier.cs`（ScriptDom AST，不看首关键字）<br>`WITH c AS (...) SELECT` 与 `WITH c AS (...) UPDATE` 首关键字都是 WITH，`SELECT ... INTO` 会建表 —— 只有看 AST 才分得开<br>`OPENROWSET` / `OPENQUERY` / `OPENDATASOURCE` / `OPENXML` 一律判 Unknown |
 | 自动化证据 | 端到端 **D8**（`UPDATE` 被拦、错误信息指引改用 `db_execute`；`EXEC` 被拦）<br>单测 `SqlStatementClassifierTests`（19） |
 
-表级规则也在守：`AllowRead=false` 的表不许读；`WriteRequiresApproval=false` 的表免审批写
-（免的只是「等人工点头」，审计照写）。单测 `DbTableRuleTests`（6）。
+表级规则也在守，三档：
+- `AllowRead=false` 的表不许读；
+- `WriteRequiresApproval=false` 的表免审批写（免的只是「等人工点头」，审计照写）；
+- `WriteForbidden=true` 的表**一律不许写** —— 连人工审批都不放行（审批是流程，禁写才是保证）。
+
+写目标的识别走 AST（`SqlWriteTargetAnalyzer`）：别名（`UPDATE t … FROM Secret AS t` 写的是
+Secret）、跨库（`OtherDb.dbo.T`）、`INSERT … EXEC` 一律判「认不出」→ 转人工审批，
+免审批的判定不会认错表。单测 `SqlWriteTargetAnalyzerTests`（12）、`DbTableRuleTests`。
+
+### D2. 项目级规约：人定规矩，agent 读得到
+
+| 项 | 内容 |
+|---|---|
+| 能力 | 项目目标、完成定义（DoD 逐条）、提交信息约定、测试命令、分支命名、红线与禁忌 —— **人填、agent 读**；改规约要人工凭证 |
+| 落地 | `src/Workbench.Domain/Entities.cs`（`ProjectSpec`）<br>`src/Workbench.Application/Services/ProjectSpecService.cs`<br>`workbench_get_project_spec` + 上下文包 + 评审包 |
+| 自动化证据 | 单测 `ProjectSpecTests`（7）<br>端到端（agent 读到 DoD 逐条、上下文包里带着规约） |
+
+评审时它就是尺子：七个维度是通用的，规约是这个项目特有的 —— 「什么算做完」不再各说各话。
+
+### D3. 里程碑验收与用量闸门
+
+| 项 | 内容 |
+|---|---|
+| 能力 | 里程碑验收（人的签字，签过之后里面的活不许回退）；每任务工具调用上限（可执行的节流阀）；用量统计（工具调用次数自动可验证，token / 费用为 agent 自报） |
+| 落地 | `src/Workbench.Application/Services/MilestoneService.cs`（验收 / 撤销验收）<br>`src/Workbench.Application/Services/TaskUsageService.cs`<br>MCP 中央过滤器（`McpServiceCollectionExtensions`）里的用量闸门 |
+| 自动化证据 | 单测 `MilestoneAcceptanceTests`（6）、`TaskUsageTests`（5）、`AgentHandoffTests`（3）<br>端到端 F4.2（超上限后工具调用被拦下，错误信息给出上限） |
+
+多 agent 协作的痕迹也在：交接点（`task.handoff`，带 from / to）与按次留痕的开销上报。
 
 ### E. 身份与授权：敏感操作要人工凭证
 
 | 项 | 内容 |
 |---|---|
-| 能力 | 裁决审批、改项目配置、存数据库密码、启动 agent、工作区搬迁 —— 没凭证直接 401 |
+| 能力 | 裁决审批、改项目配置、存数据库密码、启动 agent、工作区搬迁、**新建项目** —— 没凭证直接 401 |
 | 落地 | `src/Workbench.Web/HumanTokenMiddleware.cs` + `HumanTokenPolicy.IsSensitiveEndpoint`（端点级规则表）<br>token 落在 `WORKBENCH_HOME/.human-token`（0600），启动横幅打印 |
 | 自动化证据 | 端到端 **E2**（CLI 不带凭证改项目配置 → 退出码 2 + `HTTP 401`）<br>单测 `HumanTokenTests`（22）、`EndpointClassificationTests`（4） |
 
 `EndpointClassificationTests` 会枚举所有 `/api` 写端点，断言该要人工凭证的要、读端点别误伤 ——
 **新增敏感端点漏一条规则 = 开一扇门**，所以这条由测试钉住。
+
+**新建项目也要凭证**：项目一创建就把一个文件系统根目录授给了它，之后 `fs_list` / `fs_read`
+以它为根。不设门的话，拿到 MCP/REST 的 agent 自己建个项目指向 `/etc` 就能把文件读出去 ——
+改 `repoPath` 要凭证、建项目不要，等于开了扇后门。
 
 ### F. Web 安全：跨站与 DNS rebinding
 

@@ -672,7 +672,14 @@ else
 
         try
         {
-            await InScopeAsync(a => a.DecideAsync(approvalId, approve, "human", string.IsNullOrWhiteSpace(reason) ? null : reason));
+            // 凭证指纹跟 REST 那条路同一个算法 —— 不然界面上批的和脚本里批的对不上，
+            // 审计就分不出是谁在操作。
+            var fingerprint = HumanTokenPolicy.Fingerprint(Tokens.Token);
+
+            await InScopeAsync(a => a.DecideAsync(
+                approvalId, approve, "human",
+                string.IsNullOrWhiteSpace(reason) ? null : reason,
+                decidedByCredential: fingerprint));
             _reasons.Remove(approvalId);
             _selected.Remove(approvalId);
             ActionError = null;
@@ -738,7 +745,8 @@ else
                 try
                 {
                     await InScopeAsync(a => a.DecideAsync(
-                        id, approve, "human", string.IsNullOrWhiteSpace(BatchReason) ? null : BatchReason));
+                        id, approve, "human", string.IsNullOrWhiteSpace(BatchReason) ? null : BatchReason,
+                        decidedByCredential: HumanTokenPolicy.Fingerprint(Tokens.Token)));
                     ok++;
                     _reasons.Remove(id);
                 }

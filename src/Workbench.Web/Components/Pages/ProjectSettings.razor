@@ -2,6 +2,7 @@
 @rendermode InteractiveServer
 @using Microsoft.AspNetCore.Http
 @inject IProjectService Projects
+@inject IProjectSpecService Specs
 @inject IMilestoneService Milestones
 @inject HumanTokenAccessor Tokens
 @inject IJSRuntime JS
@@ -67,6 +68,10 @@ else
                 <button class="wb-tab @(ActiveTab == "agent" ? "wb-tab-active" : "")" role="tab"
                         aria-selected="@(ActiveTab == "agent")" @onclick='() => GoTab("agent")'>
                     agent
+                </button>
+                <button class="wb-tab @(ActiveTab == "spec" ? "wb-tab-active" : "")" role="tab"
+                        aria-selected="@(ActiveTab == "spec")" @onclick='() => GoTab("spec")'>
+                    规约
                 </button>
                 <button class="wb-tab @(ActiveTab == "notify" ? "wb-tab-active" : "")" role="tab"
                         aria-selected="@(ActiveTab == "notify")" @onclick='() => GoTab("notify")'>
@@ -143,6 +148,98 @@ else
                     跑命令只能执行命中白名单的命令，且每次都要人工审批。
                     命令不走 shell 解析，不支持管道与重定向。
                 </p>
+            </section>
+
+            <section class="wb-panel">
+                <h3>agent 并发</h3>
+                <div class="wb-form-row">
+                    <label class="wb-label">同时领活的 agent 上限</label>
+                    <input class="wb-input" type="number" min="0" placeholder="0 = 不限"
+                           @bind="MaxConcurrentAgentsText" @bind:event="oninput" />
+                </div>
+                <div class="wb-form-row">
+                    <label class="wb-label">每任务工具调用上限</label>
+                    <input class="wb-input" type="number" min="0" placeholder="0 = 不限"
+                           @bind="MaxToolCallsPerTaskText" @bind:event="oninput" />
+                </div>
+                <p class="wb-hint">
+                    一个 agent 跑飞时会把工作台当自己的工具箱刷。上限是节流阀：
+                    超过就不再执行，agent 会看到明确的上限自己去收敛。填 0 表示不限。
+                </p>
+                <p class="wb-hint">
+                    agent 是并发生产者 —— 不设上限，几个 agent 一起抢同一个仓库就会踩文件。
+                    上限是节流阀：超过就领不到，等一个做完再来。填 0 表示不限。
+                </p>
+                <p class="wb-hint">
+                    另外，<strong>主工作区同一时刻只允许一个 agent 占着</strong>。
+                    要多个 agent 并行，各开各的 git worktree，领任务时带上 worktree 参数。
+                </p>
+            </section>
+            }
+            else if (ActiveTab == "spec")
+            {
+            <section class="wb-panel">
+                <h3>项目级规约</h3>
+                <p class="wb-hint">
+                    这是<strong>人定的规矩</strong>，agent 开工前会读到它，评审时也拿它当尺子。
+                    写下来的目的不是留档，是让「什么算做完」不再各说各话 ——
+                    agent 只填了就写不出来的部分，你把 DoD 逐条写清楚。
+                </p>
+
+                <div class="wb-form-row">
+                    <label class="wb-label">项目目标</label>
+                    <textarea class="wb-input wb-textarea" rows="3"
+                              placeholder="这个项目要解决什么问题？agent 开工前先读它。"
+                              @bind="SpecPurpose" @bind:event="oninput"></textarea>
+                </div>
+
+                <div class="wb-form-row">
+                    <label class="wb-label">完成定义（DoD）</label>
+                    <textarea class="wb-input wb-textarea" rows="6"
+                              placeholder="一行一条，例如&#10;有单测覆盖新增逻辑&#10;文档里的用法同步更新&#10;接口错误码与文档一致"
+                              @bind="SpecDefinitionOfDone" @bind:event="oninput"></textarea>
+                </div>
+                <p class="wb-hint">一行一条 —— agent 逐条对着做，评审时逐条对着判。</p>
+
+                <div class="wb-form-row">
+                    <label class="wb-label">提交信息约定</label>
+                    <input class="wb-input" placeholder="例如：feat(登录): 补上会话续期；带 REQ-001 编号"
+                           @bind="SpecCommitConvention" @bind:event="oninput" />
+                </div>
+
+                <div class="wb-form-row">
+                    <label class="wb-label">测试命令</label>
+                    <input class="wb-input" placeholder="例如：dotnet test Workbench.sln"
+                           @bind="SpecTestCommand" @bind:event="oninput" />
+                </div>
+
+                <div class="wb-form-row">
+                    <label class="wb-label">分支命名约定</label>
+                    <input class="wb-input" placeholder="例如：feature/REQ-001-登录续期"
+                           @bind="SpecBranchConvention" @bind:event="oninput" />
+                </div>
+
+                <div class="wb-form-row">
+                    <label class="wb-label">红线与禁忌</label>
+                    <textarea class="wb-input wb-textarea" rows="3"
+                              placeholder="不许碰的东西、要人工确认的动作 —— 一行一条"
+                              @bind="SpecGuardrails" @bind:event="oninput"></textarea>
+                </div>
+
+                <div class="wb-form-row">
+                    <button class="wb-btn wb-btn-primary" disabled="@(SavingSpec || Saving || !Gate.Authorized)"
+                            @onclick="SaveSpecAsync">保存规约</button>
+                    @if (SpecUpdatedAt is not null)
+                    {
+                        <span class="wb-muted">
+                            上次更新 @SpecUpdatedAt.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm")
+                            @if (!string.IsNullOrWhiteSpace(SpecUpdatedBy))
+                            {
+                                <text> · @SpecUpdatedBy</text>
+                            }
+                        </span>
+                    }
+                </div>
             </section>
             }
             else if (ActiveTab == "notify")
@@ -258,6 +355,7 @@ else
     private string ActiveTab => Tab switch
     {
         "agent" => "agent",
+        "spec" => "spec",
         "notify" => "notify",
         "milestone" => "milestone",
         _ => "project"
@@ -278,6 +376,19 @@ else
     private string AllowedCommandsText { get; set; } = string.Empty;
     private string NotificationWebhookUrl { get; set; } = string.Empty;
     private string NotificationFormat { get; set; } = "generic";
+    private string MaxConcurrentAgentsText { get; set; } = "0";
+    private string MaxToolCallsPerTaskText { get; set; } = "0";
+
+    // ---- 项目级规约（人定的规矩，agent 读）----
+    private string SpecPurpose { get; set; } = string.Empty;
+    private string SpecDefinitionOfDone { get; set; } = string.Empty;
+    private string SpecCommitConvention { get; set; } = string.Empty;
+    private string SpecTestCommand { get; set; } = string.Empty;
+    private string SpecBranchConvention { get; set; } = string.Empty;
+    private string SpecGuardrails { get; set; } = string.Empty;
+    private DateTimeOffset? SpecUpdatedAt { get; set; }
+    private string? SpecUpdatedBy { get; set; }
+    private bool SavingSpec { get; set; }
 
     // ---- 里程碑编辑 ----
     private string EditMilestoneId { get; set; } = string.Empty;
@@ -289,6 +400,82 @@ else
         Guid.TryParse(EditMilestoneId, out var id)
             ? MilestoneItems.FirstOrDefault(m => m.Id == id)
             : null;
+
+    /// <summary>把规约读进表单。</summary>
+    private async Task LoadSpecAsync()
+    {
+        try
+        {
+            var spec = await Specs.GetAsync(ProjectId);
+
+            SpecPurpose = spec.Purpose ?? string.Empty;
+            SpecDefinitionOfDone = string.Join(Environment.NewLine, spec.DefinitionOfDone);
+            SpecCommitConvention = spec.CommitConvention ?? string.Empty;
+            SpecTestCommand = spec.TestCommand ?? string.Empty;
+            SpecBranchConvention = spec.BranchConvention ?? string.Empty;
+            SpecGuardrails = spec.Guardrails ?? string.Empty;
+            SpecUpdatedAt = spec.UpdatedAt;
+            SpecUpdatedBy = spec.UpdatedBy;
+        }
+        catch (Exception ex)
+        {
+            // 规约读不到不影响其它页签 —— 别让一个附属功能把整页搞挂。
+            ActionError = PageError.From(ex, "读取项目规约");
+        }
+    }
+
+    /// <summary>保存规约。改规矩是人的决定，所以要人工凭证（界面上已校验过）。</summary>
+    private async Task SaveSpecAsync()
+    {
+        if (SavingSpec || Saving || !Gate.Authorized)
+        {
+            return;
+        }
+
+        SavingSpec = true;
+        ActionError = null;
+        StateHasChanged();
+
+        try
+        {
+            var input = new ProjectSpecInput(
+                SpecPurpose,
+                SpecDefinitionOfDone.Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).ToList(),
+                SpecCommitConvention,
+                SpecTestCommand,
+                SpecBranchConvention,
+                SpecGuardrails);
+
+            var saved = await Specs.UpdateAsync(ProjectId, input, "human");
+
+            SpecUpdatedAt = saved.UpdatedAt;
+            SpecUpdatedBy = saved.UpdatedBy;
+            ActionError = PageError.Notice("规约已保存 —— agent 下次开工就能读到。");
+        }
+        catch (Exception ex)
+        {
+            ActionError = PageError.From(ex, "保存项目规约");
+        }
+        finally
+        {
+            SavingSpec = false;
+        }
+    }
+
+    /// <summary>
+    /// 并行上限的输入值。填不出来的（空、不是数字）当作 0 = 不限 ——
+    /// 宁可宽松点，也不要因为一个手滑的值把人挡在门外。
+    /// </summary>
+    private int ParseMaxConcurrentAgents() =>
+        int.TryParse(MaxConcurrentAgentsText?.Trim(), out var value) && value > 0
+            ? value
+            : 0;
+
+    /// <summary>每任务工具调用上限（0 = 不限）。</summary>
+    private int ParseMaxToolCallsPerTask() =>
+        int.TryParse(MaxToolCallsPerTaskText?.Trim(), out var value) && value > 0
+            ? value
+            : 0;
 
     private bool Saving { get; set; }
     private bool Busy { get; set; }
@@ -393,6 +580,10 @@ else
             AllowedCommandsText = string.Join(Environment.NewLine, Config.AllowedCommands);
             NotificationWebhookUrl = Config.NotificationWebhookUrl ?? string.Empty;
             NotificationFormat = Config.NotificationFormat ?? "generic";
+            MaxConcurrentAgentsText = Config.MaxConcurrentAgents.ToString();
+            MaxToolCallsPerTaskText = Config.MaxToolCallsPerTask.ToString();
+
+            await LoadSpecAsync();
 
             MilestoneItems = await Milestones.ListAsync(ProjectId);
             NotFound = false;
@@ -452,9 +643,16 @@ else
                 allowed,
                 AgentCommand,
                 NotificationWebhookUrl,
-                NotificationFormat);
+                NotificationFormat,
+                default,
+                ParseMaxConcurrentAgents(),
+                ParseMaxToolCallsPerTask());
 
             AllowedCommandsText = string.Join(Environment.NewLine, Config.AllowedCommands);
+            MaxConcurrentAgentsText = Config.MaxConcurrentAgents.ToString();
+            MaxToolCallsPerTaskText = Config.MaxToolCallsPerTask.ToString();
+
+            await LoadSpecAsync();
             ActionError = PageError.Notice("已保存。");
         }
         catch (Exception ex)

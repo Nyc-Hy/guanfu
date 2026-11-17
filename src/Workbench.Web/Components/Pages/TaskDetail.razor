@@ -59,6 +59,20 @@ else
                 {
                     <span> · 持有者 @Context.Task.ClaimedBy</span>
                 }
+                @if (!string.IsNullOrWhiteSpace(Context.Task.WorkPath))
+                {
+                    // 工位一直显示 —— 活干完了租约会清掉，
+                    // 但「这活是在哪个目录干的」是这活的历史，不该跟着消失。
+                    <span> · </span>
+                    @if (IsMainCheckout)
+                    {
+                        <span class="wb-chip" title="@Context.Task.WorkPath">⌂ 主工作区</span>
+                    }
+                    else
+                    {
+                        <span class="wb-chip wb-chip-ok" title="@Context.Task.WorkPath">⌂ @System.IO.Path.GetFileName(Context.Task.WorkPath)</span>
+                    }
+                }
                 @if (!string.IsNullOrWhiteSpace(Context.Project.Branch))
                 {
                     <span> · ⎇ @Context.Project.Branch</span>
@@ -157,7 +171,7 @@ else
                 }
                 else
                 {
-                    <p class="wb-muted">v@Context.Plan.Version · @(Context.Plan.Author ?? "未知作者") · @Context.Plan.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</p>
+                    <p class="wb-muted">v@(Context.Plan.Version) · @(Context.Plan.Author ?? "未知作者") · @Context.Plan.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</p>
                     @if (!string.IsNullOrWhiteSpace(Context.Plan.Background))
                     {
                         <h4>背景</h4>
@@ -373,6 +387,71 @@ else
                     </div>
                     <p class="wb-hint">跳过 = 该维度不适用，必须写理由，每轮最多跳 2 个。</p>
 
+                    @if (SpecItems.Count > 0)
+                    {
+                        <h4>项目规约（完成定义）逐条判定</h4>
+                        <p class="wb-hint">
+                            维度是通用的，规约是这个项目特有的 —— 完成定义一条一条判，
+                            没判完<strong>不许结项</strong>。
+                        </p>
+                        <div class="wb-table-scroll">
+                            <table class="wb-table">
+                                <thead>
+                                <tr>
+                                    <th class="wb-col-dimension">完成定义</th>
+                                    <th class="wb-col-verdict">判定</th>
+                                    <th class="wb-col-finding">说明</th>
+                                    <th class="wb-col-reviewer">判定人</th>
+                                    <th class="wb-col-writeback">回写</th>
+                                </tr>
+                                </thead>
+                                <tbody>
+                                @foreach (var item in SpecItems)
+                                {
+                                    <tr>
+                                        <td>@item.Text</td>
+                                        <td>
+                                            @switch (item.Status)
+                                            {
+                                                case "Passed":
+                                                    <span class="wb-tag wb-tag-ok">满足</span>
+                                                    break;
+                                                case "Failed":
+                                                    <span class="wb-tag wb-tag-danger">不满足</span>
+                                                    break;
+                                                case "Skipped":
+                                                    <span class="wb-tag">不适用</span>
+                                                    break;
+                                                default:
+                                                    <span class="wb-tag wb-tag-warn">待判定</span>
+                                                    break;
+                                            }
+                                        </td>
+                                        <td class="wb-muted">@item.Note</td>
+                                        <td class="wb-muted">@item.Reviewer</td>
+                                        <td>
+                                            <div class="wb-form-row">
+                                                <input class="wb-input" placeholder="说明（不适用必填）"
+                                                       @bind:get="GetSpecNote(item.ItemKey)"
+                                                       @bind:set="v => SetSpecNote(item.ItemKey, v)"
+                                                       @bind:event="oninput" />
+                                            </div>
+                                            <div class="wb-form-row">
+                                                <button class="wb-btn" disabled="@Busy"
+                                                        @onclick="() => SubmitSpecVerdictAsync(item.Text, true, false)">满足</button>
+                                                <button class="wb-btn wb-btn-danger" disabled="@Busy"
+                                                        @onclick="() => SubmitSpecVerdictAsync(item.Text, false, false)">不满足</button>
+                                                <button class="wb-btn" disabled="@Busy"
+                                                        @onclick="() => SubmitSpecVerdictAsync(item.Text, false, true)">不适用</button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+
                     @if (ReviewHistory.Count > 1)
                     {
                         <h4>历史轮次</h4>
@@ -576,6 +655,31 @@ else
             <section class="wb-panel">
                 <h3>任务属性</h3>
 
+                <h4>用量</h4>
+                @if (Usage is not null)
+                {
+                    <div class="wb-muted">
+                        工具调用 @Usage.ToolCalls 次（@Usage.UniqueTools 种工具）·
+                        事件 @Usage.Events 条
+                        @if (Usage.ReportedTokens.HasValue)
+                        {
+                            <text> · 自报 @Usage.ReportedTokens tokens</text>
+                        }
+                        @if (Usage.ReportedCost.HasValue)
+                        {
+                            <text> · 自报 @Usage.ReportedCost @(Usage.CostCurrency ?? "CNY")</text>
+                        }
+                    </div>
+                    @if (Usage.CallBudget > 0)
+                    {
+                        <div class="wb-muted">调用上限 @Usage.CallBudget 次（超了就停）</div>
+                    }
+                }
+                else
+                {
+                    <div class="wb-muted">用量统计还没加载。</div>
+                }
+
                 <h4>迭代版本</h4>
                 <div class="wb-field-row">
                     <select class="wb-input" @bind="SelectedMilestoneId" @bind:after="AssignMilestoneAsync">
@@ -696,6 +800,15 @@ else
     private IReadOnlyList<MilestoneDto> MilestoneItems { get; set; } = [];
     private ReviewRoundDto? CurrentReview { get; set; }
     private IReadOnlyList<ReviewRoundDto> ReviewHistory { get; set; } = [];
+
+    /// <summary>项目规约（DoD）的逐条判定。</summary>
+    private IReadOnlyList<SpecItemDto> SpecItems { get; set; } = [];
+
+    /// <summary>这个任务的用量（工具调用次数等）。</summary>
+    private TaskUsageDto? Usage { get; set; }
+
+    /// <summary>逐条判定的说明（按条目键存）。</summary>
+    private readonly Dictionary<string, string> _specNotes = new(StringComparer.Ordinal);
     private IReadOnlyList<StatusEventDto> Events { get; set; } = [];
 
     /// <summary>产出文件。工作台自己从 git 数的，不是 agent 自报的。</summary>
@@ -825,6 +938,17 @@ else
         return await action(scope.ServiceProvider);
     }
 
+    /// <summary>
+    /// 这个任务用的是项目主工作区（还是自己的 worktree）。
+    ///
+    /// 界面上要分得清：主工作区是**共享**的那一个（同一时刻只允许一个 agent 占），
+    /// 自己的 worktree 是隔离的 —— 两者的提示不一样。
+    /// </summary>
+    private bool IsMainCheckout =>
+        string.IsNullOrWhiteSpace(Context?.Task.WorkPath) ||
+        string.IsNullOrWhiteSpace(Context?.Project.RepoPath) ||
+        string.Equals(Context.Project.RepoPath, Context.Task.WorkPath, StringComparison.OrdinalIgnoreCase);
+
     private async Task ReloadAsync(bool syncInputs)
     {
         Loading = true;
@@ -841,9 +965,12 @@ else
             var eventsTask = InScopeAsync(sp => sp.GetRequiredService<ITaskService>().ListEventsAsync(TaskId, 100));
             var fileChangesTask = InScopeAsync(sp => sp.GetRequiredService<IFileChangeService>().ListAsync(TaskId));
             var sessionsTask = InScopeAsync(sp => sp.GetRequiredService<IAgentSessionService>().ListByTaskAsync(TaskId));
+            var specItemsTask = InScopeAsync(sp => sp.GetRequiredService<IReviewService>().GetSpecItemsAsync(TaskId));
+            var usageTask = InScopeAsync(sp => sp.GetRequiredService<ITaskUsageService>().GetTaskUsageAsync(TaskId));
 
             await Task.WhenAll(
-                milestonesTask, currentReviewTask, reviewHistoryTask, eventsTask, fileChangesTask, sessionsTask);
+                milestonesTask, currentReviewTask, reviewHistoryTask, eventsTask, fileChangesTask, sessionsTask,
+                specItemsTask, usageTask);
 
             MilestoneItems = milestonesTask.Result;
             CurrentReview = currentReviewTask.Result;
@@ -851,6 +978,8 @@ else
             Events = eventsTask.Result;
             FileChangeItems = fileChangesTask.Result;
             SessionItems = sessionsTask.Result;
+            SpecItems = specItemsTask.Result;
+            Usage = usageTask.Result;
 
             if (syncInputs)
             {
@@ -915,6 +1044,48 @@ else
         }
     }
 
+    private string GetSpecNote(string key) => _specNotes.TryGetValue(key, out var note) ? note : string.Empty;
+
+    private void SetSpecNote(string key, string value) => _specNotes[key] = value;
+
+    /// <summary>回写规约某一条的判定。</summary>
+    private async Task SubmitSpecVerdictAsync(string item, bool satisfied, bool skipped)
+    {
+        if (Busy)
+        {
+            return;
+        }
+
+        var note = GetSpecNote(TaskKeys.Normalize(item));
+
+        if (skipped && string.IsNullOrWhiteSpace(note))
+        {
+            Error = PageError.Simple("判定为「不适用」必须写明理由。");
+            return;
+        }
+
+        Busy = true;
+        Error = null;
+        StateHasChanged();
+
+        try
+        {
+            await InScopeAsync(sp => sp.GetRequiredService<IReviewService>()
+                .SubmitSpecVerdictAsync(TaskId, item, satisfied, note, "human"));
+
+            _specNotes.Remove(TaskKeys.Normalize(item));
+            await RefreshReviewsAndEventsAsync();
+        }
+        catch (Exception ex)
+        {
+            Error = PageError.From(ex, "回写规约判定");
+        }
+        finally
+        {
+            Busy = false;
+        }
+    }
+
     /// <summary>评审操作后的局部刷新：只重读评审与事件。</summary>
     private async Task RefreshReviewsAndEventsAsync()
     {
@@ -923,10 +1094,13 @@ else
             var currentTask = InScopeAsync(sp => sp.GetRequiredService<IReviewService>().GetCurrentAsync(TaskId));
             var historyTask = InScopeAsync(sp => sp.GetRequiredService<IReviewService>().ListAsync(TaskId));
             var eventsTask = InScopeAsync(sp => sp.GetRequiredService<ITaskService>().ListEventsAsync(TaskId, 100));
-            await Task.WhenAll(currentTask, historyTask, eventsTask);
+            var specItemsTask = InScopeAsync(sp => sp.GetRequiredService<IReviewService>().GetSpecItemsAsync(TaskId));
+            var usageTask = InScopeAsync(sp => sp.GetRequiredService<ITaskUsageService>().GetTaskUsageAsync(TaskId));
+            await Task.WhenAll(currentTask, historyTask, eventsTask, specItemsTask);
             CurrentReview = currentTask.Result;
             ReviewHistory = historyTask.Result;
             Events = eventsTask.Result;
+            SpecItems = specItemsTask.Result;
         }
         catch (Exception ex)
         {

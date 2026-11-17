@@ -21,7 +21,11 @@ public sealed record OverviewTaskDto(
     string Status,
     string? AgentId,
     string? Branch,
-    DateTimeOffset? LastActivityAt);
+    DateTimeOffset? LastActivityAt,
+    /// <summary>agent 干活的工作目录（自己的 worktree）。为空 = 主工作区。</summary>
+    string? WorkPath = null,
+    /// <summary>true = 用的是项目主工作区（不是自己的 worktree）。</summary>
+    bool IsMainCheckout = false);
 
 /// <summary>总览里的最近产出文件。</summary>
 public sealed record OverviewFileChangeDto(
@@ -80,6 +84,24 @@ public sealed class OverviewService(IAppDbContext db, IClock clock) : IOverviewS
     /// <summary>会话多久没动静就算「不在活跃」。</summary>
     private static readonly TimeSpan SessionIdleAfter = TimeSpan.FromHours(2);
 
+    /// <summary>
+    /// 这个任务用的是不是项目主工作区。
+    ///
+    /// 登记的工位跟项目仓库根一样 = 主工作区（界面上说「主工作区」，
+    /// 不然人只看到一个目录名，不知道那是共享的那一个）。
+    /// </summary>
+    private static bool IsMainCheckout(TaskItem task, IReadOnlyDictionary<Guid, string?> repoPaths)
+    {
+        if (string.IsNullOrWhiteSpace(task.WorkPath))
+        {
+            return true;
+        }
+
+        return repoPaths.TryGetValue(task.ProjectId, out var repoPath) &&
+               !string.IsNullOrWhiteSpace(repoPath) &&
+               string.Equals(repoPath, task.WorkPath, StringComparison.OrdinalIgnoreCase);
+    }
+
     public async Task<OverviewDto> GetAsync(CancellationToken cancellationToken = default)
     {
         var projects = await db.Projects
@@ -88,6 +110,7 @@ public sealed class OverviewService(IAppDbContext db, IClock clock) : IOverviewS
             .ToListAsync(cancellationToken);
 
         var projectNames = projects.ToDictionary(p => p.Id, p => p.Name);
+        var repoPaths = projects.ToDictionary(p => p.Id, p => p.RepoPath);
 
         var pendingApprovals = await db.Approvals
             .AsNoTracking()
@@ -126,7 +149,9 @@ public sealed class OverviewService(IAppDbContext db, IClock clock) : IOverviewS
                 t.Status.ToString(),
                 t.ClaimedByAgentId,
                 t.Branch,
-                t.LastActivityAt))
+                t.LastActivityAt,
+                t.WorkPath,
+                IsMainCheckout(t, repoPaths)))
             .ToList();
 
         var recentFiles = await db.TaskFileChanges

@@ -137,6 +137,37 @@ public static class HumanTokenPolicy
             return IsPut(method);
         }
 
+        // POST /api/projects —— 新建项目。
+        // 项目一创建就把一个**文件系统根目录**授给了这个项目：建完之后
+        // fs_list / fs_read 就以它为根，读得到根下面的一切。
+        // 改项目配置（改 repoPath）要凭证，创建项目却不要 —— 等于开了扇后门：
+        // 拿到 MCP / REST 的 agent 自己建个项目指向 /etc 就能把文件读出去。
+        // 建项目是人的决定（它决定了后面谁能读哪些目录），必须有人在场。
+        if (segments.Length == 2
+            && segments[1].Equals("projects", StringComparison.OrdinalIgnoreCase))
+        {
+            return IsPost(method);
+        }
+
+        // /api/milestones/{id}/accept | /unaccept —— 验收是人的签字：
+        // 「这个版本做完了」得由人确认，agent 不该自己宣布。
+        if (segments.Length == 4
+            && segments[1].Equals("milestones", StringComparison.OrdinalIgnoreCase)
+            && (segments[3].Equals("accept", StringComparison.OrdinalIgnoreCase) ||
+                segments[3].Equals("unaccept", StringComparison.OrdinalIgnoreCase)))
+        {
+            return IsPost(method);
+        }
+
+        // PUT /api/projects/{id}/spec —— 改项目级规约（DoD / 提交约定 / 测试命令）。
+        // 规矩是**人的决定**：agent 读它、照着做，但不该自己改「什么算做完」。
+        if (segments.Length == 4
+            && segments[1].Equals("projects", StringComparison.OrdinalIgnoreCase)
+            && segments[3].Equals("spec", StringComparison.OrdinalIgnoreCase))
+        {
+            return !IsRead(method);
+        }
+
         // /api/projects/{id}/config —— 改 agentCommand / 命令白名单
         // 读配置是普通读，任何写方法都要人工在场
         if (segments.Length == 4
@@ -193,6 +224,26 @@ public static class HumanTokenPolicy
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// 人工凭证的指纹（哈希前 12 位）。
+    ///
+    /// 共享 token 的现状下系统认不出真人 —— 但记下凭证指纹，好歹能区分
+    /// 「同一个操作员」和「换了个人在操作」，而且不用把 token 明文写进审计。
+    ///
+    /// REST 与界面两条路**用同一个算法** —— 不然界面上批的和脚本里批的
+    /// 指纹对不上，审计就分不出是谁在操作了。
+    /// </summary>
+    public static string? Fingerprint(string? token)
+    {
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            return null;
+        }
+
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(token.Trim()));
+        return Convert.ToHexString(hash)[..12];
     }
 
     /// <summary>

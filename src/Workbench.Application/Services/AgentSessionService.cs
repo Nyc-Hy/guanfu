@@ -348,8 +348,20 @@ public sealed class AgentSessionService(IAppDbContext db, IClock clock) : IAgent
             .Where(p => p.RepoRoot != null)
             .ToListAsync(cancellationToken);
 
+        // worktree 也是「这个仓库的目录」—— 它在仓库根外面（是兄弟目录），
+        // 但属于同一个仓库。agent 在 worktree 里干活时照样要能绑上会话，
+        // 不然它连「自己在哪个项目」都认不出来。
+        // 两边都解软链再比：macOS 上 /tmp 其实是 /private/tmp，
+        // 不解就比不上，worktree 照样绑不上会话。
+        var owningRepoRoot = WorkPathPolicy.TryGetOwningRepoRoot(canonicalPath) is { } owner
+            ? PathBoundary.ResolveRealPath(owner)
+            : null;
+
         return bound
-            .Where(p => PathBoundary.IsSameOrInside(p.RepoRoot!, canonicalPath))
+            .Where(p => PathBoundary.IsSameOrInside(p.RepoRoot!, canonicalPath) ||
+                        (owningRepoRoot is not null &&
+                         string.Equals(PathBoundary.ResolveRealPath(p.RepoRoot!), owningRepoRoot,
+                             StringComparison.OrdinalIgnoreCase)))
             .OrderByDescending(p => p.RepoRoot!.Length)
             .ToList();
     }

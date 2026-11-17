@@ -25,10 +25,14 @@ public sealed class ToolCallRecorder(
     ///
     /// 写工具的记录里有审批号、影响行数、结果摘要、SQL 原文 ——
     /// 中央那份只有工具名与参数，补不回来。
+    ///
+    /// fs_* 与 db_schema 也在名单里：它们各自留痕（fs 记了结果条数、db_schema 记了表数），
+    /// 不跳过的话一次调用会写两行 —— 规矩 28 说的「别写成一行两条」。
     /// </summary>
     internal static readonly HashSet<string> SelfAuditedTools = new(StringComparer.Ordinal)
     {
-        "db_execute", "db_query", "git_commit", "git_push", "shell_run"
+        "db_execute", "db_query", "git_commit", "git_push", "shell_run",
+        "fs_list", "fs_read", "db_schema"
     };
 
     /// <summary>参数里这些名字的值要抹掉 —— 免得明文落进审计表。</summary>

@@ -26,8 +26,9 @@ public sealed class WorkbenchMcpTools(
     IAppDbContext? db = null,
     IProjectScopeResolver? scopeResolver = null,
     IAgentSessionService? sessions = null,
-    IFileChangeService? fileChanges = null,
-    IAuditChainArchiveService? archive = null)
+    IAuditChainArchiveService? archive = null,
+    IAgentSessionAccessor? sessionAccessor = null,
+    ITaskUsageService? usage = null)
 {
     /// <summary>
     /// 算出这次调用算在哪个项目上。
@@ -312,12 +313,16 @@ public sealed class WorkbenchMcpTools(
     [Description(
         "领取一个待认领任务，带租约。taskId 不给就用 taskKey（如 REQ-001）——在会话绑定的项目里找；" +
         "agentId 不给就用当前会话的 agent。已被他人持有且租约未过期时返回 ok=false 而不是报错。" +
-        "认领成功后任务自动挂到本次会话上，之后的调用都归属到这个任务。")]
+        "认领成功后任务自动挂到本次会话上，之后的调用都归属到这个任务。" +
+        "worktree：你在哪个工作目录干活。**不传就是用项目的主工作区（仓库根）——" +
+        "主工作区同一时刻只允许一个 agent 占着**（两个人共用一个目录会互相踩文件）。" +
+        "要跟别人并行，就先 `git worktree add <目录>`，再把那个目录填进来。")]
     public async Task<ClaimResult> ClaimTaskAsync(
         Guid? taskId = null,
         string? agentId = null,
         int leaseMinutes = 30,
         string? taskKey = null,
+        string? worktree = null,
         CancellationToken cancellationToken = default)
     {
         try
@@ -335,7 +340,7 @@ public sealed class WorkbenchMcpTools(
                     "agentId 不能为空：当前没有会话可以继承 agent 身份，请显式传 agentId。");
             }
 
-            var task = await tasks.ClaimAsync(resolvedId, resolvedAgentId, leaseMinutes, cancellationToken);
+            var task = await tasks.ClaimAsync(resolvedId, resolvedAgentId, leaseMinutes, cancellationToken, worktree);
 
             // 认领成功 → 任务挂到本次会话上。之后这个会话的所有调用都自动归属这个任务，
             // 审计与事件账本不用 agent 自己填 taskId。
@@ -409,14 +414,12 @@ public sealed class WorkbenchMcpTools(
 
         try
         {
-            var task = await tasks.ChangeStatusAsync(taskId, target, note, eventSource, actor, cancellationToken);
+            // 会话 id 用来给产出标来源（进 Review 时采工作区要用）。
+            // 采工作区本身已经下沉到 TaskService —— 所有入口（这里 / 界面 / REST）
+            // 都得走到同一处，不然只有 MCP 那条路会采。
+            var sessionId = await ResolveSessionIdAsync(cancellationToken);
 
-            // 进评审之前，把「已产出但还没提交」的那部分也采下来。
-            // 不然任务看起来像是啥也没干 —— 评审看到的产出清单是空的。
-            if (target == TaskStatus.Review)
-            {
-                await CaptureWorkingTreeFilesAsync(taskId, actor, cancellationToken);
-            }
+            var task = await tasks.ChangeStatusAsync(taskId, target, note, eventSource, actor, cancellationToken, sessionId);
 
             return StatusChangeResult.Succeeded(task);
         }
@@ -428,58 +431,6 @@ public sealed class WorkbenchMcpTools(
         catch (WorkbenchException ex)
         {
             return StatusChangeResult.Failed(ex.Message);
-        }
-    }
-
-    /// <summary>
-    /// 把工作区里改了但还没提交的文件采下来，落到任务名下。
-    ///
-    /// 采集失败（项目没配仓库 / 读不到 git）**不抛异常** ——
-    /// 状态已经推进成功了，不能因为「顺手记个流水」失败就把 agent 的活带崩。
-    /// </summary>
-    private async Task CaptureWorkingTreeFilesAsync(
-        Guid taskId,
-        string? actor,
-        CancellationToken cancellationToken)
-    {
-        if (fileChanges is null)
-        {
-            return;
-        }
-
-        try
-        {
-            var task = await tasks.GetAsync(taskId, cancellationToken);
-            if (task is null)
-            {
-                return;
-            }
-
-            var config = await projects.GetConfigAsync(task.ProjectId, cancellationToken);
-            if (string.IsNullOrWhiteSpace(config.RepoPath))
-            {
-                // 项目没配仓库 —— 没有「产出文件」这回事
-                return;
-            }
-
-            // 会话能查到就记上，审计里能顺着会话查到人。
-            // 查不到也不影响采集 —— 会话只是「附加信息」，不是采集的前提。
-            var sessionId = await ResolveSessionIdAsync(cancellationToken);
-
-            await fileChanges.CaptureWorkingTreeAsync(
-                taskId,
-                task.ProjectId,
-                config.RepoPath!,
-                sessionId,
-                actor,
-                cancellationToken);
-        }
-        catch (Exception)
-        {
-            // 采集是「锦上添花」，失败就算了 —— 状态已经推进。
-            //
-            // 这里连取消也不往上抛：状态迁移已经成功了，再抛异常的话工具会返回
-            // ok=false，agent 会以为迁移失败而重试 —— 那是真的把事情搞坏。
         }
     }
 
@@ -581,6 +532,71 @@ public sealed class WorkbenchMcpTools(
         return await approvals.ListAsync(parsed, effectiveProjectId, cancellationToken);
     }
 
+    [McpServerTool(Name = "workbench_get_usage")]
+    [Description(
+        "查用量：工具调用次数、用到的工具种类、事件条数、租约时长（这些是工作台自己数的），" +
+        "以及 token / 费用（**agent 自报**的值，工作台不调模型、数不出 token）。" +
+        "不给 taskId 就是整个项目的汇总（按任务、按 agent）。")]
+    public async Task<UsageToolResult> GetUsageAsync(
+        Guid? taskId = null,
+        Guid? projectId = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (usage is null)
+        {
+            return UsageToolResult.Fail("当前宿主没有启用用量统计。");
+        }
+
+        try
+        {
+            if (taskId is Guid id)
+            {
+                return new UsageToolResult { Ok = true, Task = await usage.GetTaskUsageAsync(id, cancellationToken) };
+            }
+
+            var scope = await ResolveScopeAsync(projectId, cancellationToken);
+            return new UsageToolResult
+            {
+                Ok = true,
+                Project = await usage.GetProjectUsageAsync(scope.ProjectId, 20, cancellationToken)
+            };
+        }
+        catch (Exception ex)
+        {
+            return UsageToolResult.Fail(ex.Message);
+        }
+    }
+
+    [McpServerTool(Name = "workbench_report_cost")]
+    [Description(
+        "报告这个任务**这次又用了**多少 token / 费用（增量，不是累计总额 —— 工作台会累加成总额）。" +
+        "工作台不调模型，token 与费用只能由你报 —— 它会标成「自报」，跟工作台自己数的" +
+        "工具调用次数不是一回事。")]
+    public async Task<UsageToolResult> ReportCostAsync(
+        Guid taskId,
+        long? tokens = null,
+        decimal? cost = null,
+        string? currency = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (usage is null)
+        {
+            return UsageToolResult.Fail("当前宿主没有启用用量统计。");
+        }
+
+        try
+        {
+            var result = await usage.ReportCostAsync(
+                taskId, tokens, cost, currency, "agent", cancellationToken);
+
+            return new UsageToolResult { Ok = true, Task = result };
+        }
+        catch (Exception ex)
+        {
+            return UsageToolResult.Fail(ex.Message);
+        }
+    }
+
     [McpServerTool(Name = "workbench_verify_audit_chain")]
     [Description(
         "验审计哈希链：检查工具调用审计有没有被人在数据库文件层面改过。" +
@@ -655,25 +671,57 @@ public sealed class WorkbenchMcpTools(
         CancellationToken cancellationToken = default)
         => await approvals.AwaitAsync(approvalId, timeoutSeconds, cancellationToken);
 
-    [McpServerTool(Name = "approval_revoke")]
+    [McpServerTool(Name = "workbench_revoke_approval")]
     [Description(
         "撤销一条还没执行的审批（Pending / Approved 可撤；已 Executing / Executed 的撤不回——操作已落地）。" +
         "误批了、或情况变了不想让 agent 拿这条审批续跑时用它。reason 会记进审批的撤销原因。" +
-        "返回 ok=true 与撤销后的审批；失败时 error 说明原因（审批不存在 / 已执行 / 刚被占用），据此判断下一步。")]
+        "返回 ok=true 与撤销后的审批；失败时 error 说明原因（审批不存在 / 已执行 / 刚被占用），据此判断下一步。" +
+        "撤销人记在审计里：传了 callerId 就记它，没传就记当前会话的 agent —— 不会记成「human」。")]
     public async Task<ApprovalRevokeResult> RevokeApprovalAsync(
         Guid approvalId,
         string? reason = null,
+        string? callerId = null,
         CancellationToken cancellationToken = default)
     {
         try
         {
-            var dto = await approvals.RevokeAsync(approvalId, reason, cancellationToken);
+            var actor = await ResolveActorAsync(callerId, cancellationToken);
+            var dto = await approvals.RevokeAsync(approvalId, reason, cancellationToken, actor);
             return new ApprovalRevokeResult(true, dto);
         }
         catch (Exception ex)
         {
             // 不抛异常：MCP 会把异常吞成一句泛化信息，agent 就看不到「为什么撤不掉」了。
             return new ApprovalRevokeResult(false, null, ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// 这次调用算在谁头上：工具显式传的 callerId → 会话里的 agent → 请求头里的 agent。
+    ///
+    /// 撤销是「谁改的门禁」，审计里必须是真的那个人 —— 记成「human」就是假账。
+    /// </summary>
+    private async Task<string?> ResolveActorAsync(string? callerId, CancellationToken cancellationToken)
+    {
+        if (!string.IsNullOrWhiteSpace(callerId))
+        {
+            return callerId.Trim();
+        }
+
+        if (sessionAccessor is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            var session = await sessionAccessor.CurrentAsync(cancellationToken);
+            return session?.AgentId ?? sessionAccessor.CurrentAgentId;
+        }
+        catch (Exception)
+        {
+            // 查不到会话就退回请求头里的 agent 标识；都没有就留 null（按「human」记）。
+            return sessionAccessor.CurrentAgentId;
         }
     }
 
@@ -865,3 +913,17 @@ public sealed record AuditChainResult(
     int Chained,
     Guid? FirstBrokenId,
     string? Error = null);
+
+/// <summary>用量查询/上报的返回形状。</summary>
+public sealed record UsageToolResult
+{
+    public bool Ok { get; init; }
+
+    public string? Error { get; init; }
+
+    public TaskUsageDto? Task { get; init; }
+
+    public ProjectUsageDto? Project { get; init; }
+
+    public static UsageToolResult Fail(string error) => new() { Ok = false, Error = error };
+}

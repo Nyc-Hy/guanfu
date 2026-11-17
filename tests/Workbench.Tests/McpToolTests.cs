@@ -53,6 +53,31 @@ public class McpToolTests
     }
 
     [Fact]
+    public void 工具名必须带组前缀()
+    {
+        // 工具名按前缀分组（workbench_ / doc_ / db_ / 通用组）。
+        // 通用组这几个没有组前缀，但它们是**固定清单** ——
+        // 以前 `project_create`、`milestone_create`、`approval_revoke` 三个
+        // 没带前缀，落到「通用组」，跟「跑命令」的工具混在一堆，
+        // 还让 agent 按前缀分组时找不到它们。
+        var generalGroup = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "fs_list", "fs_read", "git_commit", "git_push", "shell_run"
+        };
+
+        var prefixes = new[] { "workbench_", "doc_", "db_" };
+
+        foreach (var tool in Catalog())
+        {
+            var hasPrefix = prefixes.Any(p => tool.Name.StartsWith(p, StringComparison.Ordinal));
+            Assert.True(
+                hasPrefix || generalGroup.Contains(tool.Name),
+                $"工具 {tool.Name} 既没有组前缀，也不在通用组清单里 —— " +
+                "要么给它加 workbench_ 前缀，要么把它加进清单，别留成野生工具。");
+        }
+    }
+
+    [Fact]
     public void 工具按分类顺序排列()
     {
         var catalog = Catalog();

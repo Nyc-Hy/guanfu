@@ -38,10 +38,19 @@ public static class McpServiceCollectionExtensions
                 };
 
                 options.ServerInstructions =
-                    "开发工作台是状态中枢与审批门禁，不提供 AI 服务。" +
-                    "典型流程：workbench_claim_task 领任务 → workbench_get_context 取上下文 → " +
-                    "workbench_set_plan 回写计划 → 开发 → workbench_report_test_result 回写测试 → " +
-                    "workbench_update_status 推进状态。写数据库必须走 db_execute（需人工审批）。";
+                    "开发工作台是给 agent 用的项目管理工具：任务、里程碑、依赖、状态机在这里，" +
+                    "工作台不提供 AI 服务（不调模型、不跑 agent），它只管状态与产出。" +
+                    "典型流程：workbench_get_task_by_key 按编号找任务 → workbench_claim_task 领任务（带租约）→ " +
+                    "workbench_get_context 取全量上下文（文档、计划、产出、事件、当前允许的状态迁移）→ " +
+                    "workbench_set_plan 回写需求理解与开发计划 → 开发 → " +
+                    "workbench_report_test_result 回写测试 → workbench_update_status 推进状态 → " +
+                    "workbench_submit_review 逐维度回写评审结论。" +
+                    "要点：① 状态迁移过状态机，非法迁移会带回「当前允许的迁移列表」，照着它改；" +
+                    "② 任务编号（REQ-001）就是给人看的 id，不要用 GUID；" +
+                    "③ 写数据库走 db_execute、改文件/提交走 shell_run / git_commit —— 这些都要人工审批，" +
+                    "带 approvalId 续跑；" +
+                    "④ 产出文件由工作台从 git 里采集，不要自己报；" +
+                    "⑤ 需求理解的判断是你做的，工作台只存不生成。";
 
                 // 关掉的工具不出现在 tools/list —— agent 就看不到它，不会去调
                 options.Filters.Request.ListToolsFilters.Add(next => async (context, cancellationToken) =>
@@ -157,6 +166,70 @@ public static class McpServiceCollectionExtensions
                             ]
                         };
                     }
+                });
+
+                // 用量闸门：超过项目配置的「每任务工具调用上限」就不再执行。
+                //
+                // 上限是**节流阀**：拦的是「一个 agent 跑飞、把工作台当自己的工具箱刷」，
+                // 不是安全边界。所以它放在最里层 —— 被拦下的这次调用照样被审计记一笔
+                // （中央记录器在外面，看得到最终结果）。
+                options.Filters.Request.CallToolFilters.Add(next => async (context, cancellationToken) =>
+                {
+                    var services = context.Services;
+                    if (services is null)
+                    {
+                        return await next(context, cancellationToken);
+                    }
+
+                    var usage = services.GetService<ITaskUsageService>();
+                    var scopeResolver = services.GetService<IProjectScopeResolver>();
+
+                    if (usage is null || scopeResolver is null)
+                    {
+                        return await next(context, cancellationToken);
+                    }
+
+                    ProjectScope? scope;
+                    try
+                    {
+                        scope = await scopeResolver.ResolveOrNullAsync(null, cancellationToken);
+                    }
+                    catch
+                    {
+                        // 作用域认不出来（没绑会话之类）—— 不拦，交给工具自己报。
+                        return await next(context, cancellationToken);
+                    }
+
+                    if (scope?.TaskId is not Guid taskId)
+                    {
+                        return await next(context, cancellationToken);
+                    }
+
+                    var budget = await usage.GetCallBudgetAsync(scope.ProjectId, taskId, cancellationToken);
+                    if (!budget.Over)
+                    {
+                        return await next(context, cancellationToken);
+                    }
+
+                    var payload = new
+                    {
+                        ok = false,
+                        error = $"这个任务已经用了 {budget.Used} 次工具调用，超过项目设定的上限（{budget.Budget}）。" +
+                                "要么收敛动作，要么让人调高上限（项目设置 → agent 并发）。",
+                        tool = context.Params.Name
+                    };
+
+                    return new CallToolResult
+                    {
+                        IsError = true,
+                        Content =
+                        [
+                            new TextContentBlock
+                            {
+                                Text = JsonSerializer.Serialize(payload, WorkbenchJson.Options)
+                            }
+                        ]
+                    };
                 });
 
                 // 双保险：就算客户端缓存了工具清单直接调，也会被拦

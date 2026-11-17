@@ -53,7 +53,16 @@ public interface IApprovalService
     /// 而 Approved 的单子在过期前一直能被续跑执行。
     /// Executing / Executed 一律拒绝 —— 已经在跑或跑完的操作撤不回来。
     /// </summary>
-    Task<ApprovalDto> RevokeAsync(Guid id, string? reason = null, CancellationToken cancellationToken = default);
+    /// <param name="decidedBy">
+    /// 撤销的人。REST 那边带着人工凭证来，留 null（按「human」记）；
+    /// MCP 那边是 agent 调的，得记成 agent 的标识 ——
+    /// 审计里写「human」就成了假账。
+    /// </param>
+    Task<ApprovalDto> RevokeAsync(
+        Guid id,
+        string? reason = null,
+        CancellationToken cancellationToken = default,
+        string? decidedBy = null);
 
     /// <summary>阻塞等待人工决定。返回当前状态；超时则仍是 Pending。</summary>
     Task<ApprovalDto> AwaitAsync(Guid id, int timeoutSeconds = 60, CancellationToken cancellationToken = default);
@@ -333,9 +342,14 @@ public sealed class ApprovalService(IAppDbContext db, IClock clock, INotifier? n
     public async Task<ApprovalDto> RevokeAsync(
         Guid id,
         string? reason = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? decidedBy = null)
     {
         var now = clock.UtcNow;
+
+        // 撤销的人：没指定就是人（REST 那边带人工凭证来），指定了就按它记 ——
+        // agent 撤的不能记成「human」，审计要分得出是谁干的。
+        var actor = string.IsNullOrWhiteSpace(decidedBy) ? "human" : decidedBy.Trim();
 
         var current = await db.Approvals.AsNoTracking().FirstOrDefaultAsync(a => a.Id == id, cancellationToken)
                       ?? throw new NotFoundException("审批", id);
@@ -364,7 +378,7 @@ public sealed class ApprovalService(IAppDbContext db, IClock clock, INotifier? n
                         (a.Status == ApprovalStatus.Pending || a.Status == ApprovalStatus.Approved))
             .ExecuteUpdateAsync(s => s
                 .SetProperty(a => a.Status, ApprovalStatus.Rejected)
-                .SetProperty(a => a.DecidedBy, "human")
+                .SetProperty(a => a.DecidedBy, actor)
                 .SetProperty(a => a.DecisionReason, note)
                 .SetProperty(a => a.DecidedAt, now), cancellationToken);
 
@@ -373,7 +387,7 @@ public sealed class ApprovalService(IAppDbContext db, IClock clock, INotifier? n
             throw new WorkbenchException($"审批 {id} 刚刚已经被处理或占用了，撤销没有生效。");
         }
 
-        SyncTracked(id, ApprovalStatus.Rejected, decisionReason: note, decidedBy: "human", decidedAt: now);
+        SyncTracked(id, ApprovalStatus.Rejected, decisionReason: note, decidedBy: actor, decidedAt: now);
 
         var revoked = await db.Approvals.AsNoTracking().FirstAsync(a => a.Id == id, cancellationToken);
         return ToDto(revoked);
@@ -498,6 +512,10 @@ public sealed class ApprovalService(IAppDbContext db, IClock clock, INotifier? n
         // Executing 也要回收：执行方崩了/被杀了就不会来调 CompleteAsync，
         // 单子永远卡在 Executing —— 既不能再批也不能再用，等于这个操作被永久锁死。
         // 老数据没有 ExecutingStartedAt，退回 DecidedAt 判定。
+        //
+        // 回收时**必须标 OutcomeUnknown**：分不清是「执行方崩了」还是「执行还没结束」
+        // （长命令仍在跑），但两种情况下这次写操作都可能已经生效了 ——
+        // 标上「结果未知」，交人工确认，不能假装它肯定没执行。
         var cutoff = now.AddMinutes(-ExecutingTimeoutMinutes);
 
         var interrupted = await db.Approvals
@@ -506,9 +524,11 @@ public sealed class ApprovalService(IAppDbContext db, IClock clock, INotifier? n
                         && (a.ExecutingStartedAt ?? a.DecidedAt) <= cutoff)
             .ExecuteUpdateAsync(s => s
                 .SetProperty(a => a.Status, ApprovalStatus.Expired)
+                .SetProperty(a => a.OutcomeUnknown, true)
                 .SetProperty(a => a.DecidedAt, now)
                 .SetProperty(a => a.DecidedBy, "system")
-                .SetProperty(a => a.DecisionReason, "执行中断，请重新申请"), cancellationToken);
+                .SetProperty(a => a.DecisionReason, "执行中断或超时未收尾，这次写操作可能已经生效，结果未知，请人工确认后再重新申请"),
+                cancellationToken);
 
         return expiredPending + interrupted;
     }

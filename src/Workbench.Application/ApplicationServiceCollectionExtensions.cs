@@ -19,6 +19,9 @@ public static class ApplicationServiceCollectionExtensions
         services.AddScoped<IMilestoneService, MilestoneService>();
         services.AddScoped<IMetricsService, MetricsService>();
         services.AddScoped<IFileSystemService, FileSystemService>();
+
+        // 工位解析：文件 / git / shell 工具按任务登记的工位走
+        services.AddScoped<IWorkstationResolver, WorkstationResolver>();
         services.AddScoped<IReviewService, ReviewService>();
         // 评审服务同时是门禁的实现 —— 注册同一个实例，别造两份
         services.AddScoped<IReviewGate>(sp => sp.GetRequiredService<IReviewService>());
@@ -43,6 +46,15 @@ public static class ApplicationServiceCollectionExtensions
 
         // 首页总览：现在什么在动、等我批什么、最近产出了什么、最近碰了什么库。
         services.AddScoped<IOverviewService, OverviewService>();
+
+        // 项目级规约：人填、agent 读
+        services.AddScoped<IProjectSpecService, ProjectSpecService>();
+
+        // 调度视图：现在什么能干、什么卡着、谁在干
+        services.AddScoped<IDispatchService, DispatchService>();
+
+        // 用量与开销：工作台数得出来的（工具调用次数）+ agent 自报的（token / 费用）
+        services.AddScoped<ITaskUsageService, TaskUsageService>();
 
         // 通知：单例 HttpClient（HttpClient 复用是对的，每次 new 才会耗尽端口）
         // 超时压短，通知失败不能拖住审批请求。

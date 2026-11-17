@@ -31,6 +31,8 @@ public interface IAppDbContext
     DbSet<AgentSession> AgentSessions { get; }
     DbSet<TaskFileChange> TaskFileChanges { get; }
     DbSet<DbCallRecord> DbCallRecords { get; }
+    DbSet<ProjectSpec> ProjectSpecs { get; }
+    DbSet<SpecVerdict> SpecVerdicts { get; }
 
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
 

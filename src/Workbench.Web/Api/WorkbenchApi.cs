@@ -13,6 +13,12 @@ namespace Workbench.Web.Api;
 /// </summary>
 public static class WorkbenchApi
 {
+    /// <summary>搜索时最多扫多少个任务（找文档命中用）。</summary>
+    private const int SearchTaskScanLimit = 200;
+
+    /// <summary>搜索时最多解析多少篇文档。文档搜索要真去解析内容。</summary>
+    private const int SearchDocScanLimit = 200;
+
     public static IEndpointRouteBuilder MapWorkbenchApi(this IEndpointRouteBuilder app)
     {
         var api = app.MapGroup("/api");
@@ -297,7 +303,8 @@ public static class WorkbenchApi
 
         api.MapPost("/tasks/{taskId:guid}/claim", async (
             Guid taskId, ClaimTaskRequest request, ITaskService tasks, CancellationToken ct) =>
-            Results.Ok(await tasks.ClaimAsync(taskId, request.AgentId, request.LeaseMinutes ?? 30, ct)));
+            Results.Ok(await tasks.ClaimAsync(
+                taskId, request.AgentId, request.LeaseMinutes ?? 30, ct, request.WorkPath)));
 
         api.MapPost("/tasks/{taskId:guid}/plan", async (
             Guid taskId, SetPlanRequest request, ITaskService tasks, CancellationToken ct) =>
@@ -491,7 +498,44 @@ public static class WorkbenchApi
                 projectId,
                 request.Name, request.Description, request.RepoPath, request.RepoRemote, request.DefaultBranch,
                 request.AllowedCommands, request.AgentCommand,
-                request.NotificationWebhookUrl, request.NotificationFormat, ct)));
+                request.NotificationWebhookUrl, request.NotificationFormat, ct,
+                request.MaxConcurrentAgents, request.MaxToolCallsPerTask)));
+
+        // ---- 项目级规约 ----
+        // 读：agent 也要读（跟 MCP 工具同一条信息），所以开放。
+        // 写：**要人工凭证** —— 规矩是人的决定，agent 不该自己改「什么算做完」。
+        api.MapGet("/projects/{projectId:guid}/spec", async (
+            Guid projectId, IProjectSpecService specs, CancellationToken ct) =>
+            Results.Ok(await specs.GetAsync(projectId, ct)));
+
+        api.MapPut("/projects/{projectId:guid}/spec", async (
+            Guid projectId, UpdateProjectSpecRequest request, IProjectSpecService specs, CancellationToken ct) =>
+        {
+            var input = new ProjectSpecInput(
+                request.Purpose,
+                SplitLines(request.DefinitionOfDone),
+                request.CommitConvention,
+                request.TestCommand,
+                request.BranchConvention,
+                request.Guardrails);
+
+            return Results.Ok(await specs.UpdateAsync(projectId, input, "human", ct));
+        });
+
+        // ---- 用量与开销 ----
+        api.MapGet("/tasks/{taskId:guid}/usage", async (
+            Guid taskId, ITaskUsageService usage, CancellationToken ct) =>
+            Results.Ok(await usage.GetTaskUsageAsync(taskId, ct)));
+
+        api.MapGet("/projects/{projectId:guid}/usage", async (
+            Guid projectId, ITaskUsageService usage, int? limit, CancellationToken ct) =>
+            Results.Ok(await usage.GetProjectUsageAsync(projectId, limit ?? 20, ct)));
+
+        // ---- 调度视图 ----
+        // 读：agent 与人都要看（选活、看板）。开放。
+        api.MapGet("/projects/{projectId:guid}/dispatch", async (
+            Guid projectId, IDispatchService dispatch, int? limit, CancellationToken ct) =>
+            Results.Ok(await dispatch.GetAsync(projectId, limit ?? 20, ct)));
 
         // ---- 里程碑 ----
         api.MapGet("/projects/{projectId:guid}/milestones", async (
@@ -536,6 +580,16 @@ public static class WorkbenchApi
                 request.ParentId, kind, request.ClearParent, request.ClearDue));
         });
 
+        // 验收是**人的签字**：版本做完了由人确认。
+        // 要人工凭证 —— agent 不该自己宣布「这个版本做完了」。
+        api.MapPost("/milestones/{milestoneId:guid}/accept", async (
+            Guid milestoneId, AcceptMilestoneRequest? request, IMilestoneService milestones, CancellationToken ct) =>
+            Results.Ok(await milestones.AcceptAsync(milestoneId, request?.AcceptedBy, ct)));
+
+        api.MapPost("/milestones/{milestoneId:guid}/unaccept", async (
+            Guid milestoneId, IMilestoneService milestones, CancellationToken ct) =>
+            Results.Ok(await milestones.UnacceptAsync(milestoneId, ct)));
+
         api.MapDelete("/milestones/{milestoneId:guid}", async (
             Guid milestoneId, IMilestoneService milestones, CancellationToken ct) =>
         {
@@ -579,7 +633,7 @@ public static class WorkbenchApi
         {
             var created = await connections.AddRuleAsync(
                 connectionId, request.SchemaName, request.TableName,
-                request.AllowRead, request.WriteRequiresApproval, ct);
+                request.AllowRead, request.WriteRequiresApproval, request.WriteForbidden, ct);
 
             return Results.Created($"/api/db-connections/{connectionId}/rules/{created.Id}", created);
         });
@@ -604,6 +658,10 @@ public static class WorkbenchApi
         // 任务按「归一化编号 + 标题/描述」两路找（归一化在服务层内存里做，
         // 人嘴里的 req001 和库里的 REQ-001 是同一个编号）；项目按名；
         // 文档走 DocumentService.SearchAsync 逐篇搜内容，文件名命中也算。
+        //
+        // **每一路都有上限**：文档搜索要真去解析文档内容，
+        // 不限量就是「全库解析」—— 任务一多这个接口就会把服务拖垮。
+        // 界面的搜索页早就有限量了（Search.razor），REST 这条也得有。
         api.MapGet("/search", async (
             ITaskService tasks, IProjectService projects, IDocumentService documents,
             string? q, int? limit, CancellationToken ct) =>
@@ -621,8 +679,8 @@ public static class WorkbenchApi
 
             var keyword = q.Trim();
 
-            var byKeyword = await tasks.ListAsync(keyword: keyword, cancellationToken: ct);
-            var byKey = await tasks.ListAsync(key: keyword, cancellationToken: ct);
+            var byKeyword = await tasks.ListAsync(keyword: keyword, limit: take, cancellationToken: ct);
+            var byKey = await tasks.ListAsync(key: keyword, limit: take, cancellationToken: ct);
             var taskHits = byKeyword.Concat(byKey)
                 .GroupBy(t => t.Id).Select(g => g.First())
                 .Take(take).ToList();
@@ -632,20 +690,26 @@ public static class WorkbenchApi
                 .Take(take).ToList();
 
             var documentHits = new List<object>();
-            var allTasks = await tasks.ListAsync(includeArchived: true, cancellationToken: ct);
+            var scannedTasks = 0;
+            var scannedDocs = 0;
+            var allTasks = await tasks.ListAsync(limit: SearchTaskScanLimit, includeArchived: true, cancellationToken: ct);
             foreach (var task in allTasks)
             {
-                if (documentHits.Count >= take)
+                if (documentHits.Count >= take || scannedTasks >= SearchTaskScanLimit)
                 {
                     break;
                 }
 
+                scannedTasks++;
+
                 foreach (var doc in await documents.ListAsync(task.Id, ct))
                 {
-                    if (documentHits.Count >= take)
+                    if (documentHits.Count >= take || scannedDocs >= SearchDocScanLimit)
                     {
                         break;
                     }
+
+                    scannedDocs++;
 
                     var hits = await documents.SearchAsync(doc.Id, keyword, ct);
                     var nameMatch = doc.FileName.Contains(keyword, StringComparison.OrdinalIgnoreCase);
@@ -748,6 +812,14 @@ public static class WorkbenchApi
                 taskId, dimension, request.Passed, request.Findings, request.Evidence,
                 request.Recommendation, request.Reviewer, request.Round, ct, request.Skipped)));
 
+        // 规约逐条判定：评审结论的一种，不是状态迁移 —— 不需要人工凭证
+        //（跟逐维度回写评审结论同一性质）。
+        api.MapPost("/tasks/{taskId:guid}/review/spec-verdict", async (
+            Guid taskId, SubmitSpecVerdictRequest request, IReviewService reviews, CancellationToken ct) =>
+            Results.Ok(await reviews.SubmitSpecVerdictAsync(
+                taskId, request.Item, request.Satisfied, request.Note, request.Reviewer,
+                request.Round, ct, request.Skipped)));
+
         // ---- MCP 工具开关 ----
         api.MapGet("/mcp/tools", async (IMcpToolService tools, CancellationToken ct) =>
             Results.Ok(await tools.ListAsync(ct)));
@@ -799,6 +871,12 @@ public static class WorkbenchApi
     /// 共享 token 的现状下系统认不出真人 —— 但记下凭证指纹，好歹能区分
     /// 「同一个操作员」和「换了个人在操作」，而且不用把 token 明文写进审计。
     /// </summary>
+    /// <summary>多行文本拆成条目（空行丢掉）。</summary>
+    private static IReadOnlyList<string> SplitLines(string? text) =>
+        string.IsNullOrWhiteSpace(text)
+            ? []
+            : text.Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).ToList();
+
     private static string? CredentialFingerprint(HttpContext http)
     {
         var token = http.Request.Headers[HumanTokenPolicy.HeaderName].ToString();
@@ -813,10 +891,7 @@ public static class WorkbenchApi
             return null;
         }
 
-        var hash = System.Security.Cryptography.SHA256.HashData(
-            System.Text.Encoding.UTF8.GetBytes(token));
-
-        return Convert.ToHexString(hash)[..12];
+        return HumanTokenPolicy.Fingerprint(token);
     }
 }
 
@@ -828,7 +903,11 @@ public sealed record CreateTaskRequest(
 /// <summary>改任务。Type / Branch 传了才改；Branch 传空串表示解绑。</summary>
 public sealed record UpdateTaskRequest(string? Type = null, string? Branch = null);
 public sealed record ChangeStatusRequest(string Status, string? Note, string? Actor, string? Source);
-public sealed record ClaimTaskRequest(string AgentId, int? LeaseMinutes);
+/// <summary>
+/// 领任务。<see cref="WorkPath"/> = agent 干活的工作目录（自己的 git worktree）；
+/// 不给就是用项目主工作区 —— 主工作区同一时刻只允许一个 agent 占着。
+/// </summary>
+public sealed record ClaimTaskRequest(string AgentId, int? LeaseMinutes, string? WorkPath = null);
 public sealed record SetPlanRequest(
     string? Background, string? Understanding, string? Breakdown,
     string? AcceptanceCriteria, string? Risks, string? Author);
@@ -850,7 +929,21 @@ public sealed record CreateDbTableRuleRequest(
     string TableName,
     string SchemaName = "dbo",
     bool AllowRead = true,
-    bool WriteRequiresApproval = true);
+    bool WriteRequiresApproval = true,
+    /// <summary>true = 这张表一律不许写（连人工审批都不放行）。</summary>
+    bool WriteForbidden = false);
+
+/// <summary>
+/// 项目级规约。完成定义用**多行文本**（一行一条）——
+/// 界面上就是一个 textarea，agent 读到的也是逐条。
+/// </summary>
+public sealed record UpdateProjectSpecRequest(
+    string? Purpose = null,
+    string? DefinitionOfDone = null,
+    string? CommitConvention = null,
+    string? TestCommand = null,
+    string? BranchConvention = null,
+    string? Guardrails = null);
 
 public sealed record UpdateProjectConfigRequest(
     string? Name,
@@ -861,11 +954,18 @@ public sealed record UpdateProjectConfigRequest(
     IReadOnlyList<string>? AllowedCommands,
     string? AgentCommand,
     string? NotificationWebhookUrl,
-    string? NotificationFormat);
+    string? NotificationFormat,
+    /// <summary>同时最多几个 agent 能领活（0 = 不限）。</summary>
+    int? MaxConcurrentAgents = null,
+    /// <summary>每个任务最多能调多少次工具（0 = 不限）。</summary>
+    int? MaxToolCallsPerTask = null);
 
 public sealed record CreateMilestoneRequest(
     string Name, string? Description, DateTimeOffset? DueAt,
     Guid? ParentId = null, string? Kind = null);
+
+/// <summary>验收里程碑（人的签字）。</summary>
+public sealed record AcceptMilestoneRequest(string? AcceptedBy = null);
 
 public sealed record UpdateMilestoneRequest(
     string? Name, string? Description, DateTimeOffset? DueAt, int? Order,
@@ -890,6 +990,15 @@ public sealed record StartReviewRequest(string? Reviewer);
 /// Skipped = true 表示该维度**不适用**（跳过）——枚举里一直有 Skipped，
 /// 但以前没有入口能写出来，"本次改动不涉及安全维度"只能硬编一个通过。
 /// </summary>
+/// <summary>规约某一条的判定。</summary>
+public sealed record SubmitSpecVerdictRequest(
+    string Item,
+    bool Satisfied,
+    string? Note = null,
+    string? Reviewer = null,
+    int? Round = null,
+    bool Skipped = false);
+
 public sealed record SubmitReviewRequest(
     bool Passed, string? Findings, string? Evidence, string? Recommendation, string? Reviewer,
     int? Round, bool Skipped = false);

@@ -49,12 +49,71 @@ public class Project
     /// <summary>通知格式：dingtalk / feishu / generic。</summary>
     public string? NotificationFormat { get; set; } = "generic";
 
+    /// <summary>
+    /// 同时最多几个 agent 能在这个项目里领活。
+    ///
+    /// 0 = 不限。agent 是并发生产者，不设上限的话，
+    /// 「三个 agent 抢同一个仓库」这种事故要等踩了文件才发现。
+    /// 上限是**节流阀**，不是安全闸门 —— 拦的是并发过头，不是越权。
+    /// </summary>
+    public int MaxConcurrentAgents { get; set; }
+
+    /// <summary>
+    /// 每个任务最多能调多少次工具（0 = 不限）。
+    ///
+    /// agent 是消耗资源的生产者：不限的话，一个跑飞的 agent 能把
+    /// 整个工作台当自己的工具箱刷。超了就拒 —— agent 看到明确的上限，
+    /// 会自己去收敛，而不是被人发现账单时才停。
+    /// </summary>
+    public int MaxToolCallsPerTask { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
 
     public List<TaskItem> Tasks { get; set; } = [];
     public List<Milestone> Milestones { get; set; } = [];
     public List<DbConnectionConfig> DbConnections { get; set; } = [];
+    public ProjectSpec? Spec { get; set; }
+}
+
+/// <summary>
+/// 项目级规约：**人定的规矩，agent 要读得到**。
+///
+/// 以前这些规矩只存在于人的脑子和 AGENTS.md 里 —— agent 只能靠人转述，
+/// 或者自己去猜「什么叫做完了」。于是「人以为做完了、agent 以为做完了」
+/// 这种分歧没法在工作台里解决。
+///
+/// 现在它们是**一等实体**：人填（界面 / REST，要人工凭证），agent 读（MCP 工具、
+/// 上下文包、评审包）。评审时它就是尺子 —— 七个维度是通用的，
+/// 规约是这个项目特有的。
+/// </summary>
+public class ProjectSpec
+{
+    /// <summary>项目 id（一个项目一份规约）。</summary>
+    public Guid ProjectId { get; set; }
+
+    public Project? Project { get; set; }
+
+    /// <summary>项目目标 / 背景。一段话，agent 开工前先读它。</summary>
+    public string? Purpose { get; set; }
+
+    /// <summary>完成定义（DoD）。**逐行存**，一行一条 —— agent 逐条对着做。</summary>
+    public string? DefinitionOfDone { get; set; }
+
+    /// <summary>提交信息约定（模板 / 前缀 / 要带什么）。</summary>
+    public string? CommitConvention { get; set; }
+
+    /// <summary>测试命令。agent 跑完测试就照这条跑。</summary>
+    public string? TestCommand { get; set; }
+
+    /// <summary>分支命名约定。</summary>
+    public string? BranchConvention { get; set; }
+
+    /// <summary>红线 / 禁忌（不许碰的东西）。</summary>
+    public string? Guardrails { get; set; }
+
+    public DateTimeOffset? UpdatedAt { get; set; }
+    public string? UpdatedBy { get; set; }
 }
 
 /// <summary>里程碑：项目内的一批任务归组。可嵌套，形成「版本 → 需求组 → 需求」三层结构。</summary>
@@ -81,6 +140,17 @@ public class Milestone
 
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 
+    /// <summary>
+    /// 验收时间。非空 = 这个版本**已经签字验收**了。
+    ///
+    /// 验收是人的决定（只有人能做），条件是它下面（含子里程碑）的活都做完了。
+    /// 验收之后，里面的活不能悄悄回退 —— 要改得先撤销验收。
+    /// </summary>
+    public DateTimeOffset? AcceptedAt { get; set; }
+
+    /// <summary>验收人。</summary>
+    public string? AcceptedBy { get; set; }
+
     public List<TaskItem> Tasks { get; set; } = [];
     public List<Milestone> Children { get; set; } = [];
 }
@@ -105,6 +175,19 @@ public class TaskItem
     /// 前缀由 <see cref="Type"/> 决定，各类型独立计数。
     /// </summary>
     public string? Key { get; set; }
+
+    /// <summary>
+    /// 编号的归一化形式（只留字母数字并转小写）。
+    ///
+    /// 存在这一列是为了让「同一个项目里不能有两个归一化后相同的编号」
+    /// 能被**数据库**保证：原来的唯一索引按原字符串比，
+    /// 「req-001」和「REQ-001」在库里是两条，索引拦不住 ——
+    /// 而业务口径（<c>TaskKeys.Normalize</c>）认它们是同一个号。
+    ///
+    /// 可空：老库的存量数据这一列是空的，而 SQLite 的唯一索引不约束多个 NULL，
+    /// 补列时不会因为一列都是空值而建不出索引。
+    /// </summary>
+    public string? KeyNormalized { get; set; }
 
     /// <summary>类型：需求 / 缺陷 / 优化。</summary>
     public TaskType Type { get; set; } = TaskType.Requirement;
@@ -148,6 +231,32 @@ public class TaskItem
     // ---- 认领租约（决策 4：agent 自己领）----
     public string? ClaimedByAgentId { get; set; }
     public DateTimeOffset? LeaseExpiresAt { get; set; }
+
+    /// <summary>
+    /// agent 自报的累计 token 数。
+    ///
+    /// 工作台**数不出** token（它不调模型）—— 所以这一列是自报值，
+    /// 跟工作台自己数得出来的「工具调用次数」不是一回事，别混着用。
+    /// </summary>
+    public long? ReportedTokens { get; set; }
+
+    /// <summary>agent 自报的累计费用。</summary>
+    public decimal? ReportedCost { get; set; }
+
+    /// <summary>费用币种。</summary>
+    public string? CostCurrency { get; set; }
+
+    /// <summary>
+    /// 这个 agent 干活的工作目录（绝对路径）。
+    ///
+    /// 为空 = 用项目的主工作区（仓库根）。非空 = agent 自己开的 git worktree。
+    ///
+    /// 为什么要有它：两个 agent 共用同一个工作区就会互相踩文件。
+    /// 主工作区同一时刻只允许**一个** agent 占着；要并行就得各开各的 worktree，
+    /// 并在这里登记 —— 工作台靠它知道「谁在哪个目录干活」，
+    /// 也靠它挡住「两个人抢同一个目录」。
+    /// </summary>
+    public string? WorkPath { get; set; }
 
     public List<StatusEvent> StatusEvents { get; set; } = [];
     public List<Document> Documents { get; set; } = [];
@@ -551,6 +660,45 @@ public class DbCallRecord
 }
 
 /// <summary>项目数据库连接（SQL Server）。</summary>
+/// <summary>
+/// 项目规约的**逐条判定**（评审轮次内）。
+///
+/// 项目规约里的 DoD 是一条一条的，评审时也应该一条一条判 ——
+/// 「全都满足」这种笼统结论没法复核，也不值当尺子。
+///
+/// 挂在评审轮次下：开新一轮评审，判定就重来一遍（旧结论留在历史里）。
+/// </summary>
+public class SpecVerdict
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+
+    /// <summary>所属评审轮次。</summary>
+    public Guid ReviewRoundId { get; set; }
+    public ReviewRound? ReviewRound { get; set; }
+
+    /// <summary>所属任务。</summary>
+    public Guid TaskId { get; set; }
+
+    /// <summary>
+    /// DoD 条目的稳定键（条目的归一化形式）。
+    /// 规约改了文字 → 键变了 → 旧判定不再算数（人得重新判）。
+    /// </summary>
+    public string ItemKey { get; set; } = string.Empty;
+
+    /// <summary>条目原文快照（规约后来改了也不丢当时的判据）。</summary>
+    public string ItemText { get; set; } = string.Empty;
+
+    /// <summary>判定：通过 / 不通过 / 不适用。</summary>
+    public ReviewStatus Status { get; set; } = ReviewStatus.Pending;
+
+    /// <summary>说明（不适用必须写理由）。</summary>
+    public string? Note { get; set; }
+
+    public string? Reviewer { get; set; }
+
+    public DateTimeOffset? DecidedAt { get; set; }
+}
+
 public class DbConnectionConfig
 {
     public Guid Id { get; set; } = Guid.NewGuid();
@@ -615,6 +763,9 @@ public class ReviewRound
     public string? CommitHash { get; set; }
 
     public List<ReviewItem> Items { get; set; } = [];
+
+    /// <summary>项目规约（DoD）的逐条判定。</summary>
+    public List<SpecVerdict> SpecVerdicts { get; set; } = [];
 }
 
 /// <summary>某个维度的评审结论。</summary>
@@ -663,6 +814,20 @@ public class DbTableRule
 
     /// <summary>true = 写也需要人工审批（默认）。false = 免审批写。</summary>
     public bool WriteRequiresApproval { get; set; } = true;
+
+    /// <summary>
+    /// true = 这张表**一律不许写**（连人工审批都不放行）。
+    ///
+    /// 为什么要有这一档：以前写侧只有「要审批 / 不要审批」两档，
+    /// 审批就是唯一的一道兜底 —— 而审批是流程，不是保证。
+    /// 真正不能碰的表（比如生产库的核心表）得有一道**硬门**：
+    /// 配了就写不进去，谁批都不行。
+    ///
+    /// 字段取「否定式」是刻意的：SchemaUpgrader 补 NOT NULL 列时用**CLR 默认值**，
+    /// bool 的 CLR 默认是 false —— 所以 false 必须表示「不禁止」，
+    /// 老库补列后才是「照常可写」，而不是一夜之间全表禁写。
+    /// </summary>
+    public bool WriteForbidden { get; set; }
 }
 
 /// <summary>

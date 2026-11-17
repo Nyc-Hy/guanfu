@@ -88,6 +88,9 @@ public sealed class WorkbenchTestHost : IDisposable
     public MetricsService Metrics => new(_db, Clock);
     public FileSystemService Files => new(_db);
     public TaskDependencyService Dependencies => new(_db, Clock);
+
+    /// <summary>会话服务（绑定链路）。</summary>
+    public AgentSessionService Sessions => new(_db, Clock);
     public ExportService Exports => new(_db, Reviews);
 
     /// <summary>数据库连接服务。密码保护器用假的 —— 测试里不需要真的加密。</summary>

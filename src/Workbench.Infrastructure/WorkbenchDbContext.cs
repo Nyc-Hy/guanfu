@@ -28,9 +28,46 @@ public sealed class WorkbenchDbContext(DbContextOptions<WorkbenchDbContext> opti
     public DbSet<AgentSession> AgentSessions => Set<AgentSession>();
     public DbSet<TaskFileChange> TaskFileChanges => Set<TaskFileChange>();
     public DbSet<DbCallRecord> DbCallRecords => Set<DbCallRecord>();
+    public DbSet<ProjectSpec> ProjectSpecs => Set<ProjectSpec>();
+    public DbSet<SpecVerdict> SpecVerdicts => Set<SpecVerdict>();
 
     /// <inheritdoc />
     public void ClearTracking() => ChangeTracker.Clear();
+
+    /// <summary>
+    /// 保存前把编号的归一化列补上。
+    ///
+    /// 这一列是「同一个项目里不能有两个归一化后相同的编号」的唯一索引的载体，
+    /// 补不上就等于那条索引形同虚设。
+    /// 在这里统一补，而不是指望每条写入路径都记得填 ——
+    /// 少填一处就是一条能悄悄插进来的重号。
+    /// </summary>
+    public override int SaveChanges(bool acceptAllChangesOnSuccess)
+    {
+        FillKeyNormalized();
+        return base.SaveChanges(acceptAllChangesOnSuccess);
+    }
+
+    public override Task<int> SaveChangesAsync(
+        bool acceptAllChangesOnSuccess,
+        CancellationToken cancellationToken = default)
+    {
+        FillKeyNormalized();
+        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+    }
+
+    private void FillKeyNormalized()
+    {
+        foreach (var entry in ChangeTracker.Entries<TaskItem>())
+        {
+            if (entry.State is EntityState.Added or EntityState.Modified)
+            {
+                entry.Entity.KeyNormalized = entry.Entity.Key is null
+                    ? null
+                    : TaskKeys.Normalize(entry.Entity.Key);
+            }
+        }
+    }
 
     /// <summary>
     /// 全局约定：DateTimeOffset 一律以 UTC DateTime 落库。
@@ -91,6 +128,7 @@ public sealed class WorkbenchDbContext(DbContextOptions<WorkbenchDbContext> opti
             e.Property(x => x.Priority).HasConversion<string>().HasMaxLength(32);
 
             e.Property(x => x.Key).HasMaxLength(50);
+            e.Property(x => x.KeyNormalized).HasMaxLength(50);
             e.Property(x => x.IsArchived).HasDefaultValue(false);
 
             e.HasIndex(t => t.ProjectId);
@@ -104,6 +142,12 @@ public sealed class WorkbenchDbContext(DbContextOptions<WorkbenchDbContext> opti
             // 内存里的 check-then-act 挡不住两个并发请求算出同一个号。
             // Key 可空，SQLite 的唯一索引不约束多个 NULL，老数据不受影响。
             e.HasIndex(t => new { t.ProjectId, t.Key }).IsUnique();
+
+            // 归一化编号的唯一索引：把「req-001」和「REQ-001」也当成同一个号。
+            // 上一条索引按原字符串比，拦不住大小写不同的重号；
+            // 这一条按业务口径比，重号在数据库这一层就被挡住。
+            // KeyNormalized 可空 → 唯一索引不约束多个 NULL，老数据补列后不受影响。
+            e.HasIndex(t => new { t.ProjectId, t.KeyNormalized }).IsUnique();
         });
 
         modelBuilder.Entity<StatusEvent>(e =>
@@ -192,6 +236,26 @@ public sealed class WorkbenchDbContext(DbContextOptions<WorkbenchDbContext> opti
                 .WithMany(t => t.Artifacts)
                 .HasForeignKey(x => x.TaskId)
                 .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // 项目级规约：项目与规约是一对一。规约是「人定的规矩」，
+        // 跟项目一起走（项目没了，规约也没了）。
+        modelBuilder.Entity<ProjectSpec>(e =>
+        {
+            e.ToTable("project_specs");
+            e.HasKey(x => x.ProjectId);
+            e.HasOne<Project>()
+                .WithOne(p => p.Spec)
+                .HasForeignKey<ProjectSpec>(x => x.ProjectId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            e.Property(x => x.Purpose).HasMaxLength(4000);
+            e.Property(x => x.DefinitionOfDone).HasMaxLength(8000);
+            e.Property(x => x.CommitConvention).HasMaxLength(1000);
+            e.Property(x => x.TestCommand).HasMaxLength(1000);
+            e.Property(x => x.BranchConvention).HasMaxLength(500);
+            e.Property(x => x.Guardrails).HasMaxLength(4000);
+            e.Property(x => x.UpdatedBy).HasMaxLength(200);
         });
 
         modelBuilder.Entity<Milestone>(e =>

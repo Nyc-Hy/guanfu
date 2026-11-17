@@ -46,7 +46,17 @@ public interface IProjectService
         string? agentCommand = null,
         string? notificationWebhookUrl = null,
         string? notificationFormat = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        /// <summary>
+        /// 同时最多几个 agent 能领活（0 = 不限）。
+        ///
+        /// 参数放在 CancellationToken 之后，不破坏既有位置参数调用。
+        /// </summary>
+        int? maxConcurrentAgents = null,
+        /// <summary>
+        /// 每个任务最多能调多少次工具（0 = 不限）。
+        /// </summary>
+        int? maxToolCallsPerTask = null);
 }
 
 public sealed class ProjectService(IAppDbContext db, IClock clock) : IProjectService
@@ -303,7 +313,9 @@ public sealed class ProjectService(IAppDbContext db, IClock clock) : IProjectSer
         string? agentCommand = null,
         string? notificationWebhookUrl = null,
         string? notificationFormat = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        int? maxConcurrentAgents = null,
+        int? maxToolCallsPerTask = null)
     {
         var project = await db.Projects.FirstOrDefaultAsync(p => p.Id == id, cancellationToken)
                       ?? throw new NotFoundException("项目", id);
@@ -368,6 +380,17 @@ public sealed class ProjectService(IAppDbContext db, IClock clock) : IProjectSer
             project.NotificationFormat = format.Length == 0 ? "generic" : format;
         }
 
+        if (maxConcurrentAgents is not null)
+        {
+            // 0 = 不限；负数没有意义，直接归零
+            project.MaxConcurrentAgents = Math.Max(0, maxConcurrentAgents.Value);
+        }
+
+        if (maxToolCallsPerTask is not null)
+        {
+            project.MaxToolCallsPerTask = Math.Max(0, maxToolCallsPerTask.Value);
+        }
+
         project.UpdatedAt = clock.UtcNow;
         await db.SaveChangesAsync(cancellationToken);
 
@@ -398,7 +421,9 @@ public sealed class ProjectService(IAppDbContext db, IClock clock) : IProjectSer
         project.NotificationWebhookUrl,
         project.NotificationFormat,
         project.RepoRoot,
-        repoWarning);
+        repoWarning,
+        project.MaxConcurrentAgents,
+        project.MaxToolCallsPerTask);
 
     private ProjectSummaryDto BuildSummary(
         Project project,

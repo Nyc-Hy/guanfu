@@ -1,5 +1,6 @@
 @page "/projects/{ProjectId:guid}"
 @rendermode InteractiveServer
+@using Workbench.Application.Services
 @inject IServiceScopeFactory ScopeFactory
 @inject NavigationManager Nav
 @inject IJSRuntime JS
@@ -66,11 +67,120 @@ else
                 aria-selected="@(ActiveTab == "tasks")" @onclick='() => SwitchTabAsync("tasks")'>
             任务 <span class="wb-count">@FilteredItems.Count</span>
         </button>
+        <button class="wb-tab @(ActiveTab == "dispatch" ? "wb-tab-active" : "")" role="tab"
+                aria-selected="@(ActiveTab == "dispatch")" @onclick='() => SwitchTabAsync("dispatch")'>
+            现在能干 <span class="wb-count">@Dispatch.ReadyCount</span>
+        </button>
         <button class="wb-tab @(ActiveTab == "milestones" ? "wb-tab-active" : "")" role="tab"
                 aria-selected="@(ActiveTab == "milestones")" @onclick='() => SwitchTabAsync("milestones")'>
             迭代版本 <span class="wb-count">@MilestoneItems.Count</span>
         </button>
     </div>
+
+    @if (ActiveTab == "dispatch")
+    {
+    <section class="wb-panel">
+        <h3>现在能干的活</h3>
+        <p class="wb-hint">
+            前置全清、没人占着的活 —— agent 可以直接领。
+            @if (Dispatch.ReadyCount > Dispatch.Ready.Count)
+            {
+                <text>（只列前 @Dispatch.Ready.Count 个，共 @Dispatch.ReadyCount 个）</text>
+            }
+        </p>
+        @if (Dispatch.Ready.Count == 0)
+        {
+            <p class="wb-muted">现在没有能直接领的活。</p>
+        }
+        else
+        {
+            <div class="wb-table-scroll">
+                <table class="wb-table">
+                    <thead>
+                    <tr><th>任务</th><th>类型</th><th>状态</th><th>负责人</th><th>权重</th></tr>
+                    </thead>
+                    <tbody>
+                    @foreach (var t in Dispatch.Ready)
+                    {
+                        <tr>
+                            <td><a class="wb-link-title" href="/tasks/@t.Id">@UiText.TaskRef(t.Key, t.Title)</a></td>
+                            <td><span class="wb-chip @TaskTypes.CssClass(t.Type)">@TaskTypes.Name(t.Type)</span></td>
+                            <td><span class="wb-chip @UiText.StatusClass(t.Status.ToString())">@UiText.Status(t.Status.ToString())</span></td>
+                            <td class="wb-muted">@(string.IsNullOrWhiteSpace(t.Assignee) ? "—" : t.Assignee)</td>
+                            <td class="wb-muted">@t.Weight.ToString("0.##")</td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </section>
+
+    <section class="wb-panel">
+        <h3>有人在干的活</h3>
+        @if (Dispatch.InProgress.Count == 0)
+        {
+            <p class="wb-muted">现在没有 agent 领着活。</p>
+        }
+        else
+        {
+            <div class="wb-table-scroll">
+                <table class="wb-table">
+                    <thead>
+                    <tr><th>任务</th><th>在谁手上</th><th>工位</th></tr>
+                    </thead>
+                    <tbody>
+                    @foreach (var t in Dispatch.InProgress)
+                    {
+                        <tr>
+                            <td><a class="wb-link-title" href="/tasks/@t.Id">@UiText.TaskRef(t.Key, t.Title)</a></td>
+                            <td><span class="wb-chip wb-chip-agent">@t.ClaimedBy</span></td>
+                            <td>
+                                @if (t.IsMainCheckout)
+                                {
+                                    <span class="wb-chip" title="@t.WorkPath">⌂ 主工作区</span>
+                                }
+                                else
+                                {
+                                    <span class="wb-chip wb-chip-ok" title="@t.WorkPath">⌂ @System.IO.Path.GetFileName(t.WorkPath ?? "")</span>
+                                }
+                            </td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </section>
+
+    <section class="wb-panel">
+        <h3>卡着的活</h3>
+        @if (Dispatch.Blocked.Count == 0)
+        {
+            <p class="wb-muted">没有卡着的活。</p>
+        }
+        else
+        {
+            <div class="wb-table-scroll">
+                <table class="wb-table">
+                    <thead>
+                    <tr><th>任务</th><th>卡在谁那儿</th><th>链深</th></tr>
+                    </thead>
+                    <tbody>
+                    @foreach (var t in Dispatch.Blocked)
+                    {
+                        <tr>
+                            <td><a class="wb-link-title" href="/tasks/@t.Id">@UiText.TaskRef(t.Key, t.Title)</a></td>
+                            <td class="wb-muted">@(t.BlockedBy.Count == 0 ? "—" : string.Join("、", t.BlockedBy))</td>
+                            <td><span class="wb-chip wb-chip-warn">@t.BlockDepth 层</span></td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </section>
+    }
 
     @if (ActiveTab == "milestones")
     {
@@ -105,7 +215,7 @@ else
                 <div class="wb-table-scroll">
                     <table class="wb-table">
                         <thead>
-                        <tr><th>名称</th><th>说明</th><th>进度</th><th>完成 / 任务</th><th>截止</th><th></th></tr>
+                        <tr><th>名称</th><th>说明</th><th>进度</th><th>完成 / 任务</th><th>截止</th><th>验收</th><th></th></tr>
                         </thead>
                         <tbody>
                         @foreach (var m in MilestoneItems)
@@ -117,6 +227,28 @@ else
                                 <td class="wb-muted">@m.DoneTasks / @m.TotalTasks</td>
                                 <td class="wb-muted">@(m.DueAt is null ? "—" : m.DueAt.Value.ToLocalTime().ToString("yyyy-MM-dd"))</td>
                                 <td>
+                                    @if (m.AcceptedAt is not null)
+                                    {
+                                        <span class="wb-tag wb-tag-ok" title="@(m.AcceptedBy ?? "human")">
+                                            已验收 @m.AcceptedAt.Value.ToLocalTime().ToString("MM-dd")
+                                        </span>
+                                    }
+                                    else
+                                    {
+                                        <span class="wb-muted">未验收</span>
+                                    }
+                                </td>
+                                <td>
+                                    @if (m.AcceptedAt is not null)
+                                    {
+                                        <button class="wb-btn" disabled="@Busy"
+                                                @onclick="() => UnacceptMilestoneAsync(m.Id)">撤销验收</button>
+                                    }
+                                    else
+                                    {
+                                        <button class="wb-btn wb-btn-primary" disabled="@Busy"
+                                                @onclick="() => AcceptMilestoneAsync(m.Id)">验收</button>
+                                    }
                                     <button class="wb-btn wb-btn-danger" disabled="@Busy"
                                             @onclick="() => _confirmDeleteMilestoneId = m.Id">删除</button>
                                 </td>
@@ -339,6 +471,9 @@ else
     // ---- 页签 ----
     private string ActiveTab { get; set; } = "tasks";
 
+    /// <summary>调度板：现在什么能干、什么卡着、谁在干。</summary>
+    private DispatchBoardDto Dispatch { get; set; } = new(Guid.Empty, [], [], [], 0, 0, 0);
+
     // ---- 筛选 ----
     private string KeywordFilter { get; set; } = string.Empty;
     private string AssigneeFilter { get; set; } = string.Empty;
@@ -493,6 +628,66 @@ else
 
     private Task ReloadFromFilterAsync() => ReloadAsync(resetPage: true);
 
+    /// <summary>验收里程碑（人的签字：版本做完了由人确认）。</summary>
+    private async Task AcceptMilestoneAsync(Guid milestoneId)
+    {
+        if (Busy)
+        {
+            return;
+        }
+
+        Busy = true;
+        Error = null;
+        StateHasChanged();
+
+        try
+        {
+            using var scope = ScopeFactory.CreateScope();
+            await scope.ServiceProvider.GetRequiredService<IMilestoneService>()
+                .AcceptAsync(milestoneId, "human");
+
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            Error = PageError.From(ex, "验收迭代版本");
+        }
+        finally
+        {
+            Busy = false;
+        }
+    }
+
+    /// <summary>撤销验收（改动了就先撤销 —— 签字不是永久的）。</summary>
+    private async Task UnacceptMilestoneAsync(Guid milestoneId)
+    {
+        if (Busy)
+        {
+            return;
+        }
+
+        Busy = true;
+        Error = null;
+        StateHasChanged();
+
+        try
+        {
+            using var scope = ScopeFactory.CreateScope();
+            await scope.ServiceProvider.GetRequiredService<IMilestoneService>()
+                .UnacceptAsync(milestoneId);
+
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            Error = PageError.From(ex, "撤销验收");
+        }
+        finally
+        {
+            Busy = false;
+        }
+    }
+
     private async Task ReloadAsync(bool resetPage = false)
     {
         Loading = true;
@@ -503,6 +698,7 @@ else
             var projects = scope.ServiceProvider.GetRequiredService<IProjectService>();
             var milestones = scope.ServiceProvider.GetRequiredService<IMilestoneService>();
             var tasks = scope.ServiceProvider.GetRequiredService<ITaskService>();
+            var dispatch = scope.ServiceProvider.GetRequiredService<IDispatchService>();
 
             Project = await projects.GetAsync(ProjectId);
             MilestoneItems = await milestones.ListAsync(ProjectId);
@@ -511,6 +707,7 @@ else
 
             // 一次最多拉 500 条。表格翻页兜着渲染，但拉取这步也不能没上限。
             Items = await tasks.ListAsync(ProjectId, null, null, milestoneId, includeArchived: IncludeArchived, limit: MaxTasks);
+            Dispatch = await dispatch.GetAsync(ProjectId, 50);
             LoadError = null;
 
             if (resetPage)

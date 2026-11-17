@@ -191,7 +191,7 @@ else
                                 <tbody>
                                 @foreach (var rule in rules)
                                 {
-                                    <tr class="@(rule.WriteRequiresApproval ? null : "wb-rule-open")">
+                                    <tr class="@(rule.WriteRequiresApproval || rule.WriteForbidden ? null : "wb-rule-open")">
                                         <td><code>@rule.SchemaName</code></td>
                                         <td><code>@rule.TableName</code></td>
                                         <td>
@@ -205,7 +205,11 @@ else
                                             }
                                         </td>
                                         <td>
-                                            @if (rule.WriteRequiresApproval)
+                                            @if (rule.WriteForbidden)
+                                            {
+                                                <span class="wb-tag wb-tag-danger">禁止写</span>
+                                            }
+                                            else if (rule.WriteRequiresApproval)
                                             {
                                                 <span class="wb-tag wb-tag-ok">需审批</span>
                                             }
@@ -234,12 +238,22 @@ else
                         <label class="wb-muted">
                             <input type="checkbox" @bind="form.WriteRequiresApproval" /> 写需审批
                         </label>
+                        <label class="wb-muted">
+                            <input type="checkbox" @bind="form.WriteForbidden" /> 禁止写
+                        </label>
                         <button class="wb-btn wb-btn-primary"
                                 disabled="@(!CanWrite || string.IsNullOrWhiteSpace(form.Table))"
                                 @onclick="() => AddRuleAsync(conn.Id)">添加规则</button>
                     </div>
 
-                    @if (!form.WriteRequiresApproval)
+                    @if (form.WriteForbidden)
+                    {
+                        <div class="wb-alert">
+                            <strong>禁止写：</strong>保存后，agent 写 <code>@(form.Schema.Trim().Length == 0 ? "dbo" : form.Schema.Trim()).@form.Table.Trim()</code>
+                            会被直接拒绝 —— <strong>人工审批也不放行</strong>。这是硬门，只有人改规则才能解开。
+                        </div>
+                    }
+                    else if (!form.WriteRequiresApproval)
                     {
                         <div class="wb-alert">
                             <strong>免审批写：</strong>保存后，agent 写 <code>@(form.Schema.Trim().Length == 0 ? "dbo" : form.Schema.Trim()).@form.Table.Trim()</code>
@@ -259,6 +273,7 @@ else
         public string Table { get; set; } = string.Empty;
         public bool AllowRead { get; set; } = true;
         public bool WriteRequiresApproval { get; set; } = true;
+        public bool WriteForbidden { get; set; }
     }
 
     private IReadOnlyList<ProjectSummaryDto> ProjectList { get; set; } = [];
@@ -483,15 +498,19 @@ else
         try
         {
             var rule = await Connections.AddRuleAsync(
-                connectionId, form.Schema, form.Table, form.AllowRead, form.WriteRequiresApproval);
+                connectionId, form.Schema, form.Table, form.AllowRead, form.WriteRequiresApproval,
+                form.WriteForbidden);
 
-            Notice = PageError.Notice(rule.WriteRequiresApproval
-                ? $"已添加规则 {rule.SchemaName}.{rule.TableName}（写需审批）。"
-                : $"已添加规则 {rule.SchemaName}.{rule.TableName} —— 免审批写，请确认这是有意为之。");
+            Notice = PageError.Notice(rule.WriteForbidden
+                ? $"已添加规则 {rule.SchemaName}.{rule.TableName} —— 禁止写，人工审批也不放行。"
+                : rule.WriteRequiresApproval
+                    ? $"已添加规则 {rule.SchemaName}.{rule.TableName}（写需审批）。"
+                    : $"已添加规则 {rule.SchemaName}.{rule.TableName} —— 免审批写，请确认这是有意为之。");
 
             form.Table = string.Empty;
             form.AllowRead = true;
             form.WriteRequiresApproval = true;
+            form.WriteForbidden = false;
 
             await ReloadRulesAsync(connectionId);
         }
