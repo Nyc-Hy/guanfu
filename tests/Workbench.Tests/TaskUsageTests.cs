@@ -6,10 +6,9 @@ using Workbench.Domain;
 namespace Workbench.Tests;
 
 /// <summary>
-/// 用量与开销。
-///
-/// 两类数要分清：**工作台数得出来的**（工具调用次数）与
-/// **agent 自报的**（token / 费用 —— 工作台不调模型，数不出来）。
+/// 用量。只记**工作台数得出来的**：工具调用次数、工具种类、事件条数、租约时长。
+/// token 与费用刻意不记 —— 工作台不调模型，不知道用的哪个模型什么套餐，
+/// 自报的数字在审计上站不住。
 /// </summary>
 public class TaskUsageTests
 {
@@ -38,27 +37,6 @@ public class TaskUsageTests
 
         Assert.Equal(3, usage.ToolCalls);
         Assert.Equal(1, usage.UniqueTools);
-    }
-
-    [Fact]
-    public async Task 自报的开销会记下来并标明是自报()
-    {
-        using var host = new WorkbenchTestHost();
-        var project = await host.Projects.CreateAsync("P");
-        var task = await host.Tasks.CreateAsync(project.Id, "一");
-        var usageService = new TaskUsageService(host.Db, host.Clock);
-
-        var usage = await usageService.ReportCostAsync(task.Id, 12_000, 3.5m, "CNY", "agent-x");
-
-        Assert.Equal(12_000, usage.ReportedTokens);
-        Assert.Equal(3.5m, usage.ReportedCost);
-        Assert.Equal("CNY", usage.CostCurrency);
-
-        // 留痕了（agent 自报这件事本身要可查）
-        var events = await host.Db.StatusEvents.AsNoTracking()
-            .Where(e => e.TaskId == task.Id)
-            .ToListAsync();
-        Assert.Contains(events, e => e.EventType == TaskEventTypes.CostReported);
     }
 
     [Fact]

@@ -305,6 +305,20 @@ else
                             </select>
                         </div>
                         <div class="wb-form-row">
+                            <label class="wb-label">这个版本的完成定义</label>
+                            <textarea class="wb-input wb-textarea" rows="4"
+                                      placeholder="一行一条，只对这个版本生效（会叠加在项目级规约之上）"
+                                      @bind="EditMilestoneDoD" @bind:event="oninput"></textarea>
+                        </div>
+                        <p class="wb-hint">
+                            这个版本<strong>额外</strong>要满足的条件。评审时它和项目级的完成定义一起判 ——
+                            项目级的规矩全局适用，这一层只对这个版本里的活生效。
+                        </p>
+                        <div class="wb-form-row">
+                            <button class="wb-btn" disabled="@(Busy || !Gate.Authorized)"
+                                    @onclick="SaveMilestoneSpecAsync">保存这个版本的完成定义</button>
+                        </div>
+                        <div class="wb-form-row">
                             <button class="wb-btn wb-btn-primary" disabled="@(Busy || !Gate.Authorized)"
                                     @onclick="() => SaveMilestoneAsync(false, false)">保存修改</button>
                             <button class="wb-btn" disabled="@(Busy || !Gate.Authorized || editing.ParentId is null)"
@@ -395,6 +409,9 @@ else
     private string EditName { get; set; } = string.Empty;
     private string EditDue { get; set; } = string.Empty;
     private string EditParentId { get; set; } = string.Empty;
+
+    /// <summary>正在编辑的里程碑的完成定义（这个版本额外的那层）。</summary>
+    private string EditMilestoneDoD { get; set; } = string.Empty;
 
     private MilestoneDto? EditingMilestone =>
         Guid.TryParse(EditMilestoneId, out var id)
@@ -675,12 +692,72 @@ else
             EditName = m.Name;
             EditDue = m.DueAt?.ToLocalTime().ToString("yyyy-MM-ddTHH:mm") ?? string.Empty;
             EditParentId = m.ParentId?.ToString() ?? string.Empty;
+            EditMilestoneDoD = string.Empty;
+            _ = LoadMilestoneDoDAsync(m.Id);
         }
         else
         {
             EditName = string.Empty;
             EditDue = string.Empty;
             EditParentId = string.Empty;
+            EditMilestoneDoD = string.Empty;
+        }
+    }
+
+    /// <summary>读这个里程碑自己的完成定义。</summary>
+    private async Task LoadMilestoneDoDAsync(Guid milestoneId)
+    {
+        try
+        {
+            var spec = await Specs.GetForMilestoneAsync(ProjectId, milestoneId);
+
+            EditMilestoneDoD = string.Join(Environment.NewLine, spec.DefinitionOfDone);
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            ActionError = PageError.From(ex, "读取里程碑规约");
+        }
+    }
+
+    /// <summary>保存这个里程碑的完成定义。</summary>
+    private async Task SaveMilestoneSpecAsync()
+    {
+        if (Busy || EditingMilestone is not { } m)
+        {
+            return;
+        }
+
+        if (!Gate.Authorized)
+        {
+            ActionError = PageError.Simple(ApprovalUiGuard.MissingTokenMessage);
+            return;
+        }
+
+        Busy = true;
+        ActionError = null;
+        StateHasChanged();
+
+        try
+        {
+            var input = new ProjectSpecInput(
+                DefinitionOfDone: EditMilestoneDoD
+                    .Split('\n')
+                    .Select(l => l.Trim())
+                    .Where(l => l.Length > 0)
+                    .ToList());
+
+            await Specs.UpdateForMilestoneAsync(ProjectId, m.Id, input, "human");
+
+            ActionError = PageError.Notice("这个版本的完成定义已保存。");
+        }
+        catch (Exception ex)
+        {
+            ActionError = PageError.From(ex, "保存里程碑规约");
+        }
+        finally
+        {
+            Busy = false;
         }
     }
 

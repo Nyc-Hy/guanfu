@@ -75,14 +75,29 @@ public interface ITaskService
     /// 不给 = 用项目的主工作区 —— 主工作区同一时刻只允许一个 agent 占着，
     /// 要并行就先开 worktree 并把路径报上来。
     /// </summary>
-    Task<TaskSummaryDto> ClaimAsync(
+    Task<ClaimOutcomeDto> ClaimAsync(
         Guid id,
         string agentId,
         int leaseMinutes = 30,
         CancellationToken cancellationToken = default,
-        string? workPath = null);
+        string? workPath = null,
+        /// <summary>
+        /// 领活时留的上下文（为什么接这个活 / 上一位留下的坑）——
+        /// 下一个接手的人看得见。
+        /// </summary>
+        string? note = null);
 
-    Task ReleaseAsync(Guid id, string agentId, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// 放掉认领。agent 卡住了（分支不对、缺上下文、跑不动）就该交回去 ——
+    /// 不放就只能等租约过期（默认 30 分钟），这期间别人也接不了。
+    ///
+    /// <paramref name="reason"/> 写清楚为什么交（下一个 agent 看得见）。
+    /// </summary>
+    Task ReleaseAsync(
+        Guid id,
+        string agentId,
+        string? reason = null,
+        CancellationToken cancellationToken = default);
 
     Task<PlanDto> SetPlanAsync(
         Guid id,
@@ -136,6 +151,19 @@ public interface ITaskService
         CancellationToken cancellationToken = default);
 }
 
+/// <summary>
+/// 领活的**协作上下文**：这个活上一个是谁、为什么交到我手上。
+///
+/// agent 接手一个别人放下的活时，不知道「为什么换手」就只能瞎猜 ——
+/// 上一位是不是遇到什么坑了？这次该不该重蹈覆辙？
+/// </summary>
+public sealed record ClaimOutcomeDto(
+    TaskSummaryDto Task,
+    /// <summary>上一个持有者（没有就 null）。</summary>
+    string? PreviousHolder,
+    /// <summary>为什么交出来（上一位说的，或上一位接活时留的上下文）。</summary>
+    string? HandoffReason);
+
 public sealed class TaskService(
     IAppDbContext db,
     IClock clock,
@@ -143,7 +171,8 @@ public sealed class TaskService(
     IReviewGate? reviewGate = null,
     IBranchGuard? branchGuard = null,
     IFileChangeService? fileChanges = null,
-    IWorkstationResolver? workstations = null) : ITaskService
+    IWorkstationResolver? workstations = null,
+    IProjectSpecService? specService = null) : ITaskService
 {
     public const int StaleAfterHours = 72;
 
@@ -821,7 +850,7 @@ public sealed class TaskService(
                "请先 `git worktree add <目录>` 开一个自己的工位，领任务时带上 worktree 参数。";
     }
 
-    public async Task<TaskSummaryDto> ClaimAsync(
+    public async Task<ClaimOutcomeDto> ClaimAsync(
         Guid id,
         string agentId,
         int leaseMinutes = 30,
@@ -834,7 +863,8 @@ public sealed class TaskService(
         ///
         /// 参数放在 CancellationToken 之后，不破坏既有位置参数调用。
         /// </summary>
-        string? workPath = null)
+        string? workPath = null,
+        string? note = null)
     {
         if (string.IsNullOrWhiteSpace(agentId))
         {
@@ -936,13 +966,17 @@ public sealed class TaskService(
         task.UpdatedAt = now;
         task.LastActivityAt = now;
 
-        // 交接：这个活上一个是谁拿的？多 agent 协作时「谁把活交给谁」要能查 ——
+        // 交接：这个活上一个是谁拿的、为什么交出来？
+        // 多 agent 协作时「谁把活交给谁、为什么」要能查 ——
         // 从账本里取上一个持有者（认领/释放事件），不需要额外的列。
-        var previousHolder = await FindPreviousHolderAsync(id, cancellationToken);
+        var previous = await FindPreviousHoldingAsync(id, cancellationToken);
+        var previousHolder = previous?.AgentId;
 
         if (previousHolder is not null &&
             !string.Equals(previousHolder, agentId, StringComparison.Ordinal))
         {
+            var reason = previous?.Reason;
+
             db.StatusEvents.Add(new StatusEvent
             {
                 TaskId = id,
@@ -950,12 +984,14 @@ public sealed class TaskService(
                 ToStatus = null,
                 Source = TaskEventSource.Agent,
                 Actor = agentId,
-                Note = $"活从 {previousHolder} 交到 {agentId}",
+                Note = $"活从 {previousHolder} 交到 {agentId}" +
+                       (string.IsNullOrWhiteSpace(reason) ? "（未说明原因）" : $"：{reason}"),
                 EventType = TaskEventTypes.Handoff,
                 Payload = WorkbenchJson.Serialize(new
                 {
                     from = previousHolder,
-                    to = agentId
+                    to = agentId,
+                    reason
                 }),
                 CreatedAt = now
             });
@@ -969,11 +1005,13 @@ public sealed class TaskService(
             ToStatus = null,
             Source = TaskEventSource.Agent,
             Actor = agentId,
-            Note = $"认领任务，租约 {expiresAt:u} 到期",
+            Note = $"认领任务，租约 {expiresAt:u} 到期" +
+                   (string.IsNullOrWhiteSpace(note) ? "" : $"：{note}"),
             EventType = TaskEventTypes.Claimed,
             Payload = WorkbenchJson.Serialize(new
             {
                 agentId,
+                note,
                 leaseExpiresAt = expiresAt,
                 leaseMinutes = Math.Clamp(leaseMinutes, 1, 24 * 60)
             }),
@@ -982,10 +1020,22 @@ public sealed class TaskService(
 
         await db.SaveChangesAsync(cancellationToken);
 
-        return await SummaryWithPendingAsync(task, cancellationToken);
+        var summary = await SummaryWithPendingAsync(task, cancellationToken);
+
+        // 协作上下文：接手的人要知道上一个是谁、为什么交出来
+        return new ClaimOutcomeDto(
+            summary,
+            previousHolder is not null && !string.Equals(previousHolder, agentId, StringComparison.Ordinal)
+                ? previousHolder
+                : null,
+            previous?.Reason);
     }
 
-    public async Task ReleaseAsync(Guid id, string agentId, CancellationToken cancellationToken = default)
+    public async Task ReleaseAsync(
+        Guid id,
+        string agentId,
+        string? reason = null,
+        CancellationToken cancellationToken = default)
     {
         var exists = await db.Tasks.AsNoTracking().AnyAsync(t => t.Id == id, cancellationToken);
         if (!exists)
@@ -1031,9 +1081,9 @@ public sealed class TaskService(
             ToStatus = null,
             Source = TaskEventSource.Agent,
             Actor = agentId,
-            Note = "释放任务认领",
+            Note = "释放任务认领" + (string.IsNullOrWhiteSpace(reason) ? "" : $"：{reason}"),
             EventType = TaskEventTypes.Released,
-            Payload = WorkbenchJson.Serialize(new { agentId }),
+            Payload = WorkbenchJson.Serialize(new { agentId, reason }),
             CreatedAt = now
         });
 
@@ -1485,11 +1535,10 @@ public sealed class TaskService(
 
         // 项目级规约：人定的规矩，agent 开工前要读 ——
         // 「什么算做完」「提交怎么写」「测试怎么跑」都在这儿。
-        var spec = await db.ProjectSpecs.AsNoTracking()
-            .FirstOrDefaultAsync(s => s.ProjectId == task.ProjectId, cancellationToken);
-        var specDto = spec is null
-            ? ProjectSpecDto.Empty(task.ProjectId)
-            : ProjectSpecService.ToDto(spec);
+        // 生效的那份规约：项目级 + 任务所在里程碑的那一层
+        var specDto = specService is not null
+            ? await specService.GetEffectiveAsync(task.Id, cancellationToken)
+            : await LoadProjectSpecFallbackAsync(task.ProjectId, cancellationToken);
 
         return new TaskContextDto(
             ToSummary(task, project, pending.GetValueOrDefault(id)),
@@ -1542,19 +1591,97 @@ public sealed class TaskService(
     }
 
     /// <summary>
-    /// 这个活上一个是谁拿的。
+    /// 没有规约服务时的退路：直接读项目级规约。
+    ///
+    /// 退路也得读得到 —— 上下文包里没有规约，agent 就只能靠猜「什么算做完」。
+    /// </summary>
+    private async Task<ProjectSpecDto> LoadProjectSpecFallbackAsync(
+        Guid projectId,
+        CancellationToken cancellationToken)
+    {
+        var spec = await db.ProjectSpecs.AsNoTracking()
+            .FirstOrDefaultAsync(s => s.ProjectId == projectId, cancellationToken);
+
+        return spec is null
+            ? ProjectSpecDto.Empty(projectId)
+            : ProjectSpecService.ToDto(spec);
+    }
+
+    /// <summary>
+    /// 这个活上一个是谁拿的、为什么。
     ///
     /// 从账本里找最近一条「认领 / 释放」事件 —— 交接点要能查，
     /// 又不想为此多存一列（那个信息本来就在事件里）。
     /// </summary>
-    private async Task<string?> FindPreviousHolderAsync(Guid taskId, CancellationToken cancellationToken)
+    private async Task<(string? AgentId, string? Reason)?> FindPreviousHoldingAsync(
+        Guid taskId,
+        CancellationToken cancellationToken)
     {
-        return await db.StatusEvents.AsNoTracking()
+        // 「上一个是谁」= 最近一次认领或释放的人；
+        // 「为什么」= 优先取他**放手时**写的理由，没有就取他**接活时**留的上下文。
+        var last = await db.StatusEvents.AsNoTracking()
             .Where(e => e.TaskId == taskId &&
                         (e.EventType == TaskEventTypes.Claimed || e.EventType == TaskEventTypes.Released))
             .OrderByDescending(e => e.CreatedAt)
-            .Select(e => e.Actor)
+            .Select(e => new { e.Actor, e.EventType, e.Payload })
             .FirstOrDefaultAsync(cancellationToken);
+
+        if (last is null)
+        {
+            return null;
+        }
+
+        var reason = ExtractEventNote(last.Payload);
+
+        if (last.EventType == TaskEventTypes.Released && string.IsNullOrWhiteSpace(reason))
+        {
+            // 放手时没写理由 —— 退一步看他接活时留了什么上下文
+            var claim = await db.StatusEvents.AsNoTracking()
+                .Where(e => e.TaskId == taskId && e.EventType == TaskEventTypes.Claimed)
+                .OrderByDescending(e => e.CreatedAt)
+                .Select(e => e.Payload)
+                .FirstOrDefaultAsync(cancellationToken);
+
+            reason = ExtractEventNote(claim);
+        }
+
+        return (last.Actor, reason);
+    }
+
+    /// <summary>
+    /// 从事件 payload 里取「为什么」（认领时留的 note / 释放时写的理由）。
+    ///
+    /// 取不到就返回 null —— 解析失败不该把整个流程带崩。
+    /// </summary>
+    internal static string? ExtractEventNote(string? payload)
+    {
+        if (string.IsNullOrWhiteSpace(payload))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(payload);
+            foreach (var name in new[] { "reason", "note" })
+            {
+                if (doc.RootElement.TryGetProperty(name, out var value) &&
+                    value.ValueKind == System.Text.Json.JsonValueKind.String)
+                {
+                    var text = value.GetString();
+                    if (!string.IsNullOrWhiteSpace(text))
+                    {
+                        return text;
+                    }
+                }
+            }
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            // 老事件 / 坏 payload —— 没有上下文而已，不该把领活搞挂
+        }
+
+        return null;
     }
 
     /// <summary>

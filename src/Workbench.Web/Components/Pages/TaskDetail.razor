@@ -661,13 +661,9 @@ else
                     <div class="wb-muted">
                         工具调用 @Usage.ToolCalls 次（@Usage.UniqueTools 种工具）·
                         事件 @Usage.Events 条
-                        @if (Usage.ReportedTokens.HasValue)
+                        @if (Usage.LeaseMinutes > 0)
                         {
-                            <text> · 自报 @Usage.ReportedTokens tokens</text>
-                        }
-                        @if (Usage.ReportedCost.HasValue)
-                        {
-                            <text> · 自报 @Usage.ReportedCost @(Usage.CostCurrency ?? "CNY")</text>
+                            <text> · 租约 @Usage.LeaseMinutes 分钟</text>
                         }
                     </div>
                     @if (Usage.CallBudget > 0)

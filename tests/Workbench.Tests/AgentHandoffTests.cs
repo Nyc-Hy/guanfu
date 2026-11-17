@@ -6,9 +6,7 @@ using Workbench.Domain;
 namespace Workbench.Tests;
 
 /// <summary>
-/// 多 agent 协作的两件事：
-/// - **交接**：一个活从谁转到谁 —— 多 agent 并行时这是协作的痕迹；
-/// - **开销增量**：agent 按次上报，工作台累加成总额并逐次留痕。
+/// 多 agent 协作的交接点：一个活从谁转到谁 —— 多 agent 并行时这是协作的痕迹。
 /// </summary>
 public class AgentHandoffTests
 {
@@ -33,6 +31,64 @@ public class AgentHandoffTests
     }
 
     [Fact]
+    public async Task 接手的人要看得见上一个是谁与为什么交()
+    {
+        using var host = new WorkbenchTestHost();
+        var project = await host.Projects.CreateAsync("P");
+        var task = await host.Tasks.CreateAsync(project.Id, "一");
+
+        await host.Tasks.ClaimAsync(task.Id, "agent-a");
+        await host.Tasks.ReleaseAsync(task.Id, "agent-a", "分支不对，接不了");
+
+        var outcome = await host.Tasks.ClaimAsync(task.Id, "agent-b");
+
+        Assert.Equal("agent-a", outcome.PreviousHolder);
+        Assert.Equal("分支不对，接不了", outcome.HandoffReason);
+
+        // 交接事件里也要有这几句（人从流水里查得到）
+        var handoff = await host.Db.StatusEvents.AsNoTracking()
+            .SingleAsync(e => e.TaskId == task.Id && e.EventType == TaskEventTypes.Handoff);
+
+        Assert.Contains("agent-a", handoff.Note);
+        Assert.Contains("分支不对", handoff.Note);
+    }
+
+    [Fact]
+    public async Task 领活时留的上下文也是交接理由()
+    {
+        using var host = new WorkbenchTestHost();
+        var project = await host.Projects.CreateAsync("P");
+        var task = await host.Tasks.CreateAsync(project.Id, "一");
+
+        await host.Tasks.ClaimAsync(task.Id, "agent-a", note: "先看看这块的登录逻辑");
+        await host.Tasks.ReleaseAsync(task.Id, "agent-a");   // 放手时没写理由
+
+        // 上一位接活时留的上下文，是他放手的背景
+        var outcome = await host.Tasks.ClaimAsync(task.Id, "agent-b");
+        Assert.Equal("agent-a", outcome.PreviousHolder);
+        Assert.Equal("先看看这块的登录逻辑", outcome.HandoffReason);
+    }
+
+    [Fact]
+    public async Task 放掉活之后别人就能接()
+    {
+        using var host = new WorkbenchTestHost();
+        var project = await host.Projects.CreateAsync("P");
+        var task = await host.Tasks.CreateAsync(project.Id, "一");
+
+        await host.Tasks.ClaimAsync(task.Id, "agent-a");
+
+        // 不放掉的话，别人接不了（租约还在）
+        await Assert.ThrowsAsync<WorkbenchException>(
+            async () => await host.Tasks.ClaimAsync(task.Id, "agent-b"));
+
+        await host.Tasks.ReleaseAsync(task.Id, "agent-a", "环境有问题");
+
+        var outcome = await host.Tasks.ClaimAsync(task.Id, "agent-b");
+        Assert.Equal("agent-b", outcome.Task.ClaimedBy);
+    }
+
+    [Fact]
     public async Task 同一个agent再领一次不算交接()
     {
         using var host = new WorkbenchTestHost();
@@ -49,29 +105,4 @@ public class AgentHandoffTests
         Assert.Equal(0, handoffs);
     }
 
-    [Fact]
-    public async Task 开销按次累加并逐次留痕()
-    {
-        using var host = new WorkbenchTestHost();
-        var project = await host.Projects.CreateAsync("P");
-        var task = await host.Tasks.CreateAsync(project.Id, "一");
-        var service = new TaskUsageService(host.Db, host.Clock);
-
-        await service.ReportCostAsync(task.Id, 1_000, 1.0m, "CNY", "agent-a");
-        await service.ReportCostAsync(task.Id, 2_500, 2.5m, "CNY", "agent-a");
-
-        var usage = await service.GetTaskUsageAsync(task.Id);
-        Assert.Equal(3_500, usage.ReportedTokens);
-        Assert.Equal(3.5m, usage.ReportedCost);
-
-        // 逐次留痕（增量 + 总额都在事件里）
-        var events = await host.Db.StatusEvents.AsNoTracking()
-            .Where(e => e.TaskId == task.Id && e.EventType == TaskEventTypes.CostReported)
-            .OrderBy(e => e.CreatedAt)
-            .ToListAsync();
-
-        Assert.Equal(2, events.Count);
-        Assert.Contains("2500", events[1].Payload);
-        Assert.Contains("3500", events[1].Payload);
-    }
 }

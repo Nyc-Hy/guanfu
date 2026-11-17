@@ -379,9 +379,6 @@ public static class TaskEventTypes
     public const string ReviewDimensionResult = "review.dimension_result";
     public const string ReviewRoundClosed = "review.round_closed";
 
-    /// <summary>agent 自报了这个任务的 token / 费用用量。</summary>
-    public const string CostReported = "usage.cost_reported";
-
     /// <summary>项目规约（DoD）某一条的判定结果。</summary>
     public const string SpecVerdictResult = "review.spec_verdict";
     public const string AgentLaunched = "agent.launched";

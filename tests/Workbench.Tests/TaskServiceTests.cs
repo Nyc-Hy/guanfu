@@ -70,8 +70,8 @@ public class TaskServiceTests
 
         var claimed = await host.Tasks.ClaimAsync(task.Id, "agent-1", 30);
 
-        Assert.Equal("agent-1", claimed.ClaimedBy);
-        Assert.NotNull(claimed.LeaseExpiresAt);
+        Assert.Equal("agent-1", claimed.Task.ClaimedBy);
+        Assert.NotNull(claimed.Task.LeaseExpiresAt);
 
         var conflict = await Assert.ThrowsAsync<WorkbenchException>(
             () => host.Tasks.ClaimAsync(task.Id, "agent-2", 30));
@@ -90,7 +90,7 @@ public class TaskServiceTests
 
         var reclaimed = await host.Tasks.ClaimAsync(task.Id, "agent-2", 30);
 
-        Assert.Equal("agent-2", reclaimed.ClaimedBy);
+        Assert.Equal("agent-2", reclaimed.Task.ClaimedBy);
     }
 
     [Fact]

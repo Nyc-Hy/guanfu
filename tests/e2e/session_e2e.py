@@ -224,6 +224,33 @@ def main() -> int:
     # 撤销限制，别影响后面的链路
     rest_json(rest, "PUT", f"/api/projects/{project_id}/config", {"maxToolCallsPerTask": 0})
 
+    # ── F4.3 交接：放掉活 + 下一个接手的人看得见为什么 ────────────────
+    print("\n-- F4.3 交接（放掉活 + 接手的人看得见上下文）--")
+    released = other_agent.call(
+        "workbench_release_task", {"taskId": second["id"], "reason": "环境不对，接不了"}
+    )
+    expect(released.get("ok"), f"放掉活应成功（实际：{released.get('error')}）")
+
+    # 另一个 agent 接手 → 结果里要带「上一个是谁、为什么」。
+    # 用**独立的客户端**：bound 这个会话已经挂在第一个任务上，
+    # 拿它去领别的任务会把会话的任务改掉，后面的断言就全乱了。
+    third = Mcp(args.url, headers={"X-Workbench-Repo": repo, "X-Workbench-Agent": "e2e-agent-3"})
+    third.initialize()
+    # 主工作区被别的 agent 占着（工位独占）→ 接手方得声明自己的 worktree
+    takeover = third.call(
+        "workbench_claim_task",
+        {"taskId": second["id"], "agentId": "e2e-agent-3", "worktree": worktree},
+    )
+    expect(takeover.get("ok"), f"接手应成功（实际：{takeover.get('error')}）")
+    expect(
+        takeover.get("previousHolder") == "e2e-agent-2",
+        f"接手的结果里应带上一个持有者（实际：{takeover.get('previousHolder')}）",
+    )
+    expect(
+        "环境不对" in (takeover.get("handoffReason") or ""),
+        f"接手的结果里应带上交接的原因（实际：{takeover.get('handoffReason')}）",
+    )
+
     # ── F5 审计自动带任务 ─────────────────────────────────────────
     print("\n-- F5 认领之后审计自动带任务归属 --")
     # 认领之后再来一次调用 —— agent 不用自己填 taskId，

@@ -106,11 +106,12 @@ Secret）、跨库（`OtherDb.dbo.T`）、`INSERT … EXEC` 一律判「认不�
 
 | 项 | 内容 |
 |---|---|
-| 能力 | 里程碑验收（人的签字，签过之后里面的活不许回退）；每任务工具调用上限（可执行的节流阀）；用量统计（工具调用次数自动可验证，token / 费用为 agent 自报） |
+| 能力 | 里程碑验收（人的签字，签过之后里面的活不许回退）；每任务工具调用上限（可执行的节流阀）；用量统计（**只记工作台数得出来的**：工具调用次数 / 工具种类 / 事件数 / 租约时长。token 与费用**刻意不记** —— 工作台不知道用的哪个模型什么套餐，自报的数字在审计上站不住） |
 | 落地 | `src/Workbench.Application/Services/MilestoneService.cs`（验收 / 撤销验收）<br>`src/Workbench.Application/Services/TaskUsageService.cs`<br>MCP 中央过滤器（`McpServiceCollectionExtensions`）里的用量闸门 |
 | 自动化证据 | 单测 `MilestoneAcceptanceTests`（6）、`TaskUsageTests`（5）、`AgentHandoffTests`（3）<br>端到端 F4.2（超上限后工具调用被拦下，错误信息给出上限） |
 
-多 agent 协作的痕迹也在：交接点（`task.handoff`，带 from / to）与按次留痕的开销上报。
+多 agent 协作的痕迹也在：交接点（`task.handoff`，带 from / to / reason）与
+**带上下文的交接**（接手的人看得见上一个是谁、为什么交）；agent 也能主动把活交回去。
 还有**可解释的调度**：`IDispatchService.SuggestAsync` 给出「先干哪个」并附理由
 （优先级、权重、等待时长、解锁数），agent 与人看同一份 —— 派单不再靠猜。
 

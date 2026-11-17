@@ -149,6 +149,15 @@ public static class HumanTokenPolicy
             return IsPost(method);
         }
 
+        // /api/milestones/{id}/spec —— 改里程碑级规约（这个版本的完成定义）。
+        // 规矩是人的决定，agent 不该自己改「这个版本什么算做完」。
+        if (segments.Length == 4
+            && segments[1].Equals("milestones", StringComparison.OrdinalIgnoreCase)
+            && segments[3].Equals("spec", StringComparison.OrdinalIgnoreCase))
+        {
+            return !IsRead(method);
+        }
+
         // /api/milestones/{id}/accept | /unaccept —— 验收是人的签字：
         // 「这个版本做完了」得由人确认，agent 不该自己宣布。
         if (segments.Length == 4

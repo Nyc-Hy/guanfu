@@ -4,13 +4,14 @@ using Workbench.Domain;
 namespace Workbench.Application.Services;
 
 /// <summary>
-/// 用量与开销。
+/// 用量。
 ///
-/// 分两类，**别混着用**：
-/// - **工作台数得出来的**（自动、可验证）：工具调用次数、用到的工具种类、
-///   事件条数、租约时长 —— 这些来自工作台自己的账本；
-/// - **agent 自报的**：token 数与费用 —— 工作台不调模型，数不出 token，
-///   只能是 agent 自己报（标成「自报」，别当成工作台核过的数）。
+/// **只记工作台数得出来的**：工具调用次数、用到的工具种类、事件条数、租约时长。
+///
+/// **刻意不记 token 与费用** —— 工作台不调模型，不知道 agent 用的是哪个模型、
+/// 什么价格、什么套餐，那些数字只能靠 agent 自报。自报的数字在审计上站不住
+/// （查证不了的东西不要摆成看起来可查证的），所以干脆不做：
+/// agent 花的「资源」用**工作台能数的工具调用次数**来代理。
 ///
 /// 「数得出来」的那部分还能**当闸门用**：项目级「每个任务最多 N 次工具调用」，
 /// 超了就拒 —— agent 看见明确的上限会自己去收敛。
@@ -37,14 +38,6 @@ public interface ITaskUsageService
         Guid taskId,
         CancellationToken cancellationToken = default);
 
-    /// <summary>记录 agent 自报的累计 token 与费用。</summary>
-    Task<TaskUsageDto> ReportCostAsync(
-        Guid taskId,
-        long? tokens,
-        decimal? cost,
-        string? currency = null,
-        string? reportedBy = null,
-        CancellationToken cancellationToken = default);
 }
 
 /// <summary>每任务工具调用上限的用度。</summary>
@@ -69,11 +62,6 @@ public sealed record TaskUsageDto(
     int Events,
     /// <summary>租约时长（分钟）。</summary>
     double LeaseMinutes,
-    /// <summary>agent 自报的累计 token（自报值，工作台数不出来）。</summary>
-    long? ReportedTokens,
-    /// <summary>agent 自报的累计费用（自报值）。</summary>
-    decimal? ReportedCost,
-    string? CostCurrency,
     /// <summary>现在在谁手上。</summary>
     string? ClaimedBy,
     /// <summary>这个项目的每任务调用上限（0 = 不限）。</summary>
@@ -83,9 +71,7 @@ public sealed record TaskUsageDto(
 public sealed record AgentUsageDto(
     string AgentId,
     int Tasks,
-    int ToolCalls,
-    long? ReportedTokens,
-    decimal? ReportedCost);
+    int ToolCalls);
 
 /// <summary>项目的用量汇总。</summary>
 public sealed record ProjectUsageDto(
@@ -94,9 +80,7 @@ public sealed record ProjectUsageDto(
     int TotalToolCalls,
     int CallBudgetPerTask,
     IReadOnlyList<TaskUsageDto> TopTasks,
-    IReadOnlyList<AgentUsageDto> Agents,
-    long? ReportedTokens,
-    decimal? ReportedCost);
+    IReadOnlyList<AgentUsageDto> Agents);
 
 public sealed class TaskUsageService(IAppDbContext db, IClock clock) : ITaskUsageService
 {
@@ -133,9 +117,6 @@ public sealed class TaskUsageService(IAppDbContext db, IClock clock) : ITaskUsag
             calls.Distinct(StringComparer.Ordinal).Count(),
             events,
             Math.Round(leaseMinutes, 1),
-            task.ReportedTokens,
-            task.ReportedCost,
-            task.CostCurrency,
             task.ClaimedByAgentId,
             project?.MaxToolCallsPerTask ?? 0);
     }
@@ -152,7 +133,7 @@ public sealed class TaskUsageService(IAppDbContext db, IClock clock) : ITaskUsag
 
         var tasks = await db.Tasks.AsNoTracking()
             .Where(t => t.ProjectId == projectId && !t.IsArchived)
-            .Select(t => new { t.Id, t.Key, t.Title, t.ClaimedByAgentId, t.ReportedTokens, t.ReportedCost, t.CostCurrency })
+            .Select(t => new { t.Id, t.Key, t.Title, t.ClaimedByAgentId })
             .ToListAsync(cancellationToken);
 
         var calls = await db.ToolCallAudits.AsNoTracking()
@@ -182,9 +163,6 @@ public sealed class TaskUsageService(IAppDbContext db, IClock clock) : ITaskUsag
                 taskCalls.Select(c => c.ToolName).Distinct(StringComparer.Ordinal).Count(),
                 eventsByTask.GetValueOrDefault(t.Id),
                 0,
-                t.ReportedTokens,
-                t.ReportedCost,
-                t.CostCurrency,
                 t.ClaimedByAgentId,
                 project?.MaxToolCallsPerTask ?? 0);
         }).ToList();
@@ -192,12 +170,7 @@ public sealed class TaskUsageService(IAppDbContext db, IClock clock) : ITaskUsag
         var byAgent = perTask
             .Where(t => !string.IsNullOrWhiteSpace(t.ClaimedBy))
             .GroupBy(t => t.ClaimedBy!, StringComparer.Ordinal)
-            .Select(g => new AgentUsageDto(
-                g.Key,
-                g.Count(),
-                g.Sum(t => t.ToolCalls),
-                g.Any(t => t.ReportedTokens.HasValue) ? g.Sum(t => t.ReportedTokens ?? 0) : null,
-                g.Any(t => t.ReportedCost.HasValue) ? g.Sum(t => t.ReportedCost ?? 0) : null))
+            .Select(g => new AgentUsageDto(g.Key, g.Count(), g.Sum(t => t.ToolCalls)))
             .OrderByDescending(a => a.ToolCalls)
             .ToList();
 
@@ -207,9 +180,7 @@ public sealed class TaskUsageService(IAppDbContext db, IClock clock) : ITaskUsag
             calls.Count,
             project?.MaxToolCallsPerTask ?? 0,
             perTask.OrderByDescending(t => t.ToolCalls).ThenBy(t => t.Key).Take(take).ToList(),
-            byAgent,
-            tasks.Any(t => t.ReportedTokens.HasValue) ? tasks.Sum(t => t.ReportedTokens ?? 0) : null,
-            tasks.Any(t => t.ReportedCost.HasValue) ? tasks.Sum(t => t.ReportedCost ?? 0) : null);
+            byAgent);
     }
 
     public async Task<CallBudgetStatus> GetCallBudgetAsync(
@@ -233,60 +204,4 @@ public sealed class TaskUsageService(IAppDbContext db, IClock clock) : ITaskUsag
         return new CallBudgetStatus(used >= budget, used, budget);
     }
 
-    public async Task<TaskUsageDto> ReportCostAsync(
-        Guid taskId,
-        long? tokens,
-        decimal? cost,
-        string? currency = null,
-        string? reportedBy = null,
-        CancellationToken cancellationToken = default)
-    {
-        var task = await db.Tasks.FirstOrDefaultAsync(t => t.Id == taskId, cancellationToken)
-                   ?? throw new NotFoundException("任务", taskId);
-
-        // 上报的是**增量**（「这次又用了多少」），工作台累加成总额 ——
-        // 只存最后一次上报的覆盖式写法会丢掉中间过程，
-        // 事后没法回答「这个任务的钱花在哪几次上」。
-        var tokenDelta = tokens ?? 0;
-        var costDelta = cost ?? 0;
-
-        task.ReportedTokens = (task.ReportedTokens ?? 0) + tokenDelta;
-        task.ReportedCost = (task.ReportedCost ?? 0) + costDelta;
-
-        if (!string.IsNullOrWhiteSpace(currency))
-        {
-            task.CostCurrency = currency.Trim();
-        }
-        else if (task.CostCurrency is null)
-        {
-            task.CostCurrency = "CNY";
-        }
-
-        db.StatusEvents.Add(new StatusEvent
-        {
-            TaskId = taskId,
-            FromStatus = null,
-            ToStatus = null,
-            Source = TaskEventSource.Agent,
-            Actor = reportedBy,
-            Note = $"自报用量：{(tokenDelta > 0 ? $"{tokenDelta} tokens" : "")}" +
-                   $"{(costDelta > 0 ? $" {costDelta} {task.CostCurrency}" : "")}",
-            EventType = TaskEventTypes.CostReported,
-            Payload = WorkbenchJson.Serialize(new
-            {
-                // 本次上报的增量 + 累加后的总额，两者都留着
-                tokens = tokenDelta,
-                cost = costDelta,
-                totalTokens = task.ReportedTokens,
-                totalCost = task.ReportedCost,
-                currency = task.CostCurrency,
-                reportedBy
-            }),
-            CreatedAt = clock.UtcNow
-        });
-
-        await db.SaveChangesAsync(cancellationToken);
-
-        return await GetTaskUsageAsync(taskId, cancellationToken);
-    }
 }

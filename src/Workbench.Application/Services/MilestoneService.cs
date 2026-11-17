@@ -29,6 +29,9 @@ public interface IMilestoneService
 {
     Task<IReadOnlyList<MilestoneDto>> ListAsync(Guid projectId, CancellationToken cancellationToken = default);
 
+    /// <summary>取单个里程碑（含进度）。</summary>
+    Task<MilestoneDto> GetAsync(Guid id, CancellationToken cancellationToken = default);
+
     Task<MilestoneDto> CreateAsync(
         Guid projectId,
         string name,
@@ -69,6 +72,19 @@ public interface IMilestoneService
 
 public sealed class MilestoneService(IAppDbContext db, IClock clock) : IMilestoneService
 {
+    public async Task<MilestoneDto> GetAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        var milestone = await db.Milestones.AsNoTracking()
+            .FirstOrDefaultAsync(m => m.Id == id, cancellationToken)
+            ?? throw new NotFoundException("里程碑", id);
+
+        var tasks = await db.Tasks.AsNoTracking()
+            .Where(t => t.MilestoneId == id)
+            .ToListAsync(cancellationToken);
+
+        return Build(milestone, tasks);
+    }
+
     public async Task<IReadOnlyList<MilestoneDto>> ListAsync(Guid projectId, CancellationToken cancellationToken = default)
     {
         var milestones = await db.Milestones

@@ -323,6 +323,7 @@ public sealed class WorkbenchMcpTools(
         int leaseMinutes = 30,
         string? taskKey = null,
         string? worktree = null,
+        string? note = null,
         CancellationToken cancellationToken = default)
     {
         try
@@ -340,21 +341,65 @@ public sealed class WorkbenchMcpTools(
                     "agentId 不能为空：当前没有会话可以继承 agent 身份，请显式传 agentId。");
             }
 
-            var task = await tasks.ClaimAsync(resolvedId, resolvedAgentId, leaseMinutes, cancellationToken, worktree);
+            var outcome = await tasks.ClaimAsync(
+                resolvedId, resolvedAgentId, leaseMinutes, cancellationToken, worktree, note);
 
             // 认领成功 → 任务挂到本次会话上。之后这个会话的所有调用都自动归属这个任务，
             // 审计与事件账本不用 agent 自己填 taskId。
             if (scope?.SessionId is Guid sessionId && sessions is not null)
             {
-                await sessions.AttachTaskAsync(sessionId, task.Id, cancellationToken);
+                await sessions.AttachTaskAsync(sessionId, outcome.Task.Id, cancellationToken);
             }
 
-            return new ClaimResult(true, task, null, null);
+            // 协作上下文：这个活上一个是谁、为什么交出来 —— 接手的人得看得见
+            return new ClaimResult(
+                true,
+                outcome.Task,
+                null,
+                outcome.Task.ClaimedBy,
+                outcome.PreviousHolder,
+                outcome.HandoffReason);
         }
         catch (WorkbenchException ex)
         {
             var current = taskId is Guid id ? await tasks.GetAsync(id, cancellationToken) : null;
             return new ClaimResult(false, current, ex.Message, current?.ClaimedBy);
+        }
+    }
+
+    [McpServerTool(Name = "workbench_release_task")]
+    [Description(
+        "放掉认领（把这个活交回去）。" +
+        "卡住了就该交 —— 分支不对、缺上下文、跑不动、环境有问题，都比占着强：" +
+        "占着别人就接不了这个活（主工作区同一时刻只允许一个 agent）。" +
+        "reason 写清楚为什么交（下一个 agent 看得见，它能少踩一遍坑）。")]
+    public async Task<ReleaseTaskResult> ReleaseTaskAsync(
+        Guid taskId,
+        string? reason = null,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var scope = await ResolveScopeAsync(null, cancellationToken);
+            var agentId = scope.AgentId;
+
+            if (string.IsNullOrWhiteSpace(agentId))
+            {
+                throw new WorkbenchException(
+                    "不知道是谁要放掉这个活（当前会话没有 agent 身份）。");
+            }
+
+            await tasks.ReleaseAsync(taskId, agentId!, reason, cancellationToken);
+
+            return new ReleaseTaskResult { Ok = true };
+        }
+        catch (WorkbenchException ex)
+        {
+            return new ReleaseTaskResult { Ok = false, Error = ex.Message };
+        }
+        catch (Exception ex)
+        {
+            return new ReleaseTaskResult { Ok = false, Error = ex.Message };
         }
     }
 
@@ -534,8 +579,10 @@ public sealed class WorkbenchMcpTools(
 
     [McpServerTool(Name = "workbench_get_usage")]
     [Description(
-        "查用量：工具调用次数、用到的工具种类、事件条数、租约时长（这些是工作台自己数的），" +
-        "以及 token / 费用（**agent 自报**的值，工作台不调模型、数不出 token）。" +
+        "查用量：工具调用次数、用到的工具种类、事件条数、租约时长 —— " +
+        "全是**工作台自己数**的，可验证。" +
+        "（不含 token 与费用：工作台不调模型，不知道用的是哪个模型、什么套餐，" +
+        "那些数字只能靠自报，自报的东西在审计上站不住，所以不做。）" +
         "不给 taskId 就是整个项目的汇总（按任务、按 agent）。")]
     public async Task<UsageToolResult> GetUsageAsync(
         Guid? taskId = null,
@@ -560,36 +607,6 @@ public sealed class WorkbenchMcpTools(
                 Ok = true,
                 Project = await usage.GetProjectUsageAsync(scope.ProjectId, 20, cancellationToken)
             };
-        }
-        catch (Exception ex)
-        {
-            return UsageToolResult.Fail(ex.Message);
-        }
-    }
-
-    [McpServerTool(Name = "workbench_report_cost")]
-    [Description(
-        "报告这个任务**这次又用了**多少 token / 费用（增量，不是累计总额 —— 工作台会累加成总额）。" +
-        "工作台不调模型，token 与费用只能由你报 —— 它会标成「自报」，跟工作台自己数的" +
-        "工具调用次数不是一回事。")]
-    public async Task<UsageToolResult> ReportCostAsync(
-        Guid taskId,
-        long? tokens = null,
-        decimal? cost = null,
-        string? currency = null,
-        CancellationToken cancellationToken = default)
-    {
-        if (usage is null)
-        {
-            return UsageToolResult.Fail("当前宿主没有启用用量统计。");
-        }
-
-        try
-        {
-            var result = await usage.ReportCostAsync(
-                taskId, tokens, cost, currency, "agent", cancellationToken);
-
-            return new UsageToolResult { Ok = true, Task = result };
         }
         catch (Exception ex)
         {
@@ -855,7 +872,11 @@ public sealed record ClaimResult(
     bool Ok,
     TaskSummaryDto? Task,
     string? Error = null,
-    string? HeldBy = null);
+    string? HeldBy = null,
+    /// <summary>上一个持有者（这活是接手来的才有）。</summary>
+    string? PreviousHolder = null,
+    /// <summary>为什么交出来（上一位说的，或上一位接活时留的上下文）。</summary>
+    string? HandoffReason = null);
 
 /// <summary>
 /// 按编号查任务的结果。找不到时不抛异常 —— MCP 会把异常吞成一句泛化信息，
@@ -926,4 +947,12 @@ public sealed record UsageToolResult
     public ProjectUsageDto? Project { get; init; }
 
     public static UsageToolResult Fail(string error) => new() { Ok = false, Error = error };
+}
+
+/// <summary>放掉认领的结果。</summary>
+public sealed record ReleaseTaskResult
+{
+    public bool Ok { get; init; }
+
+    public string? Error { get; init; }
 }

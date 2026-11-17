@@ -21,9 +21,40 @@ public interface IProjectSpecService
     /// <summary>读这个项目的规约。没填过就返回一份空的（形状一致，agent 不用判空）。</summary>
     Task<ProjectSpecDto> GetAsync(Guid projectId, CancellationToken cancellationToken = default);
 
+    /// <summary>读某个里程碑自己的规约。没填过就返回空的。</summary>
+    Task<ProjectSpecDto> GetForMilestoneAsync(
+        Guid projectId,
+        Guid milestoneId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 这个任务**生效**的规约：项目级 + 它所在里程碑的那一层（里程碑的字段优先）。
+    ///
+    /// agent 开工前读的是这一份 —— 不是「项目级」也不是「里程碑级」，
+    /// 是对这个活真正生效的那份。
+    /// </summary>
+    Task<ProjectSpecDto> GetEffectiveAsync(Guid taskId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 这个任务**生效**的完成定义：项目级的 + 它所在里程碑的（去重）。
+    ///
+    /// agent 与评审看到的都是这一份 —— 别让「哪个层级说了算」变成隐性规则。
+    /// </summary>
+    Task<IReadOnlyList<string>> GetEffectiveDefinitionOfDoneAsync(
+        Guid taskId,
+        CancellationToken cancellationToken = default);
+
     /// <summary>写规约。整份覆盖 —— 规矩是「现在该是什么样」，不是补丁。</summary>
     Task<ProjectSpecDto> UpdateAsync(
         Guid projectId,
+        ProjectSpecInput input,
+        string? updatedBy = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>写某个里程碑自己的规约。</summary>
+    Task<ProjectSpecDto> UpdateForMilestoneAsync(
+        Guid projectId,
+        Guid milestoneId,
         ProjectSpecInput input,
         string? updatedBy = null,
         CancellationToken cancellationToken = default);
@@ -40,6 +71,96 @@ public sealed class ProjectSpecService(IAppDbContext db, IClock clock) : IProjec
             .FirstOrDefaultAsync(s => s.ProjectId == projectId, cancellationToken);
 
         return spec is null ? ProjectSpecDto.Empty(projectId) : ToDto(spec);
+    }
+
+    public async Task<ProjectSpecDto> GetForMilestoneAsync(
+        Guid projectId,
+        Guid milestoneId,
+        CancellationToken cancellationToken = default)
+    {
+        var spec = await db.MilestoneSpecs
+            .AsNoTracking()
+            .FirstOrDefaultAsync(s => s.MilestoneId == milestoneId, cancellationToken);
+
+        return spec is null ? ProjectSpecDto.Empty(projectId) : ToDto(spec);
+    }
+
+    public async Task<ProjectSpecDto> GetEffectiveAsync(
+        Guid taskId,
+        CancellationToken cancellationToken = default)
+    {
+        var task = await db.Tasks.AsNoTracking()
+            .Where(t => t.Id == taskId)
+            .Select(t => new { t.ProjectId, t.MilestoneId })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (task is null)
+        {
+            return ProjectSpecDto.Empty(Guid.Empty);
+        }
+
+        var project = await db.ProjectSpecs.AsNoTracking()
+            .FirstOrDefaultAsync(s => s.ProjectId == task.ProjectId, cancellationToken);
+
+        var milestone = task.MilestoneId is Guid milestoneId
+            ? await db.MilestoneSpecs.AsNoTracking()
+                .FirstOrDefaultAsync(s => s.MilestoneId == milestoneId, cancellationToken)
+            : null;
+
+        if (project is null && milestone is null)
+        {
+            return ProjectSpecDto.Empty(task.ProjectId);
+        }
+
+        // 里程碑的那一层优先（更具体的说了算），DoD 是两层叠加
+        return new ProjectSpecDto(
+            task.ProjectId,
+            Pick(milestone?.Purpose, project?.Purpose),
+            SplitLines(project?.DefinitionOfDone).Concat(SplitLines(milestone?.DefinitionOfDone))
+                .Distinct(StringComparer.Ordinal).ToList(),
+            Pick(milestone?.CommitConvention, project?.CommitConvention),
+            Pick(milestone?.TestCommand, project?.TestCommand),
+            project?.BranchConvention,
+            Pick(milestone?.Guardrails, project?.Guardrails),
+            milestone?.UpdatedAt ?? project?.UpdatedAt,
+            milestone?.UpdatedBy ?? project?.UpdatedBy);
+    }
+
+    /// <summary>里程碑的那层优先，没填的用项目级的。</summary>
+    private static string? Pick(string? milestoneValue, string? projectValue) =>
+        string.IsNullOrWhiteSpace(milestoneValue) ? projectValue : milestoneValue;
+
+    public async Task<IReadOnlyList<string>> GetEffectiveDefinitionOfDoneAsync(
+        Guid taskId,
+        CancellationToken cancellationToken = default)
+    {
+        var task = await db.Tasks.AsNoTracking()
+            .Where(t => t.Id == taskId)
+            .Select(t => new { t.ProjectId, t.MilestoneId })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (task is null)
+        {
+            return [];
+        }
+
+        var projectDoD = await db.ProjectSpecs.AsNoTracking()
+            .Where(s => s.ProjectId == task.ProjectId)
+            .Select(s => s.DefinitionOfDone)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        var milestoneDoD = task.MilestoneId is Guid milestoneId
+            ? await db.MilestoneSpecs.AsNoTracking()
+                .Where(s => s.MilestoneId == milestoneId)
+                .Select(s => s.DefinitionOfDone)
+                .FirstOrDefaultAsync(cancellationToken)
+            : null;
+
+        // 项目级在前、里程碑级在后 —— 顺序稳定，agent 与人看到的列表一样
+        return SplitLines(projectDoD)
+            .Concat(SplitLines(milestoneDoD))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
     }
 
     public async Task<ProjectSpecDto> UpdateAsync(
@@ -70,6 +191,44 @@ public sealed class ProjectSpecService(IAppDbContext db, IClock clock) : IProjec
         spec.CommitConvention = Trim(input.CommitConvention);
         spec.TestCommand = Trim(input.TestCommand);
         spec.BranchConvention = Trim(input.BranchConvention);
+        spec.Guardrails = Trim(input.Guardrails);
+        spec.UpdatedAt = clock.UtcNow;
+        spec.UpdatedBy = string.IsNullOrWhiteSpace(updatedBy) ? null : updatedBy.Trim();
+
+        await db.SaveChangesAsync(cancellationToken);
+
+        return ToDto(spec);
+    }
+
+    public async Task<ProjectSpecDto> UpdateForMilestoneAsync(
+        Guid projectId,
+        Guid milestoneId,
+        ProjectSpecInput input,
+        string? updatedBy = null,
+        CancellationToken cancellationToken = default)
+    {
+        var milestone = await db.Milestones.AsNoTracking()
+            .FirstOrDefaultAsync(m => m.Id == milestoneId, cancellationToken)
+            ?? throw new NotFoundException("里程碑", milestoneId);
+
+        if (milestone.ProjectId != projectId)
+        {
+            throw new WorkbenchException("里程碑不属于这个项目。");
+        }
+
+        var spec = await db.MilestoneSpecs
+            .FirstOrDefaultAsync(s => s.MilestoneId == milestoneId, cancellationToken);
+
+        if (spec is null)
+        {
+            spec = new MilestoneSpec { MilestoneId = milestoneId };
+            db.MilestoneSpecs.Add(spec);
+        }
+
+        spec.Purpose = Trim(input.Purpose);
+        spec.DefinitionOfDone = JoinLines(input.DefinitionOfDone);
+        spec.CommitConvention = Trim(input.CommitConvention);
+        spec.TestCommand = Trim(input.TestCommand);
         spec.Guardrails = Trim(input.Guardrails);
         spec.UpdatedAt = clock.UtcNow;
         spec.UpdatedBy = string.IsNullOrWhiteSpace(updatedBy) ? null : updatedBy.Trim();
@@ -116,6 +275,17 @@ public sealed class ProjectSpecService(IAppDbContext db, IClock clock) : IProjec
         spec.CommitConvention,
         spec.TestCommand,
         spec.BranchConvention,
+        spec.Guardrails,
+        spec.UpdatedAt,
+        spec.UpdatedBy);
+
+    private static ProjectSpecDto ToDto(MilestoneSpec spec) => new(
+        spec.Milestone?.ProjectId ?? Guid.Empty,
+        spec.Purpose,
+        SplitLines(spec.DefinitionOfDone),
+        spec.CommitConvention,
+        spec.TestCommand,
+        null,
         spec.Guardrails,
         spec.UpdatedAt,
         spec.UpdatedBy);

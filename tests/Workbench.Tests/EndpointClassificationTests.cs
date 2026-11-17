@@ -69,6 +69,7 @@ public class EndpointClassificationTests
         "PUT /api/projects/{projectId:guid}/config",
         "PUT /api/projects/{projectId:guid}/spec",
         "POST /api/milestones/{milestoneId:guid}/accept",
+        "PUT /api/milestones/{milestoneId:guid}/spec",
         "POST /api/milestones/{milestoneId:guid}/unaccept",
         "POST /api/projects/{projectId:guid}/db-connections",
         "POST /api/tasks/{taskId:guid}/launch-agent",

@@ -89,10 +89,11 @@ public class Project
 /// </summary>
 public class ProjectSpec
 {
-    /// <summary>项目 id（一个项目一份规约）。</summary>
+    /// <summary>项目 id。</summary>
     public Guid ProjectId { get; set; }
 
     public Project? Project { get; set; }
+
 
     /// <summary>项目目标 / 背景。一段话，agent 开工前先读它。</summary>
     public string? Purpose { get; set; }
@@ -153,6 +154,45 @@ public class Milestone
 
     public List<TaskItem> Tasks { get; set; } = [];
     public List<Milestone> Children { get; set; } = [];
+
+    /// <summary>这个里程碑自己的规约（叠加在项目级之上）。</summary>
+    public MilestoneSpec? Spec { get; set; }
+}
+
+/// <summary>
+/// 里程碑级规约。
+///
+/// 与项目级规约**叠加**：项目级的规矩对所有活适用，里程碑级的只对这个里程碑里的活生效。
+/// 「12 月版本要额外写迁移说明」这类只对某个版本成立的要求，
+/// 不该塞进项目级规约里污染所有活。
+///
+/// 单独一张表，不跟项目级规约混在一张 —— 混在一起的话「项目级只有一份」
+/// 这个唯一性在 NULL 语义下就说不清了。
+/// </summary>
+public class MilestoneSpec
+{
+    /// <summary>所属里程碑 id。</summary>
+    public Guid MilestoneId { get; set; }
+
+    public Milestone? Milestone { get; set; }
+
+    /// <summary>这个里程碑的目标 / 补充说明。</summary>
+    public string? Purpose { get; set; }
+
+    /// <summary>完成定义（DoD）。**逐行存**，一行一条。</summary>
+    public string? DefinitionOfDone { get; set; }
+
+    /// <summary>提交信息约定（这个版本特有的）。</summary>
+    public string? CommitConvention { get; set; }
+
+    /// <summary>测试命令（这个版本特有的）。</summary>
+    public string? TestCommand { get; set; }
+
+    /// <summary>红线 / 禁忌（这个版本特有的）。</summary>
+    public string? Guardrails { get; set; }
+
+    public DateTimeOffset? UpdatedAt { get; set; }
+    public string? UpdatedBy { get; set; }
 }
 
 /// <summary>需求任务。</summary>
@@ -231,20 +271,6 @@ public class TaskItem
     // ---- 认领租约（决策 4：agent 自己领）----
     public string? ClaimedByAgentId { get; set; }
     public DateTimeOffset? LeaseExpiresAt { get; set; }
-
-    /// <summary>
-    /// agent 自报的累计 token 数。
-    ///
-    /// 工作台**数不出** token（它不调模型）—— 所以这一列是自报值，
-    /// 跟工作台自己数得出来的「工具调用次数」不是一回事，别混着用。
-    /// </summary>
-    public long? ReportedTokens { get; set; }
-
-    /// <summary>agent 自报的累计费用。</summary>
-    public decimal? ReportedCost { get; set; }
-
-    /// <summary>费用币种。</summary>
-    public string? CostCurrency { get; set; }
 
     /// <summary>
     /// 这个 agent 干活的工作目录（绝对路径）。

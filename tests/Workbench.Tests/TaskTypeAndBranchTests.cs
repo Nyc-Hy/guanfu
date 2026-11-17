@@ -131,7 +131,7 @@ public class TaskTypeAndBranchTests
 
         var claimed = await host.Tasks.ClaimAsync(task.Id, "agent-1");
 
-        Assert.Equal("agent-1", claimed.ClaimedBy);
+        Assert.Equal("agent-1", claimed.Task.ClaimedBy);
     }
 
     [Fact]
@@ -164,7 +164,7 @@ public class TaskTypeAndBranchTests
         var task = await host.Tasks.CreateAsync(project.Id, "登录接口");
 
         var claimed = await host.Tasks.ClaimAsync(task.Id, "agent-1");
-        Assert.Equal("agent-1", claimed.ClaimedBy);
+        Assert.Equal("agent-1", claimed.Task.ClaimedBy);
     }
 
     [Fact]
@@ -209,7 +209,7 @@ public class TaskTypeAndBranchTests
         await host.Tasks.BindBranchAsync(task.Id, null);
 
         var claimed = await host.Tasks.ClaimAsync(task.Id, "agent-1");
-        Assert.Equal("agent-1", claimed.ClaimedBy);
+        Assert.Equal("agent-1", claimed.Task.ClaimedBy);
     }
 
     [Fact]

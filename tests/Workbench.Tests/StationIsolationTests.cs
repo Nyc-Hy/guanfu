@@ -151,8 +151,8 @@ public class StationIsolationTests
             // 第二个 agent 带着自己的 worktree 来 → 允许并行
             var claimed = await host.Tasks.ClaimAsync(second.Id, "agent-b", workPath: worktree);
 
-            Assert.Equal("agent-b", claimed.ClaimedBy);
-            Assert.Equal(Path.GetFullPath(worktree), claimed.WorkPath);
+            Assert.Equal("agent-b", claimed.Task.ClaimedBy);
+            Assert.Equal(Path.GetFullPath(worktree), claimed.Task.WorkPath);
         }
         finally
         {
@@ -201,7 +201,7 @@ public class StationIsolationTests
             host.Clock.Advance(TimeSpan.FromMinutes(11));
 
             var claimed = await host.Tasks.ClaimAsync(second.Id, "agent-b");
-            Assert.Equal("agent-b", claimed.ClaimedBy);
+            Assert.Equal("agent-b", claimed.Task.ClaimedBy);
         }
         finally
         {
@@ -416,7 +416,7 @@ public class StationIsolationTests
             await host.Tasks.ClaimAsync(first.Id, "agent-a");
             var claimed = await host.Tasks.ClaimAsync(second.Id, "agent-b", workPath: worktree);
 
-            Assert.Equal("agent-b", claimed.ClaimedBy);
+            Assert.Equal("agent-b", claimed.Task.ClaimedBy);
         }
         finally
         {

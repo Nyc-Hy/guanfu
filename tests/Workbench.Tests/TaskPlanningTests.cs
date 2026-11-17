@@ -152,7 +152,7 @@ public class TaskPlanningTests
         await host.Tasks.ChangeStatusAsync(first.Id, TaskStatus.Done);
 
         var claimed = await host.Tasks.ClaimAsync(second.Id, "agent-1");
-        Assert.Equal("agent-1", claimed.ClaimedBy);
+        Assert.Equal("agent-1", claimed.Task.ClaimedBy);
     }
 
     [Fact]
@@ -183,7 +183,7 @@ public class TaskPlanningTests
         await host.Dependencies.RemoveAsync(second.Id, first.Id);
 
         var claimed = await host.Tasks.ClaimAsync(second.Id, "agent-1");
-        Assert.Equal("agent-1", claimed.ClaimedBy);
+        Assert.Equal("agent-1", claimed.Task.ClaimedBy);
     }
 
     [Fact]

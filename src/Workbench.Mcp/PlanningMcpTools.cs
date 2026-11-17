@@ -94,13 +94,16 @@ public sealed class PlanningMcpTools(
 
     [McpServerTool(Name = "workbench_get_project_spec")]
     [Description(
-        "读取这个项目的**规约**（人定的规矩）：项目目标、完成定义（DoD，逐条）、" +
+        "读取**规约**（人定的规矩）：项目目标、完成定义（DoD，逐条）、" +
         "提交信息约定、测试命令、分支命名约定、红线与禁忌。" +
         "**开工前先读它** —— 「什么算做完」「提交怎么写」「测试怎么跑」在这儿，" +
         "别自己猜。评审时它就是尺子。" +
+        "给 taskId 时返回**对这个活真正生效**的那份（项目级 + 它所在里程碑的那一层，" +
+        "里程碑的优先、DoD 两层叠加）；不给就返回项目级的。" +
         "没填过会返回空规约（不是错误）。已绑定会话时不用传 projectId。")]
     public async Task<ProjectSpecDto> GetProjectSpecAsync(
         Guid? projectId = null,
+        Guid? taskId = null,
         CancellationToken cancellationToken = default)
     {
         var scope = await ResolveScopeAsync(projectId, cancellationToken);
@@ -108,6 +111,11 @@ public sealed class PlanningMcpTools(
         if (specs is null)
         {
             return ProjectSpecDto.Empty(scope.ProjectId);
+        }
+
+        if (taskId is Guid id)
+        {
+            return await specs.GetEffectiveAsync(id, cancellationToken);
         }
 
         return await specs.GetAsync(scope.ProjectId, cancellationToken);

@@ -129,7 +129,11 @@ public class ReviewGateException(ReviewGateDto gate)
     }
 }
 
-public sealed class ReviewService(IAppDbContext db, IClock clock, IGitInspector git) : IReviewService, IReviewGate
+public sealed class ReviewService(
+    IAppDbContext db,
+    IClock clock,
+    IGitInspector git,
+    IProjectSpecService? specs = null) : IReviewService, IReviewGate
 {
     /// <summary>
     /// 每轮最多允许跳过几个维度。
@@ -319,11 +323,21 @@ public sealed class ReviewService(IAppDbContext db, IClock clock, IGitInspector 
         return ToSpecVerdictDto(verdict);
     }
 
-    /// <summary>项目当前的完成定义（逐条）。</summary>
+    /// <summary>
+    /// 这个任务**生效**的完成定义（逐条）：项目级的 + 它所在里程碑的。
+    ///
+    /// 走规约服务那一份（同一个口径）—— 评审判的与 agent 读的必须是同一份，
+    /// 不能各算各的。
+    /// </summary>
     private async Task<IReadOnlyList<string>> LoadDefinitionOfDoneAsync(
         Guid taskId,
         CancellationToken cancellationToken)
     {
+        if (specs is not null)
+        {
+            return await specs.GetEffectiveDefinitionOfDoneAsync(taskId, cancellationToken);
+        }
+
         var projectId = await db.Tasks.AsNoTracking()
             .Where(t => t.Id == taskId)
             .Select(t => t.ProjectId)

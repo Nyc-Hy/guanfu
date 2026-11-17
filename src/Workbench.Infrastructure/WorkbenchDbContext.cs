@@ -29,6 +29,7 @@ public sealed class WorkbenchDbContext(DbContextOptions<WorkbenchDbContext> opti
     public DbSet<TaskFileChange> TaskFileChanges => Set<TaskFileChange>();
     public DbSet<DbCallRecord> DbCallRecords => Set<DbCallRecord>();
     public DbSet<ProjectSpec> ProjectSpecs => Set<ProjectSpec>();
+    public DbSet<MilestoneSpec> MilestoneSpecs => Set<MilestoneSpec>();
     public DbSet<SpecVerdict> SpecVerdicts => Set<SpecVerdict>();
 
     /// <inheritdoc />
@@ -254,6 +255,25 @@ public sealed class WorkbenchDbContext(DbContextOptions<WorkbenchDbContext> opti
             e.Property(x => x.CommitConvention).HasMaxLength(1000);
             e.Property(x => x.TestCommand).HasMaxLength(1000);
             e.Property(x => x.BranchConvention).HasMaxLength(500);
+            e.Property(x => x.Guardrails).HasMaxLength(4000);
+            e.Property(x => x.UpdatedBy).HasMaxLength(200);
+        });
+
+        // 里程碑级规约：与项目级规约叠加，但各是各的一张表
+        // （混在一张表里，「项目级只有一份」在 NULL 语义下就说不清了）。
+        modelBuilder.Entity<MilestoneSpec>(e =>
+        {
+            e.ToTable("milestone_specs");
+            e.HasKey(x => x.MilestoneId);
+            e.HasOne<Milestone>()
+                .WithOne(m => m.Spec)
+                .HasForeignKey<MilestoneSpec>(x => x.MilestoneId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            e.Property(x => x.Purpose).HasMaxLength(4000);
+            e.Property(x => x.DefinitionOfDone).HasMaxLength(8000);
+            e.Property(x => x.CommitConvention).HasMaxLength(1000);
+            e.Property(x => x.TestCommand).HasMaxLength(1000);
             e.Property(x => x.Guardrails).HasMaxLength(4000);
             e.Property(x => x.UpdatedBy).HasMaxLength(200);
         });

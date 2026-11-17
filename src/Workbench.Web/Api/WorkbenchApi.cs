@@ -303,8 +303,14 @@ public static class WorkbenchApi
 
         api.MapPost("/tasks/{taskId:guid}/claim", async (
             Guid taskId, ClaimTaskRequest request, ITaskService tasks, CancellationToken ct) =>
-            Results.Ok(await tasks.ClaimAsync(
-                taskId, request.AgentId, request.LeaseMinutes ?? 30, ct, request.WorkPath)));
+        {
+            // 返回形状不变（CLI 依赖扁平的任务摘要）；
+            // 协作上下文（上一个是谁、为什么交）走事件流与 MCP 的领取结果。
+            var outcome = await tasks.ClaimAsync(
+                taskId, request.AgentId, request.LeaseMinutes ?? 30, ct, request.WorkPath, request.Note);
+
+            return Results.Ok(outcome.Task);
+        });
 
         api.MapPost("/tasks/{taskId:guid}/plan", async (
             Guid taskId, SetPlanRequest request, ITaskService tasks, CancellationToken ct) =>
@@ -507,6 +513,31 @@ public static class WorkbenchApi
         api.MapGet("/projects/{projectId:guid}/spec", async (
             Guid projectId, IProjectSpecService specs, CancellationToken ct) =>
             Results.Ok(await specs.GetAsync(projectId, ct)));
+
+        // 里程碑级规约：叠加在项目级之上。改它同样要人工凭证（规矩是人的决定）。
+        api.MapGet("/milestones/{milestoneId:guid}/spec", async (
+            Guid milestoneId, IProjectSpecService specs, IMilestoneService milestones, CancellationToken ct) =>
+        {
+            var milestone = await milestones.GetAsync(milestoneId, ct);
+            return Results.Ok(await specs.GetForMilestoneAsync(milestone.ProjectId, milestoneId, ct));
+        });
+
+        api.MapPut("/milestones/{milestoneId:guid}/spec", async (
+            Guid milestoneId, UpdateProjectSpecRequest request, IProjectSpecService specs,
+            IMilestoneService milestones, CancellationToken ct) =>
+        {
+            var milestone = await milestones.GetAsync(milestoneId, ct);
+            var input = new ProjectSpecInput(
+                request.Purpose,
+                SplitLines(request.DefinitionOfDone),
+                request.CommitConvention,
+                request.TestCommand,
+                request.BranchConvention,
+                request.Guardrails);
+
+            return Results.Ok(await specs.UpdateForMilestoneAsync(
+                milestone.ProjectId, milestoneId, input, "human", ct));
+        });
 
         api.MapPut("/projects/{projectId:guid}/spec", async (
             Guid projectId, UpdateProjectSpecRequest request, IProjectSpecService specs, CancellationToken ct) =>
@@ -911,7 +942,12 @@ public sealed record ChangeStatusRequest(string Status, string? Note, string? Ac
 /// 领任务。<see cref="WorkPath"/> = agent 干活的工作目录（自己的 git worktree）；
 /// 不给就是用项目主工作区 —— 主工作区同一时刻只允许一个 agent 占着。
 /// </summary>
-public sealed record ClaimTaskRequest(string AgentId, int? LeaseMinutes, string? WorkPath = null);
+public sealed record ClaimTaskRequest(
+    string AgentId,
+    int? LeaseMinutes,
+    string? WorkPath = null,
+    /// <summary>领活时留的上下文（为什么接这个活）。</summary>
+    string? Note = null);
 public sealed record SetPlanRequest(
     string? Background, string? Understanding, string? Breakdown,
     string? AcceptanceCriteria, string? Risks, string? Author);
