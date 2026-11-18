@@ -198,6 +198,18 @@ public interface ITaskService
         /// null 的 assigneeMemberId 表示「不动这个字段」，所以「清空」要显式说。
         /// </summary>
         bool clearAssigneeMember = false);
+
+    /// <summary>
+    /// 认领一个**还没分派**的活（人也能认领，不只是 agent）。
+    ///
+    /// 「未分配的任务任何成员都可以自己认领」——
+    /// 认领之后这个活就归他了（可见性也跟着变）。
+    /// 已经有人的活不许抢 —— 要换人得管理员来分派。
+    /// </summary>
+    Task<TaskSummaryDto> ClaimForMemberAsync(
+        Guid id,
+        Guid memberId,
+        CancellationToken cancellationToken = default);
 }
 
 /// <summary>
@@ -1690,6 +1702,68 @@ public sealed class TaskService(
     /// 设置分派信息：负责人、优先级、截止日、权重。
     /// 传 null 的字段不动 —— 清空用空串（负责人）或专门的 API。
     /// </summary>
+    public async Task<TaskSummaryDto> ClaimForMemberAsync(
+        Guid id,
+        Guid memberId,
+        CancellationToken cancellationToken = default)
+    {
+        var task = await db.Tasks.FirstOrDefaultAsync(t => t.Id == id, cancellationToken)
+                   ?? throw new NotFoundException("任务", id);
+
+        var member = await db.Members.AsNoTracking()
+            .FirstOrDefaultAsync(m => m.Id == memberId, cancellationToken)
+            ?? throw new NotFoundException("成员", memberId);
+
+        if (member.IsDisabled)
+        {
+            throw new GuanfuException("这个成员已停用，不能认领活。");
+        }
+
+        if (task.AssigneeMemberId is not null)
+        {
+            throw new GuanfuException("这个活已经有主人了 —— 要换人得让管理员来分派。");
+        }
+
+        if (!string.IsNullOrWhiteSpace(task.Assignee))
+        {
+            // 有名字但没归属成员 —— 那多半是 agent 认领的活（agent 认领走的是另一条路）。
+            throw new GuanfuException("这个活已经被领走了（认领人 " + task.Assignee + "）。");
+        }
+
+        var now = clock.UtcNow;
+
+        task.AssigneeMemberId = member.Id;
+        task.Assignee = member.DisplayName;
+        task.UpdatedAt = now;
+        task.LastActivityAt = now;
+
+        db.StatusEvents.Add(new StatusEvent
+        {
+            TaskId = id,
+            FromStatus = null,
+            ToStatus = null,
+            Source = TaskEventSource.Human,
+            Actor = member.DisplayName,
+            Note = $"认领了这个活",
+            EventType = TaskEventTypes.Assigned,
+            Payload = GuanfuJson.Serialize(new
+            {
+                memberId = member.Id,
+                memberName = member.DisplayName
+            }),
+            CreatedAt = now
+        });
+
+        await db.SaveChangesAsync(cancellationToken);
+
+        var project = await db.Projects.AsNoTracking()
+            .FirstOrDefaultAsync(p => p.Id == task.ProjectId, cancellationToken);
+
+        var pending = await PendingDependencyCountsAsync([id], cancellationToken);
+
+        return ToSummary(task, project, pending.GetValueOrDefault(id));
+    }
+
     public async Task<TaskSummaryDto> SetAssignmentAsync(
         Guid id,
         string? assignee = null,

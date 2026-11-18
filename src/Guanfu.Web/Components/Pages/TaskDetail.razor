@@ -1140,6 +1140,16 @@ else
                 }
 
                 <h4>分派与归档</h4>
+                @* 未分派的活，谁都能自己认领 —— 认领之后它就归你了（别人也就看不见了）。 *@
+                @if (CanClaimTask)
+                {
+                    <div class="wb-form-row wb-mb-3">
+                        <button class="wb-btn wb-btn-primary" disabled="@Busy" @onclick="ClaimForMeAsync">
+                            认领这个活
+                        </button>
+                        <span class="wb-muted">还没分派 —— 认领了它就归你，别人看不见了。</span>
+                    </div>
+                }
                 <div class="wb-field-row">
                     <label class="wb-label">负责人</label>
                     <input class="wb-input" placeholder="人名或 agent id" @bind="AssigneeInput" @bind:event="oninput" />
@@ -1303,6 +1313,12 @@ else
 
     /// <summary>当前用户自己（普通成员只能分给自己）。</summary>
     private Guid? CurrentMemberId { get; set; }
+
+    /// <summary>这个活能不能被我认领（登录了 + 还没分派）。</summary>
+    private bool CanClaimTask =>
+        CurrentMemberId is not null
+        && Context?.Task.AssigneeMemberId is null
+        && string.IsNullOrWhiteSpace(Context?.Task.Assignee);
 
     /// <summary>能选的人：管理员看全部，普通成员只有自己。</summary>
     private IReadOnlyList<MemberDto> AssignableMembers =>
@@ -1781,6 +1797,33 @@ else
     }
 
     // ---- 分派 / 归档 ----
+
+    /// <summary>认领这个活（人也能认领，不只是 agent）。</summary>
+    private async Task ClaimForMeAsync()
+    {
+        if (Busy || CurrentMemberId is null)
+        {
+            return;
+        }
+
+        Busy = true;
+        Error = null;
+        StateHasChanged();
+
+        try
+        {
+            await Tasks.ClaimForMemberAsync(TaskId, CurrentMemberId.Value);
+            await RefreshContextAndEventsAsync();
+        }
+        catch (Exception ex)
+        {
+            Error = PageError.From(ex, "认领任务");
+        }
+        finally
+        {
+            Busy = false;
+        }
+    }
 
     private async Task SaveAssignmentAsync()
     {

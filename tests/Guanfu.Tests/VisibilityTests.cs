@@ -178,6 +178,31 @@ public sealed class VisibilityTests
     }
 
     [Fact]
+    public async Task 未分派的活可以自己认领()
+    {
+        using var host = new GuanfuTestHost();
+        var members = new MemberService(host.Db, host.Clock);
+
+        var alice = await members.CreateAsync("alice", "爱丽丝", "password-1");
+        var bob = await members.CreateAsync("bob", "鲍勃", "password-2");
+
+        var project = await host.Projects.CreateAsync("测试项目");
+        var task = await host.Tasks.CreateAsync(project.Id, "没人要的活");
+
+        var tasks = new TaskService(
+            host.Db, host.Clock, host.Git, host.Reviews, host.BranchGuard, null, null, null, null, new FakeScope(null));
+
+        var claimed = await tasks.ClaimForMemberAsync(task.Id, alice.Id);
+
+        Assert.Equal(alice.Id, claimed.AssigneeMemberId);
+        Assert.Equal("爱丽丝", claimed.Assignee);
+
+        // 已经有主人了 —— 别人不能再抢
+        await Assert.ThrowsAsync<GuanfuException>(
+            () => tasks.ClaimForMemberAsync(task.Id, bob.Id));
+    }
+
+    [Fact]
     public async Task 普通成员只看得到自己的待批()
     {
         using var host = new GuanfuTestHost();
