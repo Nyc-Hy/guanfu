@@ -404,4 +404,10 @@ public static class TaskEventTypes
     public const string MilestoneAssigned = "milestone.assigned";
     public const string TypeChanged = "task.type_changed";
     public const string BranchBound = "task.branch_bound";
+
+    /// <summary>产物被改了一版（人改 AI 写出来的东西）。</summary>
+    public const string ArtifactUpdated = "artifact.updated";
+
+    /// <summary>打了一个交付包（这个迭代版本要发出去的东西）。</summary>
+    public const string DeliveryPacked = "delivery.packed";
 }

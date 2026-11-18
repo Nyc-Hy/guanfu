@@ -319,4 +319,98 @@ public static class UiText
         "general" => "通用组",
         _ => "通用组"
     };
+
+    /// <summary>
+    /// 产物类型的中文说法。
+    ///
+    /// 界面上不许露枚举名（`SqlScript` 不是人话）；
+    /// 认不出来就原样透出，别硬凑一个像样的中文。
+    /// </summary>
+    public static string ArtifactTypeLabel(ArtifactType type) => type switch
+    {
+        ArtifactType.Plan => "计划",
+        ArtifactType.DesignDoc => "设计文档",
+        ArtifactType.CodeChange => "代码改动",
+        ArtifactType.TestReport => "测试报告",
+        ArtifactType.DeployRecord => "发布记录",
+        ArtifactType.Screenshot => "截图",
+        ArtifactType.Commit => "提交",
+        ArtifactType.Document => "文档",
+        ArtifactType.SqlScript => "SQL 脚本",
+        ArtifactType.Script => "脚本",
+        ArtifactType.Other => "其它",
+        _ => type.ToString()
+    };
+
+    /// <summary>
+    /// 认产物类型：枚举名（<c>SqlScript</c>）与中文说法（「SQL 脚本」）都认。
+    ///
+    /// 人敲命令用中文，agent 用枚举名 —— 两种都得能落地。
+    /// </summary>
+    public static bool TryParseArtifactType(string? text, out ArtifactType type)
+    {
+        type = ArtifactType.Other;
+
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        var trimmed = text.Trim();
+
+        if (Enum.TryParse<ArtifactType>(trimmed, ignoreCase: true, out type))
+        {
+            return true;
+        }
+
+        foreach (var candidate in Enum.GetValues<ArtifactType>())
+        {
+            if (ArtifactTypeLabel(candidate) == trimmed)
+            {
+                type = candidate;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>所有产物类型的中文说法，给「你传错了」的错误消息用。</summary>
+    public static string ArtifactTypeNames()
+        => string.Join("、", Enum.GetValues<ArtifactType>().Select(ArtifactTypeLabel));
+
+    /// <summary>文档类别的中文说法。</summary>
+    public static string DocumentKind(string? kind) => kind switch
+    {
+        DocumentKinds.Prd => "需求文档",
+        DocumentKinds.TestCase => "测试用例",
+        DocumentKinds.ApiDoc => "接口文档",
+        DocumentKinds.Delivery => "交付文件",
+        DocumentKinds.Other => "其它",
+        null or "" => "其它",
+        _ => kind
+    };
+}
+
+/// <summary>
+/// 文档类别。
+///
+/// 类别是给人看的标签，界面、REST、CLI 共用这一份 ——
+///
+/// 各处自己写一套就会互相打架（同一个文件在两处显示不同的类别）。
+/// </summary>
+public static class DocumentKinds
+{
+    public const string Prd = "prd";
+    public const string TestCase = "testcase";
+    public const string ApiDoc = "apidoc";
+
+    /// <summary>交付文件：要随版本发出去的东西（脚本、配置、说明书…）。</summary>
+    public const string Delivery = "delivery";
+
+    public const string Other = "other";
+
+    /// <summary>全部类别（界面下拉用）。</summary>
+    public static IReadOnlyList<string> All { get; } =
+        [Prd, TestCase, ApiDoc, Delivery, Other];
 }

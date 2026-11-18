@@ -1,0 +1,286 @@
+@page "/projects/{ProjectId:guid}/milestones/{MilestoneId:guid}/delivery"
+@rendermode InteractiveServer
+@using Microsoft.Extensions.DependencyInjection
+@inject IDeliveryPackageService DeliveryService
+@inject IMilestoneService Milestones
+@inject IServiceScopeFactory ScopeFactory
+@inject NavigationManager Nav
+
+<PageTitle>打包交付 · 观复</PageTitle>
+
+@if (Loading && Candidates is null)
+{
+    <div class="wb-empty">加载中…</div>
+}
+else if (Candidates is null)
+{
+    <ErrorNotice Error="LoadError" />
+    <div class="wb-empty">@(LoadError is null ? "迭代版本不存在。" : "加载失败。")<a href="/">返回</a></div>
+}
+else
+{
+    <div class="wb-page-head">
+        <div>
+            <a class="wb-back" href="/projects/@ProjectId">← @Candidates.ProjectName</a>
+            <h1>打包交付 · @Candidates.MilestoneName</h1>
+            <p class="wb-muted">
+                这个迭代版本要发出去的东西：勾选文档与产物，打成一个 zip + 一份清单。
+                清单会随包一起带走，事后也查得到「发出去的是哪一版」。
+            </p>
+        </div>
+    </div>
+
+    <ErrorNotice Error="Error" />
+
+    <section class="wb-panel">
+        <div class="wb-card-head">
+            <h3>候选池</h3>
+            <span class="wb-muted">@Candidates.Candidates.Count 项 · 已勾选 @_selected.Count 项</span>
+        </div>
+
+        @if (Candidates.Candidates.Count == 0)
+        {
+            <p class="wb-muted">
+                这个迭代版本下面还没有可交付的内容。文档与产物登记到它底下的任务里，这里才会出现。
+            </p>
+        }
+        else
+        {
+            <div class="wb-table-scroll">
+                <table class="wb-table">
+                    <thead>
+                        <tr>
+                            <th></th>
+                            <th>类别</th>
+                            <th>名称</th>
+                            <th>来自任务</th>
+                            <th>大小</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var item in Candidates.Candidates)
+                        {
+                            <tr>
+                                <td>
+                                    <input type="checkbox"
+                                           checked="@_selected.Contains(item.ItemId)"
+                                           @onchange="() => ToggleItem(item.ItemId)" />
+                                </td>
+                                <td><span class="wb-chip">@ItemKindLabel(item)</span></td>
+                                <td>@item.Title</td>
+                                <td class="wb-muted">@item.TaskKey</td>
+                                <td class="wb-muted">@FormatSize(item.SizeBytes)</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="wb-form-row wb-mt-3">
+                <button class="wb-btn" @onclick="SelectAll">全选</button>
+                <button class="wb-btn" @onclick="ClearAll">清空</button>
+            </div>
+
+            <div class="wb-form-row wb-mt-3">
+                @if (Authorized)
+                {
+                    <button class="wb-btn wb-btn-primary" disabled="@(Busy || _selected.Count == 0)"
+                            @onclick="PackAsync">
+                        打包这 @_selected.Count 项
+                    </button>
+                    <span class="wb-muted">打出来的是一个 zip，里面带一份清单（清单.md + manifest.json）。</span>
+                }
+                else
+                {
+                    @* 打包是要**发出去**的东西 —— 与导出同级，要有人在场。 *@
+                    <span class="wb-muted">打包交付需要人工凭证（东西要发出去，得有人点头）。</span>
+                }
+            </div>
+
+            @if (!Authorized)
+            {
+                <PageTokenGate @bind-Authorized="Authorized" />
+            }
+        }
+    </section>
+
+    <section class="wb-panel">
+        <div class="wb-card-head">
+            <h3>打过的包</h3>
+            <span class="wb-muted">@Packages.Count 个</span>
+        </div>
+
+        @if (Packages.Count == 0)
+        {
+            <p class="wb-muted">还没打过包。</p>
+        }
+        else
+        {
+            <div class="wb-table-scroll">
+                <table class="wb-table">
+                    <thead>
+                        <tr>
+                            <th>包</th>
+                            <th>条目</th>
+                            <th>大小</th>
+                            <th>打包人</th>
+                            <th>时间</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var package in Packages)
+                        {
+                            <tr>
+                                <td><code>@package.FileName</code></td>
+                                <td>@package.ItemCount 项</td>
+                                <td class="wb-muted">@FormatSize(package.SizeBytes)</td>
+                                <td>@package.CreatedBy</td>
+                                <td class="wb-muted">@package.CreatedAt.ToLocalTime().ToString("MM-dd HH:mm")</td>
+                                <td>
+                                    <a href="/api/delivery-packages/@package.Id/download">下载</a>
+                                    <button class="wb-btn wb-btn-link" @onclick="() => ToggleManifest(package.Id)">
+                                        @(IsManifestExpanded(package.Id) ? "收起清单" : "看清单")
+                                    </button>
+                                </td>
+                            </tr>
+                            @if (IsManifestExpanded(package.Id))
+                            {
+                                <tr>
+                                    <td colspan="6">
+                                        <div class="wb-doc">
+                                            @if (!string.IsNullOrWhiteSpace(package.Manifest))
+                                            {
+                                                @((MarkupString)MarkdownRenderer.ToHtml(package.Manifest))
+                                            }
+                                            else
+                                            {
+                                                <p class="wb-muted">这个包没有留下清单正文。</p>
+                                            }
+                                        </div>
+                                    </td>
+                                </tr>
+                            }
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </section>
+}
+
+@code {
+    [Parameter] public Guid ProjectId { get; set; }
+
+    [Parameter] public Guid MilestoneId { get; set; }
+
+    private DeliveryCandidatesDto? Candidates { get; set; }
+    private IReadOnlyList<DeliveryPackageDto> Packages { get; set; } = [];
+    private readonly HashSet<Guid> _selected = new();
+    private readonly HashSet<Guid> _expandedManifests = new();
+    private bool Loading { get; set; } = true;
+    private bool Busy { get; set; }
+    private bool Authorized { get; set; }
+    private PageError? Error { get; set; }
+    private PageError? LoadError { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        Loading = true;
+
+        try
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var delivery = scope.ServiceProvider.GetRequiredService<IDeliveryPackageService>();
+
+            Candidates = await delivery.ListCandidatesAsync(MilestoneId);
+            Packages = await delivery.ListAsync(MilestoneId);
+        }
+        catch (Exception ex)
+        {
+            LoadError = PageError.From(ex, "加载交付候选");
+        }
+        finally
+        {
+            Loading = false;
+        }
+    }
+
+    private void ToggleItem(Guid id)
+    {
+        if (!_selected.Add(id))
+        {
+            _selected.Remove(id);
+        }
+    }
+
+    private void SelectAll()
+    {
+        if (Candidates is null)
+        {
+            return;
+        }
+
+        foreach (var item in Candidates.Candidates)
+        {
+            _selected.Add(item.ItemId);
+        }
+    }
+
+    private void ClearAll() => _selected.Clear();
+
+    private bool IsManifestExpanded(Guid id) => _expandedManifests.Contains(id);
+
+    private void ToggleManifest(Guid id)
+    {
+        if (!_expandedManifests.Add(id))
+        {
+            _expandedManifests.Remove(id);
+        }
+    }
+
+    private async Task PackAsync()
+    {
+        if (Busy || _selected.Count == 0)
+        {
+            return;
+        }
+
+        Busy = true;
+        Error = null;
+
+        try
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var delivery = scope.ServiceProvider.GetRequiredService<IDeliveryPackageService>();
+
+            await delivery.CreateAsync(MilestoneId, _selected.ToList(), "human");
+
+            _selected.Clear();
+
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            Error = PageError.From(ex, "打包交付");
+        }
+        finally
+        {
+            Busy = false;
+        }
+    }
+
+    /// <summary>候选池里的「类别」：文档 / 产物类型。</summary>
+    private static string ItemKindLabel(DeliveryCandidateDto item) =>
+        item.Kind == "document"
+            ? UiText.DocumentKind(item.KindLabel)
+            : (item.KindLabel ?? "其它");
+
+    private static string FormatSize(long bytes) =>
+        bytes < 1024 ? $"{bytes} B" : $"{bytes / 1024.0:0.#} KB";
+}

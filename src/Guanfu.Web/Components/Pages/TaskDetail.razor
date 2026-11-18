@@ -4,6 +4,7 @@
 @using Microsoft.Extensions.DependencyInjection
 @inject ITaskService Tasks
 @inject IDocumentService Documents
+@inject IArtifactService Artifacts
 @inject IHandoffService HandoffService
 @inject IMilestoneService Milestones
 @inject IAgentLauncher Launcher
@@ -211,7 +212,14 @@ else
                 <h3>文档</h3>
                 <div class="wb-form-row">
                     <InputFile OnChange="UploadAsync" multiple disabled="@Uploading" />
-                    <span class="wb-muted">可一次选多个 · PRD / 测试用例 / 接口文档等</span>
+                    <select class="wb-input" @bind="UploadKind" title="上传时给文件归的类别">
+                        <option value="">类别：自动判断</option>
+                        @foreach (var kind in DocumentKinds.All)
+                        {
+                            <option value="@kind">@UiText.DocumentKind(kind)</option>
+                        }
+                    </select>
+                    <span class="wb-muted">可一次选多个 · 需求文档 / 测试用例 / 接口文档 / 交付文件</span>
                 </div>
 
                 @if (UploadFailures.Count > 0)
@@ -247,7 +255,7 @@ else
                             {
                                 <tr>
                                     <td>@doc.FileName</td>
-                                    <td><span class="wb-chip">@doc.Kind</span></td>
+                                    <td><span class="wb-chip">@UiText.DocumentKind(doc.Kind)</span></td>
                                     <td>@(doc.SizeBytes / 1024) KB</td>
                                     <td>
                                         @if (doc.Parsed)
@@ -284,7 +292,19 @@ else
                                                         }
                                                     </div>
                                                 }
-                                                <pre class="wb-pre">@DocumentText(doc.Id)</pre>
+                                                @* 文档是**渲染出来**给人看的，不是把原始 md 摊出来。
+                                                   解析不出块（脚本、纯代码）就按代码块显示 —— 那才是它该有的样子。 *@
+                                                @if (DocumentBlocks(doc.Id).Count > 0)
+                                                {
+                                                    @foreach (var block in DocumentBlocks(doc.Id))
+                                                    {
+                                                        <DocumentBlockView Block="block" />
+                                                    }
+                                                }
+                                                else
+                                                {
+                                                    <pre class="wb-pre">@DocumentText(doc.Id)</pre>
+                                                }
                                             </div>
                                         </td>
                                     </tr>
@@ -538,32 +558,100 @@ else
                         <div class="wb-artifact">
                             <div class="wb-card-head">
                                 <strong>@artifact.Title</strong>
-                                <span class="wb-chip">@artifact.Type</span>
+                                <span class="wb-chip">@ArtifactTypeLabel(artifact.Type)</span>
                                 @if (!string.IsNullOrWhiteSpace(artifact.CommitSha))
                                 {
                                     <span class="wb-chip wb-chip-muted">@artifact.CommitSha[..Math.Min(8, artifact.CommitSha.Length)]</span>
                                 }
-                            </div>
-                            @if (!string.IsNullOrWhiteSpace(artifact.Content))
-                            {
+                                @if (artifact.Revision > 1)
+                                {
+                                    <span class="wb-chip wb-chip-muted" title="@(artifact.EditedBy ?? "有人") 改过">第 @artifact.Revision 版</span>
+                                }
                                 <button class="wb-btn wb-btn-link" @onclick="() => ToggleArtifact(artifact.Id)">
                                     @(IsArtifactExpanded(artifact.Id) ? "收起内容" : "查看内容")
                                 </button>
+                                <button class="wb-btn wb-btn-link" @onclick="() => StartEditArtifact(artifact.Id)">
+                                    @(IsEditingArtifact(artifact.Id) ? "取消编辑" : "编辑")
+                                </button>
+                                <button class="wb-btn wb-btn-link" @onclick="() => ToggleArtifactHistory(artifact.Id)">
+                                    @(IsArtifactHistoryExpanded(artifact.Id) ? "收起历史" : "版本历史")
+                                </button>
+                            </div>
+                            @if (IsEditingArtifact(artifact.Id))
+                            {
+                                <div>
+                                    <div class="wb-field-row">
+                                        <label class="wb-label" for="artifact-title">标题</label>
+                                        <input id="artifact-title" class="wb-input" @bind="EditArtifactTitle" />
+                                    </div>
+                                    <div class="wb-field-row">
+                                        <label class="wb-label" for="artifact-content">内容</label>
+                                        <textarea id="artifact-content" class="wb-input wb-textarea" rows="14"
+                                                  @bind="EditArtifactContent"></textarea>
+                                    </div>
+                                    <div class="wb-field-row">
+                                        <label class="wb-label" for="artifact-note">改动说明</label>
+                                        <input id="artifact-note" class="wb-input" @bind="EditArtifactNote" />
+                                    </div>
+                                    <div class="wb-form-row wb-mt-2">
+                                        <button class="wb-btn wb-btn-primary" disabled="@Busy" @onclick="() => SaveArtifactAsync(artifact.Id)">
+                                            保存新的一版
+                                        </button>
+                                        <span class="wb-muted">改完会留版本，原来的那版还能翻出来。</span>
+                                    </div>
+                                </div>
+                            }
+                            @if (IsArtifactExpanded(artifact.Id) && !string.IsNullOrWhiteSpace(artifact.Content))
+                            {
+                                <div class="wb-doc">
+                                    @if (MarkdownRenderer.LooksLikeMarkdown(artifact.Content))
+                                    {
+                                        @((MarkupString)MarkdownRenderer.ToHtml(artifact.Content))
+                                    }
+                                    else
+                                    {
+                                        <pre class="wb-pre">@artifact.Content</pre>
+                                    }
+                                </div>
+                            }
+                            @if (IsArtifactHistoryExpanded(artifact.Id))
+                            {
+                                <div class="wb-table-scroll">
+                                    <table class="wb-table">
+                                        <thead>
+                                            <tr><th>版本</th><th>说明</th><th>改的人</th><th>时间</th><th></th></tr>
+                                        </thead>
+                                        <tbody>
+                                            @foreach (var revision in ArtifactRevisions(artifact.Id))
+                                            {
+                                                <tr>
+                                                    <td>第 @revision.Version 版</td>
+                                                    <td>@(string.IsNullOrWhiteSpace(revision.Note) ? "—" : revision.Note)</td>
+                                                    <td>@(string.IsNullOrWhiteSpace(revision.Editor) ? "—" : revision.Editor)</td>
+                                                    <td class="wb-muted">@revision.CreatedAt.ToLocalTime().ToString("MM-dd HH:mm")</td>
+                                                    <td>
+                                                        @if (!string.IsNullOrWhiteSpace(revision.Content))
+                                                        {
+                                                            <button class="wb-btn wb-btn-link" @onclick="() => ToggleRevisionContent(artifact.Id, revision.Version)">
+                                                                @(IsRevisionContentExpanded(artifact.Id, revision.Version) ? "收起" : "看内容")
+                                                            </button>
+                                                        }
+                                                    </td>
+                                                </tr>
+                                                @if (IsRevisionContentExpanded(artifact.Id, revision.Version))
+                                                {
+                                                    <tr>
+                                                        <td colspan="5">
+                                                            <pre class="wb-pre">@RevisionContent(artifact.Id, revision.Version)</pre>
+                                                        </td>
+                                                    </tr>
+                                                }
+                                            }
+                                        </tbody>
+                                    </table>
+                                </div>
                             }
                         </div>
-                        @if (IsArtifactExpanded(artifact.Id) && !string.IsNullOrWhiteSpace(artifact.Content))
-                        {
-                            <div class="wb-doc">
-                                @if (MarkdownRenderer.LooksLikeMarkdown(artifact.Content))
-                                {
-                                    @((MarkupString)MarkdownRenderer.ToHtml(artifact.Content))
-                                }
-                                else
-                                {
-                                    <pre class="wb-pre">@artifact.Content</pre>
-                                }
-                            </div>
-                        }
                     }
                 }
             </section>
@@ -1212,6 +1300,19 @@ else
     private readonly HashSet<Guid> _expandedEventPayloads = new();
     private readonly Dictionary<Guid, string> _documentText = new();
     private readonly Dictionary<Guid, IReadOnlyList<ParsedOutlineDto>> _documentOutline = new();
+    private readonly Dictionary<Guid, IReadOnlyList<ParsedBlockDto>> _documentBlocks = new();
+
+    // 产物编辑与版本历史
+    private readonly HashSet<Guid> _editingArtifacts = new();
+    private readonly HashSet<Guid> _expandedArtifactHistories = new();
+    private readonly Dictionary<Guid, IReadOnlyList<ArtifactRevisionDto>> _artifactRevisions = new();
+    private readonly HashSet<string> _expandedRevisionContents = new(StringComparer.Ordinal);
+    private string EditArtifactTitle { get; set; } = string.Empty;
+    private string EditArtifactContent { get; set; } = string.Empty;
+    private string EditArtifactNote { get; set; } = string.Empty;
+
+    /// <summary>上传时选的类别。空 = 让观复按文件名猜。</summary>
+    private string UploadKind { get; set; } = string.Empty;
 
     // 评审回写：每个维度独立的发现 / 跳过理由
     private readonly Dictionary<string, string> _reviewFindings = new(StringComparer.OrdinalIgnoreCase);
@@ -1732,8 +1833,123 @@ else
         }
     }
 
+    // ---- 产物的编辑与版本历史 ----
+
+    /// <summary>产物类型的中文说法（界面上不露枚举名）。</summary>
+    private static string ArtifactTypeLabel(string type) =>
+        Enum.TryParse<ArtifactType>(type, out var parsed)
+            ? UiText.ArtifactTypeLabel(parsed)
+            : type;
+
+    private bool IsEditingArtifact(Guid id) => _editingArtifacts.Contains(id);
+
+    private bool IsArtifactHistoryExpanded(Guid id) => _expandedArtifactHistories.Contains(id);
+
+    private IReadOnlyList<ArtifactRevisionDto> ArtifactRevisions(Guid id) =>
+        _artifactRevisions.TryGetValue(id, out var revisions) ? revisions : [];
+
+    private bool IsRevisionContentExpanded(Guid artifactId, int version) =>
+        _expandedRevisionContents.Contains($"{artifactId:N}:{version}");
+
+    private string RevisionContent(Guid artifactId, int version) =>
+        ArtifactRevisions(artifactId)
+            .FirstOrDefault(r => r.Version == version)?.Content ?? string.Empty;
+
+    private void ToggleRevisionContent(Guid artifactId, int version)
+    {
+        var key = $"{artifactId:N}:{version}";
+
+        if (!_expandedRevisionContents.Add(key))
+        {
+            _expandedRevisionContents.Remove(key);
+        }
+    }
+
+    private void StartEditArtifact(Guid id)
+    {
+        if (!_editingArtifacts.Add(id))
+        {
+            _editingArtifacts.Remove(id);
+            return;
+        }
+
+        var artifact = Context?.Artifacts.FirstOrDefault(a => a.Id == id);
+
+        if (artifact is not null)
+        {
+            EditArtifactTitle = artifact.Title;
+            EditArtifactContent = artifact.Content ?? string.Empty;
+            EditArtifactNote = string.Empty;
+        }
+    }
+
+    private async Task ToggleArtifactHistory(Guid id)
+    {
+        if (!_expandedArtifactHistories.Add(id))
+        {
+            _expandedArtifactHistories.Remove(id);
+            return;
+        }
+
+        if (!_artifactRevisions.ContainsKey(id))
+        {
+            try
+            {
+                _artifactRevisions[id] = await Artifacts.ListRevisionsAsync(TaskId, id);
+            }
+            catch (Exception ex)
+            {
+                Error = PageError.From(ex, "读版本历史");
+            }
+        }
+
+        StateHasChanged();
+    }
+
+    private async Task SaveArtifactAsync(Guid id)
+    {
+        if (Busy)
+        {
+            return;
+        }
+
+        Busy = true;
+        Error = null;
+
+        try
+        {
+            await Artifacts.UpdateAsync(
+                TaskId,
+                id,
+                EditArtifactTitle,
+                EditArtifactContent,
+                EditorName(),
+                EditArtifactNote);
+
+            _editingArtifacts.Remove(id);
+            _artifactRevisions.Remove(id);
+
+            await RefreshContextAndEventsAsync();
+        }
+        catch (Exception ex)
+        {
+            Error = PageError.From(ex, "保存产物");
+        }
+        finally
+        {
+            Busy = false;
+        }
+    }
+
+    /// <summary>改动署谁的名。拿不到登录身份时就署「人」—— 账上要有个名字。</summary>
+    private string EditorName() => "human";
+
     private string DocumentText(Guid id) =>
         _documentText.TryGetValue(id, out var text) ? text : "（读取中…）";
+
+    /// <summary>解析出来的块。文档是渲染出来给人看的，不是把原始 md 摊出来。</summary>
+    private IReadOnlyList<ParsedBlockDto> DocumentBlocks(Guid id) =>
+        _documentBlocks.TryGetValue(id, out var blocks) ? blocks : [];
 
     private IReadOnlyList<ParsedOutlineDto> DocumentOutline(Guid id) =>
         _documentOutline.TryGetValue(id, out var outline) ? outline : [];
@@ -1753,6 +1969,10 @@ else
             {
                 _documentOutline[id] = await Documents.GetOutlineAsync(id);
                 _documentText[id] = await Documents.GetTextAsync(id);
+
+                // 能解析出块就渲染块；解析不出来（脚本、纯代码）就按代码块显示。
+                var parsed = await Documents.ParseAsync(id);
+                _documentBlocks[id] = parsed.Blocks;
             }
             catch (Exception ex)
             {
@@ -2002,7 +2222,15 @@ else
             try
             {
                 await using var stream = file.OpenReadStream(MaxUploadBytes);
-                await Documents.UploadAsync(TaskId, file.Name, stream);
+
+                // 没选类别就让它按文件名猜（老规矩），
+                // 选了就是人的判断 —— 人说的算数。
+                await Documents.UploadAsync(
+                    TaskId,
+                    file.Name,
+                    stream,
+                    string.IsNullOrWhiteSpace(UploadKind) ? null : UploadKind);
+
                 uploaded++;
             }
             catch (Exception ex)

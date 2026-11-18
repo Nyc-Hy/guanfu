@@ -553,6 +553,77 @@ public class Artifact
     public string? Author { get; set; }
 
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>
+    /// 当前是第几版。第一次登记是 1，每改一次 +1。
+    /// </summary>
+    public int Revision { get; set; } = 1;
+
+    /// <summary>最后一次修改时间。为空 = 没改过（还是登记时那一版）。</summary>
+    public DateTimeOffset? UpdatedAt { get; set; }
+
+    /// <summary>谁改的。</summary>
+    public string? EditedBy { get; set; }
+}
+
+/// <summary>
+/// 产物的一个历史版本。
+///
+/// 人会改 AI 写出来的脚本 —— 改完不能把原来那版抹掉：
+/// 「谁在什么时候把它改成这样」是复盘时最常问的问题。
+/// </summary>
+public class ArtifactRevision
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid ArtifactId { get; set; }
+    public Artifact? Artifact { get; set; }
+
+    /// <summary>第几版（与产物的 Revision 对齐）。</summary>
+    public int Version { get; set; }
+
+    public string? Title { get; set; }
+    public string? Content { get; set; }
+
+    /// <summary>谁改的。</summary>
+    public string? Editor { get; set; }
+
+    /// <summary>改的时候写的话（为什么改）。</summary>
+    public string? Note { get; set; }
+
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
+/// <summary>
+/// 一次交付打包的记录。
+///
+/// 交付物是「这个迭代版本要发出去的东西」：文档 + 产物（脚本、报告）。
+/// 打包那一刻的清单连同包一起留在账上 —— 事后来问「发出去的是哪一版」要有得答。
+/// </summary>
+public class DeliveryPackage
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid ProjectId { get; set; }
+    public Guid MilestoneId { get; set; }
+
+    /// <summary>下载时用的文件名。</summary>
+    public string FileName { get; set; } = string.Empty;
+
+    /// <summary>包在数据目录里的相对路径。</summary>
+    public string StoredPath { get; set; } = string.Empty;
+
+    public long SizeBytes { get; set; }
+
+    /// <summary>包里带了几个条目（清单条目数）。</summary>
+    public int ItemCount { get; set; }
+
+    /// <summary>清单条目（JSON 数组）。</summary>
+    public string Items { get; set; } = "[]";
+
+    /// <summary>清单正文（markdown），与包放在一起。</summary>
+    public string? Manifest { get; set; }
+
+    public string CreatedBy { get; set; } = "human";
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
 
 /// <summary>审批请求。写操作、git 写操作等必须先过这里。</summary>

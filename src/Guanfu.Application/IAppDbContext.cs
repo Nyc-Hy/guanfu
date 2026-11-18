@@ -36,6 +36,8 @@ public interface IAppDbContext
     DbSet<WorkspaceSpec> WorkspaceSpecs { get; }
     DbSet<AccessCredential> AccessCredentials { get; }
     DbSet<SpecVerdict> SpecVerdicts { get; }
+    DbSet<ArtifactRevision> ArtifactRevisions { get; }
+    DbSet<DeliveryPackage> DeliveryPackages { get; }
 
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
 

@@ -721,6 +721,8 @@ public sealed class GuanfuMcpTools(
     [McpServerTool(Name = "guanfu_add_artifact")]
     [Description(
         "上传开发过程产物（代码变更摘要、测试报告、部署单、commit 等）。" +
+        "**脚本类产物用 SqlScript（SQL 脚本）或 Script（其它脚本）** —— " +
+        "它们会被归档，并可随迭代版本打包交付。" +
         "离线补报：occurredAt 给**实际发生时间**（ISO 8601），不给就是现在。")]
     public async Task<ArtifactDto> AddArtifactAsync(
         Guid taskId,
@@ -734,9 +736,10 @@ public sealed class GuanfuMcpTools(
         DateTimeOffset? occurredAt = null,
         CancellationToken cancellationToken = default)
     {
-        if (!Enum.TryParse<ArtifactType>(type, ignoreCase: true, out var artifactType))
+        if (!UiText.TryParseArtifactType(type, out var artifactType))
         {
-            throw new GuanfuException($"未知产物类型: {type}。合法值: {string.Join(", ", Enum.GetNames<ArtifactType>())}");
+            throw new GuanfuException(
+                $"未知产物类型: {type}。合法值: {string.Join(", ", Enum.GetNames<ArtifactType>())}");
         }
 
         return await tasks.AddArtifactAsync(

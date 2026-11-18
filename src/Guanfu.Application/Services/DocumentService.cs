@@ -93,7 +93,13 @@ public sealed class DocumentService(
         // 图片（截图类产物）
         ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp",
         // 其它留档
-        ".zip"
+        ".zip",
+
+        // 交付脚本：SQL 是最常见的一类（要发给项管去生产环境执行），
+        // 别的脚本也照收 —— 它们本来就是「要交付出去的东西」。
+        ".sql", ".tsql", ".psql",
+        ".sh", ".bash", ".zsh", ".bat", ".cmd", ".ps1",
+        ".py", ".rb", ".pl", ".js", ".mjs", ".ts"
     };
 
     /// <summary>扩展名是否在白名单里。没扩展名的文件一律拒 —— 判不出来的东西不该进来。</summary>
@@ -109,10 +115,21 @@ public sealed class DocumentService(
     /// </summary>
     public static string GuessKind(string fileName) => Path.GetFileName(fileName).ToLowerInvariant() switch
     {
-        var n when n.Contains("prd") || n.Contains("需求") => "prd",
-        var n when n.Contains("test") || n.Contains("用例") => "testcase",
-        var n when n.Contains("api") || n.Contains("接口") => "apidoc",
-        _ => "other"
+        var n when n.Contains("prd") || n.Contains("需求") => DocumentKinds.Prd,
+        var n when n.Contains("test") || n.Contains("用例") => DocumentKinds.TestCase,
+        var n when n.Contains("api") || n.Contains("接口") => DocumentKinds.ApiDoc,
+        // 交付物：脚本、发布说明、配置 —— 要随版本发出去的东西
+        var n when n.Contains("交付")
+            || n.Contains("deliver")
+            || n.Contains("发布")
+            || n.Contains("release")
+            || n.Contains("deploy")
+            || n.Contains("上线")
+            || n.Contains("脚本")
+            || n.Contains("script")
+            || n.EndsWith(".sql")
+            => DocumentKinds.Delivery,
+        _ => DocumentKinds.Other
     };
 
     private static void EnsureExtensionAllowed(string fileName)

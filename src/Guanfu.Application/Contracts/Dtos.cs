@@ -130,7 +130,66 @@ public sealed record ArtifactDto(
     string? CommitSha,
     string? Branch,
     string? Author,
+    DateTimeOffset CreatedAt,
+    int Revision = 1,
+    DateTimeOffset? UpdatedAt = null,
+    string? EditedBy = null);
+
+/// <summary>产物的一个历史版本。</summary>
+public sealed record ArtifactRevisionDto(
+    Guid Id,
+    int Version,
+    string? Title,
+    string? Content,
+    string? Editor,
+    string? Note,
     DateTimeOffset CreatedAt);
+
+/// <summary>
+/// 交付打包的候选项：文档或产物。
+///
+/// <see cref="ItemId"/> 是条目 id（文档 id 或产物 id），
+/// <see cref="Kind"/> 区分它是文档还是产物（"document" / "artifact"）。
+/// </summary>
+public sealed record DeliveryCandidateDto(
+    Guid ItemId,
+    string Kind,
+    string Title,
+    string? FileName,
+    string? KindLabel,
+    long SizeBytes,
+    string TaskKey,
+    string TaskTitle,
+    bool HasContent);
+
+/// <summary>一个迭代版本下能打包的东西（候选项 + 已打过的包）。</summary>
+public sealed record DeliveryCandidatesDto(
+    Guid MilestoneId,
+    string MilestoneName,
+    string ProjectName,
+    IReadOnlyList<DeliveryCandidateDto> Candidates);
+
+/// <summary>一次交付打包。</summary>
+public sealed record DeliveryPackageDto(
+    Guid Id,
+    Guid ProjectId,
+    Guid MilestoneId,
+    string FileName,
+    long SizeBytes,
+    int ItemCount,
+    IReadOnlyList<DeliveryPackageItemDto> Items,
+    string? Manifest,
+    string CreatedBy,
+    DateTimeOffset CreatedAt);
+
+/// <summary>清单里的一条。</summary>
+public sealed record DeliveryPackageItemDto(
+    string Kind,
+    string Title,
+    string? FileName,
+    string TaskKey,
+    string TaskTitle,
+    long SizeBytes);
 
 public sealed record PlanDto(
     Guid Id,

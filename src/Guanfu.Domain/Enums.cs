@@ -49,7 +49,13 @@ public enum ArtifactType
     Screenshot = 5,
     Commit = 6,
     Document = 7,
-    Other = 8
+    Other = 8,
+
+    /// <summary>SQL 脚本（要交付给运维/项管去生产环境执行的那种）。</summary>
+    SqlScript = 9,
+
+    /// <summary>其它脚本（shell / python / ps1 …）。</summary>
+    Script = 10
 }
 
 public enum ApprovalStatus

@@ -34,6 +34,8 @@ public sealed class GuanfuDbContext(DbContextOptions<GuanfuDbContext> options) :
 
     public DbSet<AccessCredential> AccessCredentials => Set<AccessCredential>();
     public DbSet<SpecVerdict> SpecVerdicts => Set<SpecVerdict>();
+    public DbSet<ArtifactRevision> ArtifactRevisions => Set<ArtifactRevision>();
+    public DbSet<DeliveryPackage> DeliveryPackages => Set<DeliveryPackage>();
 
     /// <inheritdoc />
     public void ClearTracking() => ChangeTracker.Clear();
@@ -238,11 +240,44 @@ public sealed class GuanfuDbContext(DbContextOptions<GuanfuDbContext> options) :
             e.Property(x => x.CommitSha).HasMaxLength(64);
             e.Property(x => x.Branch).HasMaxLength(200);
             e.Property(x => x.Author).HasMaxLength(200);
+            e.Property(x => x.EditedBy).HasMaxLength(200);
 
             e.HasOne(x => x.Task)
                 .WithMany(t => t.Artifacts)
                 .HasForeignKey(x => x.TaskId)
                 .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // 产物的版本历史：改了也不许抹掉原来那版。
+        modelBuilder.Entity<ArtifactRevision>(e =>
+        {
+            e.ToTable("artifact_revisions");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Title).HasMaxLength(500);
+            e.Property(x => x.Content).HasMaxLength(32000);
+            e.Property(x => x.Editor).HasMaxLength(200);
+            e.Property(x => x.Note).HasMaxLength(1000);
+
+            e.HasOne(x => x.Artifact)
+                .WithMany()
+                .HasForeignKey(x => x.ArtifactId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            e.HasIndex(x => new { x.ArtifactId, x.Version });
+        });
+
+        // 交付包：一次打包的记录（包 + 清单）。
+        modelBuilder.Entity<DeliveryPackage>(e =>
+        {
+            e.ToTable("delivery_packages");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.FileName).HasMaxLength(500).IsRequired();
+            e.Property(x => x.StoredPath).HasMaxLength(1000).IsRequired();
+            e.Property(x => x.Items).HasMaxLength(32000);
+            e.Property(x => x.Manifest).HasMaxLength(32000);
+            e.Property(x => x.CreatedBy).HasMaxLength(200);
+
+            e.HasIndex(x => new { x.MilestoneId, x.CreatedAt });
         });
 
         // 项目级规约：项目与规约是一对一。规约是「人定的规矩」，

@@ -332,15 +332,29 @@ public static class GuanfuApi
         api.MapPost("/tasks/{taskId:guid}/artifacts", async (
             Guid taskId, AddArtifactRequest request, ITaskService tasks, CancellationToken ct) =>
         {
-            if (!Enum.TryParse<ArtifactType>(request.Type, ignoreCase: true, out var type))
+            // 产物类型认枚举名（SqlScript）也认中文说法（SQL 脚本）——
+            // 人敲命令用中文，agent 用枚举名，两种都得能落地。
+            if (!UiText.TryParseArtifactType(request.Type, out var type))
             {
-                return Results.BadRequest($"未知产物类型: {request.Type}");
+                return Results.BadRequest(
+                    $"未知产物类型: {request.Type}。可用类型：{UiText.ArtifactTypeNames()}");
             }
 
             return Results.Ok(await tasks.AddArtifactAsync(
                 taskId, type, request.Title, request.Content, request.ExternalPath,
                 request.CommitSha, request.Branch, request.Author, request.OccurredAt, ct));
         });
+
+        // 改产物：人会改 AI 写出来的脚本。改完留版本（历史在 revisions 里）。
+        api.MapPut("/tasks/{taskId:guid}/artifacts/{artifactId:guid}", async (
+            Guid taskId, Guid artifactId, UpdateArtifactRequest request, IArtifactService artifacts,
+            CancellationToken ct) =>
+            Results.Ok(await artifacts.UpdateAsync(
+                taskId, artifactId, request.Title, request.Content, request.Editor, request.Note, ct)));
+
+        api.MapGet("/tasks/{taskId:guid}/artifacts/{artifactId:guid}/revisions", async (
+            Guid taskId, Guid artifactId, IArtifactService artifacts, CancellationToken ct) =>
+            Results.Ok(await artifacts.ListRevisionsAsync(taskId, artifactId, ct)));
 
         api.MapPost("/tasks/{taskId:guid}/test-result", async (
             Guid taskId, TestResultRequest request, ITaskService tasks, CancellationToken ct) =>
@@ -736,6 +750,44 @@ public static class GuanfuApi
             return task is null ? Results.NotFound() : Results.Ok(task);
         });
 
+        // ---- 交付打包 ----
+        // 候选池：这个迭代版本下的文档与产物。人勾选要发出去哪些，打成一个 zip + 清单。
+        api.MapGet("/milestones/{milestoneId:guid}/delivery/candidates", async (
+            Guid milestoneId, IDeliveryPackageService delivery, CancellationToken ct) =>
+            Results.Ok(await delivery.ListCandidatesAsync(milestoneId, ct)));
+
+        api.MapPost("/milestones/{milestoneId:guid}/delivery/packages", async (
+            Guid milestoneId, CreateDeliveryPackageRequest request, IDeliveryPackageService delivery,
+            CancellationToken ct) =>
+        {
+            var package = await delivery.CreateAsync(
+                milestoneId, request.ItemIds, request.CreatedBy, ct);
+
+            return Results.Created($"/api/delivery-packages/{package.Id}", package);
+        });
+
+        api.MapGet("/milestones/{milestoneId:guid}/delivery/packages", async (
+            Guid milestoneId, IDeliveryPackageService delivery, CancellationToken ct) =>
+            Results.Ok(await delivery.ListAsync(milestoneId, ct)));
+
+        api.MapGet("/delivery-packages/{packageId:guid}", async (
+            Guid packageId, IDeliveryPackageService delivery, CancellationToken ct) =>
+            Results.Ok(await delivery.GetAsync(packageId, ct)));
+
+        api.MapGet("/delivery-packages/{packageId:guid}/download", async (
+            Guid packageId, IDeliveryPackageService delivery, CancellationToken ct) =>
+        {
+            var package = await delivery.GetAsync(packageId, ct);
+            var path = await delivery.ResolvePathAsync(package, ct);
+
+            if (!File.Exists(path))
+            {
+                return Results.NotFound(new { error = "交付包文件不在了（数据目录被清理过？）。" });
+            }
+
+            return Results.File(path, "application/zip", package.FileName);
+        });
+
         // ---- 度量 ----
         api.MapGet("/metrics", async (IMetricsService metrics, CancellationToken ct) =>
             Results.Ok(await metrics.GetAllAsync(ct)));
@@ -1058,6 +1110,18 @@ public sealed record AddArtifactRequest(
     string Title, string Type, string? Content, string? ExternalPath,
     string? CommitSha, string? Branch, string? Author,
     DateTimeOffset? OccurredAt = null);
+
+/// <summary>改产物。Title / Content 传 null 表示不动那个字段。</summary>
+public sealed record UpdateArtifactRequest(
+    string? Title = null,
+    string? Content = null,
+    string? Editor = null,
+    string? Note = null);
+
+/// <summary>打一个交付包。ItemIds 是候选池里的条目 id（文档 id 或产物 id）。</summary>
+public sealed record CreateDeliveryPackageRequest(
+    IReadOnlyList<Guid> ItemIds,
+    string? CreatedBy = null);
 
 /// <summary>回写测试结果。OccurredAt 同上（实际跑测试的时间）。</summary>
 public sealed record TestResultRequest(

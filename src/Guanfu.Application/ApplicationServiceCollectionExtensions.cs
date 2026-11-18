@@ -68,6 +68,13 @@ public static class ApplicationServiceCollectionExtensions
         // 凭证：团队部署时「谁在操作」必须是真的 —— 签发时绑身份与可见范围
         services.AddScoped<ICredentialService, CredentialService>();
 
+        // 产物：人能改 AI 写出来的东西，改完留版本。
+        services.AddScoped<IArtifactService, ArtifactService>();
+
+        // 交付打包：把迭代版本要发出去的东西打成一个 zip + 一份清单。
+        // 存储实现（写盘）由宿主提供 —— 应用层不碰文件系统布局。
+        services.AddScoped<IDeliveryPackageService, DeliveryPackageService>();
+
         // 通知：单例 HttpClient（HttpClient 复用是对的，每次 new 才会耗尽端口）
         // 超时压短，通知失败不能拖住审批请求。
         services.AddSingleton<INotifier>(_ => new WebhookNotifier(new HttpClient

@@ -42,12 +42,18 @@ CROSS_MARKER = "cross-marker.txt"
 REVOKE_MARKER = "revoke-marker.txt"
 
 
-def rest_status(rest: str, method: str, path: str, body: dict | None = None) -> tuple[int, str]:
+def rest_status(
+    rest: str,
+    method: str,
+    path: str,
+    body: dict | None = None,
+    with_token: bool = True,
+) -> tuple[int, str]:
     """返回 (HTTP 状态码, 响应正文)。敏感端点没凭证时是 401 —— 这里要看得见。"""
     data = json.dumps(body).encode() if body is not None else None
     headers = {"Content-Type": "application/json"}
 
-    token = os.environ.get("WB_HUMAN_TOKEN", "")
+    token = os.environ.get("WB_HUMAN_TOKEN", "") if with_token else ""
     if token:
         headers["X-Guanfu-Human-Token"] = token
 
@@ -375,6 +381,69 @@ def main() -> int:
         expect(
             any(a.get("callerId") == "e2e-agent" for a in read_audit),
             "只读调用也要记下是谁调的",
+        )
+
+        # ── D12 打包交付也要有人在场 ────────────────────────────────────
+        # 交付包是要**发出去**的东西（给项管去生产环境执行）——
+        # 没人工凭证就不许打，跟 workspace export 同级。
+        print("\n-- D12 打包交付没凭证就是 401 --")
+        delivery_project = rest_json(
+            rest, "POST", "/api/projects", {"name": f"交付 e2e {suffix}"}
+        )
+        delivery_milestone = rest_json(
+            rest,
+            "POST",
+            f"/api/projects/{delivery_project['id']}/milestones",
+            {"name": "12月版本"},
+        )
+        delivery_task = rest_json(
+            rest,
+            "POST",
+            f"/api/projects/{delivery_project['id']}/tasks",
+            {"title": "写上线脚本"},
+        )
+        rest_json(
+            rest,
+            "POST",
+            f"/api/tasks/{delivery_task['id']}/milestone",
+            {"milestoneId": delivery_milestone["id"]},
+        )
+        artifact = rest_json(
+            rest,
+            "POST",
+            f"/api/tasks/{delivery_task['id']}/artifacts",
+            {
+                "title": "建表.sql",
+                "type": "SqlScript",
+                "content": "CREATE TABLE orders(id int primary key);",
+            },
+        )
+
+        no_token_status, _ = rest_status(
+            rest,
+            "POST",
+            f"/api/milestones/{delivery_milestone['id']}/delivery/packages",
+            {"itemIds": [artifact["id"]]},
+            with_token=False,
+        )
+        expect(
+            no_token_status == 401,
+            f"没人工凭证不该打得了交付包（实际 {no_token_status}）",
+        )
+
+        with_token_status, body = rest_status(
+            rest,
+            "POST",
+            f"/api/milestones/{delivery_milestone['id']}/delivery/packages",
+            {"itemIds": [artifact["id"]]},
+        )
+        expect(
+            with_token_status in (200, 201),
+            f"有人在场就该打得出交付包（实际 {with_token_status}）",
+        )
+        expect(
+            ".zip" in body,
+            "交付包应带一个 zip 文件名",
         )
 
         section("结果")

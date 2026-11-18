@@ -194,6 +194,17 @@ public static class HumanTokenPolicy
             return IsPost(method);
         }
 
+        // POST /api/milestones/{id}/delivery/packages —— 打包交付。
+        // 打包出来的东西是要**发出去**的（给项管去生产环境执行），
+        // 与 workspace export 同级：要人工在场。
+        if (segments.Length == 5
+            && segments[1].Equals("milestones", StringComparison.OrdinalIgnoreCase)
+            && segments[3].Equals("delivery", StringComparison.OrdinalIgnoreCase)
+            && segments[4].Equals("packages", StringComparison.OrdinalIgnoreCase))
+        {
+            return IsPost(method);
+        }
+
         // PUT /api/projects/{id}/spec —— 改项目级规约（DoD / 提交约定 / 测试命令）。
         // 规矩是**人的决定**：agent 读它、照着做，但不该自己改「什么算做完」。
         if (segments.Length == 4

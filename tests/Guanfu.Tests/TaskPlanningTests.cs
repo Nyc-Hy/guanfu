@@ -352,14 +352,17 @@ public class TaskPlanningTests
     }
 
     // ---- 上传类型白名单 ----
+    // 脚本类（.sql / .sh / .py …）现在放行：它们是**要交付出去的东西**，
+    // 归档与打包都要用到。可执行文件仍然拒。
 
     [Theory]
     [InlineData("需求.md", true)]
     [InlineData("接口文档.docx", true)]
     [InlineData("截图.png", true)]
     [InlineData("数据.csv", true)]
+    [InlineData("变更脚本.sql", true)]
+    [InlineData("脚本.sh", true)]
     [InlineData("evil.exe", false)]
-    [InlineData("脚本.sh", false)]
     [InlineData("没有扩展名", false)]
     public void 上传类型白名单按扩展名判定(string fileName, bool allowed)
     {
