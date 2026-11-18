@@ -30,7 +30,8 @@ public sealed class GuanfuMcpTools(
     IAgentSessionAccessor? sessionAccessor = null,
     ITaskUsageService? usage = null,
     IHandoffService? handoff = null,
-    IWorkstationService? stations = null)
+    IWorkstationService? stations = null,
+    IMyWorkService? myWork = null)
 {
     /// <summary>
     /// 算出这次调用算在哪个项目上。
@@ -394,6 +395,54 @@ public sealed class GuanfuMcpTools(
         catch (Exception ex) when (ex is GuanfuException or InvalidOperationException or NotFoundException)
         {
             return StationReleaseToolResult.Fail(ex.Message);
+        }
+    }
+
+    [McpServerTool(Name = "guanfu_get_my_work")]
+    [Description(
+        "取「我现在该干什么」：跟你有关的部分一次给全 —— " +
+        "**我正做的活**（租约到期时间）、**我卡着谁**（别人在等我的哪个活）、" +
+        "**我放掉过的活**（为什么交出去、谁接了）、**接下来建议我做什么**（带理由）、" +
+        "**生效的规约**（目标 / 完成定义 / 提交约定 / 测试命令）、" +
+        "**我认领了但还没交结论的评审维度**、**我的工位**（在哪干活、主工作区被谁占着）、" +
+        "当前任务能去哪。agentId 不给就用当前会话的 agent；projectId 不给就用会话绑定的项目。")]
+    public async Task<MyWorkToolResult> GetMyWorkAsync(
+        Guid? projectId = null,
+        string? agentId = null,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (myWork is null)
+            {
+                return MyWorkToolResult.Fail("工作包服务没注册。");
+            }
+
+            var scope = scopeResolver is null
+                ? null
+                : await scopeResolver.ResolveOrNullAsync(projectId, cancellationToken);
+
+            var resolvedProjectId = projectId ?? scope?.ProjectId;
+
+            if (resolvedProjectId is not Guid pid)
+            {
+                return MyWorkToolResult.Fail("不知道是哪个项目：请传 projectId，或先绑定会话。");
+            }
+
+            var resolvedAgentId = agentId ?? scope?.AgentId;
+
+            if (string.IsNullOrWhiteSpace(resolvedAgentId))
+            {
+                return MyWorkToolResult.Fail("不知道是谁在问：给 agentId，或让会话带上 agent 身份。");
+            }
+
+            var work = await myWork.GetAsync(pid, resolvedAgentId!, cancellationToken);
+
+            return new MyWorkToolResult(true, work);
+        }
+        catch (Exception ex) when (ex is GuanfuException or InvalidOperationException or NotFoundException)
+        {
+            return MyWorkToolResult.Fail(ex.Message);
         }
     }
 
@@ -1056,7 +1105,7 @@ public sealed record ClaimResult(
 /// <summary>工位清单。失败时 error 给出原因，不抛异常。</summary>
 public sealed record WorkstationsToolResult(
     bool Ok,
-    IReadOnlyList<WorkstationDto>? Workstations = null,
+    IReadOnlyList<WorkstationEntryDto>? Workstations = null,
     string? Error = null)
 {
     public static WorkstationsToolResult Fail(string error) => new(false, null, error);
@@ -1070,6 +1119,15 @@ public sealed record StationReleaseToolResult(
     string? Error = null)
 {
     public static StationReleaseToolResult Fail(string error) => new(false, null, null, error);
+}
+
+/// <summary>agent 的工作包。失败时 error 给出原因，不抛异常。</summary>
+public sealed record MyWorkToolResult(
+    bool Ok,
+    MyWorkDto? Work = null,
+    string? Error = null)
+{
+    public static MyWorkToolResult Fail(string error) => new(false, null, error);
 }
 
 /// <summary>交接包。失败时 error 给出原因，不抛异常。</summary>

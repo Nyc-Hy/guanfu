@@ -626,7 +626,7 @@ else
     private DispatchBoardDto Dispatch { get; set; } = new(Guid.Empty, [], [], [], 0, 0, 0);
 
     /// <summary>工位：谁在哪个目录干活，有没有没人管的。</summary>
-    private IReadOnlyList<WorkstationDto> Stations { get; set; } = [];
+    private IReadOnlyList<WorkstationEntryDto> Stations { get; set; } = [];
 
     // ---- 筛选 ----
     private string KeywordFilter { get; set; } = string.Empty;
@@ -708,7 +708,7 @@ else
     }
 
     /// <summary>工位目录名（给人看的短名字）。</summary>
-    private static string StationName(WorkstationDto station)
+    private static string StationName(WorkstationEntryDto station)
     {
         if (string.IsNullOrWhiteSpace(station.WorkPath))
         {

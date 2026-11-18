@@ -5,7 +5,7 @@ using Guanfu.Domain;
 namespace Guanfu.Application.Services;
 
 /// <summary>一个工位的现状。</summary>
-public sealed record WorkstationDto(
+public sealed record WorkstationEntryDto(
     /// <summary>登记这个工位的活（没有活认领 = 没人管的工位）。</summary>
     Guid? TaskId,
     /// <summary>那个活的编号（REQ-001 这样的，给人看的）。</summary>
@@ -64,8 +64,20 @@ public sealed record StationReleaseResult(
 /// </summary>
 public interface IWorkstationService
 {
+    /// <summary>
+    /// 工位现状：主工作区被谁占着、这次该用哪个目录、要并行的话建哪个工位。
+    ///
+    /// 上下文包与 agent 的工作包都带它 —— 一处算，两处用，
+    /// 两边算法不一样的话 agent 会看到互相打架的说法。
+    /// </summary>
+    Task<WorkStationDto> DescribeAsync(
+        Guid projectId,
+        Guid? taskId = null,
+        string? agentId = null,
+        CancellationToken cancellationToken = default);
+
     /// <summary>列工位：登记着的 + 仓库里没人管的。</summary>
-    Task<IReadOnlyList<WorkstationDto>> ListAsync(
+    Task<IReadOnlyList<WorkstationEntryDto>> ListAsync(
         Guid? projectId = null,
         CancellationToken cancellationToken = default);
 
@@ -78,7 +90,89 @@ public sealed class WorkstationService(
     IGitInspector git,
     IClock clock) : IWorkstationService
 {
-    public async Task<IReadOnlyList<WorkstationDto>> ListAsync(
+    public async Task<WorkStationDto> DescribeAsync(
+        Guid projectId,
+        Guid? taskId = null,
+        string? agentId = null,
+        CancellationToken cancellationToken = default)
+    {
+        var now = clock.UtcNow;
+
+        var project = await db.Projects.AsNoTracking()
+            .FirstOrDefaultAsync(p => p.Id == projectId, cancellationToken);
+
+        var task = taskId is Guid id
+            ? await db.Tasks.AsNoTracking().FirstOrDefaultAsync(t => t.Id == id, cancellationToken)
+            : null;
+
+        var leases = await db.Tasks.AsNoTracking()
+            .Where(t => t.ProjectId == projectId &&
+                        t.ClaimedByAgentId != null &&
+                        t.LeaseExpiresAt != null &&
+                        t.LeaseExpiresAt > now)
+            .Select(t => new { t.Id, t.Key, t.ClaimedByAgentId, t.WorkPath })
+            .ToListAsync(cancellationToken);
+
+        // 主工作区的占用者：登记的工位为空 = 用主工作区
+        var mainHolder = leases.FirstOrDefault(l =>
+            l.WorkPath is null ||
+            (project?.RepoPath is not null &&
+             string.Equals(l.WorkPath, project.RepoPath, StringComparison.OrdinalIgnoreCase)));
+
+        // 主工作区被**别人**占着 = 我不能用它（自己占着当然能用）
+        var heldByOther = mainHolder is not null &&
+                          !string.Equals(mainHolder.ClaimedByAgentId, agentId, StringComparison.Ordinal);
+
+        // 绑定键（比较用，解过软链）与人填的路径（显示与命令用）分开 ——
+        // 给 agent 的命令要用**它认得的那个路径**，不然它敲了命令跟人看到的不是一个地方。
+        var repoRoot = project?.RepoRoot ??
+                       (string.IsNullOrWhiteSpace(project?.RepoPath) ? null : project.RepoPath);
+        var displayRoot = project?.RepoPath;
+
+        // 建议的独立工位：主工作区被别人占着时才给（能直接用主工作区就别多此一举）
+        var suggestedWorktree = heldByOther
+            ? WorkstationAdvice.SuggestWorktree(displayRoot, task?.Key)
+            : null;
+
+        var suggestedBranch = suggestedWorktree is null
+            ? null
+            : WorkstationAdvice.SuggestBranch(task?.Key, task?.Branch);
+
+        // 该用的目录：登记的工位优先，回退主工作区
+        var effective = task?.WorkPath;
+        var isolated = false;
+
+        if (!string.IsNullOrWhiteSpace(effective))
+        {
+            var check = WorkPathPolicy.ValidateWorktree(repoRoot ?? effective, effective);
+            isolated = check.Ok && check.IsIsolated;
+
+            if (!check.Ok)
+            {
+                effective = project?.RepoPath;
+            }
+        }
+        else
+        {
+            effective = project?.RepoPath;
+        }
+
+        return new WorkStationDto(
+            displayRoot,
+            mainHolder?.ClaimedByAgentId,
+            mainHolder?.Key,
+            project?.MaxConcurrentAgents ?? 0,
+            leases.Count,
+            task?.WorkPath,
+            !heldByOther,
+            effective,
+            isolated,
+            suggestedWorktree,
+            suggestedBranch,
+            WorkstationAdvice.SetupCommands(displayRoot, suggestedWorktree, suggestedBranch));
+    }
+
+    public async Task<IReadOnlyList<WorkstationEntryDto>> ListAsync(
         Guid? projectId = null,
         CancellationToken cancellationToken = default)
     {
@@ -106,7 +200,7 @@ public sealed class WorkstationService(
             })
             .ToListAsync(cancellationToken);
 
-        var stations = new List<WorkstationDto>();
+        var stations = new List<WorkstationEntryDto>();
         var claimed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var task in tasks)
@@ -123,7 +217,7 @@ public sealed class WorkstationService(
             // 活干完了（已完成 / 已取消）→ 该收这个工位了
             var readyToClean = task.Status is TaskStatus.Done or TaskStatus.Cancelled;
 
-            stations.Add(new WorkstationDto(
+            stations.Add(new WorkstationEntryDto(
                 task.Id,
                 task.Key,
                 task.Title,
@@ -155,7 +249,7 @@ public sealed class WorkstationService(
                     continue;
                 }
 
-                stations.Add(new WorkstationDto(
+                stations.Add(new WorkstationEntryDto(
                     TaskId: null,
                     TaskKey: null,
                     TaskTitle: null,

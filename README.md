@@ -342,6 +342,7 @@ agent 连上 MCP 之后自己走完：
 | 1 | `guanfu_get_task_by_key(projectId, "req001")` | 落到具体任务（编号匹配不认连字符写法） |
 | 2 | `guanfu_claim_task` | 领到租约，多 agent 不抢同一个任务。**任务绑了分支而当前分支不对时，这里就会被拒** |
 | 3 | `guanfu_get_context` | 任务、文档、计划、产物、事件、允许的状态迁移、git 分支 —— 一次取全 |
+| 3.5 | `guanfu_get_my_work` | 跟我有关的部分：正做的活、卡着谁、放掉过什么、接下来该干什么、规约、工位 |
 | 4 | `guanfu_set_plan` | 回写需求理解与开发计划（观复只存不生成） |
 | 5 | 干活 → `guanfu_report_test_result` / `guanfu_add_artifact` | 测试结果与产物入库 |
 | 6 | `guanfu_update_status(Testing → Review)` | 进评审态 |
@@ -368,6 +369,7 @@ agent 连上 MCP 之后自己走完：
 | **`guanfu_get_task_by_key`** | **按编号找任务**（`req001` / `REQ-001` 都认） |
 | `guanfu_claim_task` | 领取任务（带租约，防止多 agent 抢同一任务） |
 | **`guanfu_get_context`** | **一次取回干活所需的全部上下文**，避免反复零散调用 |
+| **`guanfu_get_my_work`** | **「我现在该干什么」**：我正做的活、我卡着谁、我放掉过什么、接下来建议、生效的规约、我的工位 |
 | `guanfu_set_plan` | 回写需求理解与开发计划（版本化） |
 | `guanfu_update_status` | 推进状态（非法迁移会带出允许列表；评审没过不许结项） |
 | `guanfu_add_artifact` | 上传产物（代码变更、测试报告、commit …） |

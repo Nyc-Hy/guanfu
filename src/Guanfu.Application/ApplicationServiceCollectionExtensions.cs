@@ -62,6 +62,9 @@ public static class ApplicationServiceCollectionExtensions
         // 交接包：把散在各处的事实打成一份，接手的人一次拿全
         services.AddScoped<IHandoffService, HandoffService>();
 
+        // agent 的工作包：「我现在该干什么」一次给全
+        services.AddScoped<IMyWorkService, MyWorkService>();
+
         // 通知：单例 HttpClient（HttpClient 复用是对的，每次 new 才会耗尽端口）
         // 超时压短，通知失败不能拖住审批请求。
         services.AddSingleton<INotifier>(_ => new WebhookNotifier(new HttpClient

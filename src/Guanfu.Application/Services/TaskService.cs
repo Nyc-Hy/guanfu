@@ -211,7 +211,8 @@ public sealed class TaskService(
     IBranchGuard? branchGuard = null,
     IFileChangeService? fileChanges = null,
     IWorkstationResolver? workstations = null,
-    IProjectSpecService? specService = null) : ITaskService
+    IProjectSpecService? specService = null,
+    IWorkstationService? stationService = null) : ITaskService
 {
     public const int StaleAfterHours = 72;
 
@@ -1814,6 +1815,13 @@ public sealed class TaskService(
         CancellationToken cancellationToken,
         string? agentId = null)
     {
+        // 工位现状由工位服务算 —— 上下文包与 agent 的工作包必须一致，
+        // 两边各算一套的话 agent 会看到互相打架的说法。
+        if (stationService is not null)
+        {
+            return await stationService.DescribeAsync(task.ProjectId, task.Id, agentId, cancellationToken);
+        }
+
         var now = clock.UtcNow;
 
         var leases = await db.Tasks.AsNoTracking()
@@ -1824,23 +1832,18 @@ public sealed class TaskService(
             .Select(t => new { t.Id, t.Key, t.ClaimedByAgentId, t.WorkPath })
             .ToListAsync(cancellationToken);
 
-        // 主工作区的占用者：登记的工位为空 = 用主工作区
         var mainHolder = leases.FirstOrDefault(l =>
             l.WorkPath is null ||
             (project?.RepoPath is not null &&
              string.Equals(l.WorkPath, project.RepoPath, StringComparison.OrdinalIgnoreCase)));
 
-        // 主工作区被**别人**占着 = 我不能用它（自己占着当然能用）
         var heldByOther = mainHolder is not null &&
                           !string.Equals(mainHolder.ClaimedByAgentId, agentId, StringComparison.Ordinal);
 
-        // 绑定键（比较用，解过软链）与人填的路径（显示与命令用）分开 ——
-        // 给 agent 的命令要用**它认得的那个路径**，不然它敲了命令跟人看到的不是一个地方。
         var repoRoot = project?.RepoRoot ??
                        (string.IsNullOrWhiteSpace(project?.RepoPath) ? null : project.RepoPath);
         var displayRoot = project?.RepoPath;
 
-        // 建议的独立工位：主工作区被别人占着时才给（能直接用主工作区就别多此一举）
         var suggestedWorktree = heldByOther
             ? WorkstationAdvice.SuggestWorktree(displayRoot, task.Key)
             : null;
@@ -1849,7 +1852,6 @@ public sealed class TaskService(
             ? null
             : WorkstationAdvice.SuggestBranch(task.Key, task.Branch);
 
-        // 该用的目录：登记的工位优先，回退主工作区
         var effective = task.WorkPath;
         var isolated = false;
 
@@ -1869,7 +1871,7 @@ public sealed class TaskService(
         }
 
         return new WorkStationDto(
-            project?.RepoPath,
+            displayRoot,
             mainHolder?.ClaimedByAgentId,
             mainHolder?.Key,
             project?.MaxConcurrentAgents ?? 0,

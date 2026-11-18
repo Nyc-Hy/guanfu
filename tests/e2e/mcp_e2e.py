@@ -363,6 +363,20 @@ def main() -> int:
     expect(reclaimed.get("ok"), f"放掉之后应能再领（实际：{reclaimed}）")
     mcp.call("guanfu_release_task", {"taskId": task_id, "agentId": "e2e-agent-2", "reason": "e2e 收尾"})
 
+    print("\n-- 工作包：我现在该干什么 --")
+    # 先领上活 —— 工作包要回答的正是「我手上有什么」
+    mcp.call("guanfu_claim_task", {"taskId": task_id, "agentId": "e2e-agent"})
+    my_work = mcp.call("guanfu_get_my_work", {"projectId": project_id, "agentId": "e2e-agent"})
+    expect(my_work.get("ok"), f"应能取到工作包（实际：{my_work}）")
+    work = my_work.get("work") or {}
+    expect(
+        (work.get("currentTask") or {}).get("id") == task_id,
+        f"工作包应带上我正做的活（实际：{work.get('currentTask')}）",
+    )
+    expect("suggestions" in work, "工作包应带上接下来该做什么的建议")
+    expect("spec" in work, "工作包应带上生效的规约")
+    expect("station" in work, "工作包应带上我的工位")
+
     print("\n-- 工位：agent 该去哪儿干活 --")
     station = mcp.call("guanfu_get_workstation", {"taskId": task_id})
     expect(station.get("ok"), "应能问到工位现状")
