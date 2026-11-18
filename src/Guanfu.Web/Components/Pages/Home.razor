@@ -202,8 +202,11 @@ else
                         <p class="wb-muted">
                             @foreach (var s in Data.ActiveSessions)
                             {
-                                <span class="wb-chip wb-chip-agent">@s.AgentId</span>
-                                <span class="wb-muted">在 @s.ProjectName@(string.IsNullOrWhiteSpace(s.TaskKey) ? "" : $" · {s.TaskKey}") · </span>
+                                @* 一个 agent 一枚签 —— 「agent-a 在 电商后台（REQ-001）」 *@
+                                <span class="wb-chip wb-chip-agent">
+                                    @s.AgentId 在 @s.ProjectName@(string.IsNullOrWhiteSpace(s.TaskKey) ? "" : $"（{s.TaskKey}）")
+                                </span>
+                                <text> </text>
                             }
                         </p>
                     }

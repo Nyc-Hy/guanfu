@@ -280,7 +280,16 @@ public static class UiText
     {
         if (!string.IsNullOrWhiteSpace(key))
         {
-            return string.IsNullOrWhiteSpace(title) ? key : $"{key} {title}";
+            if (string.IsNullOrWhiteSpace(title))
+            {
+                return key;
+            }
+
+            // 标题里已经带了编号就别再前面加一遍 ——
+            // 「REQ-001 REQ-001 订单列表要分页」看着像出了两次同样的东西。
+            return title.TrimStart().StartsWith(key, StringComparison.OrdinalIgnoreCase)
+                ? title
+                : $"{key} {title}";
         }
 
         return string.IsNullOrWhiteSpace(title) ? "未关联任务" : title;

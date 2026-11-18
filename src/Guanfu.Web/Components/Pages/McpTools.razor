@@ -121,7 +121,11 @@ else
                                 <div class="wb-tool-line">@UiText.Tool(tool.Name)</div>
                                 <div class="wb-muted wb-tool-code"><code>@tool.Name</code></div>
                             </td>
-                            <td class="wb-muted wb-tool-desc">@tool.Description</td>
+                            @* 说明是按 markdown 写的（「**重点**」这种）——
+                               渲染成 HTML，别让星号原样露在页面上。 *@
+                            <td class="wb-muted wb-tool-desc">
+                                @((MarkupString)MarkdownRenderer.ToHtml(tool.Description))
+                            </td>
                             <td>
                                 @if (tool.RequiresApproval)
                                 {

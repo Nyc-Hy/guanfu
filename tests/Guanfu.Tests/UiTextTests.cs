@@ -12,6 +12,15 @@ namespace Guanfu.Tests;
 /// </summary>
 public class UiTextTests
 {
+    [Fact]
+    public void 标题里已经带了编号就不再前面加一遍()
+    {
+        // 「REQ-001 REQ-001 订单列表要分页」看着像出了两次同样的东西
+        Assert.Equal("REQ-001 订单列表要分页", UiText.TaskRef("REQ-001", "REQ-001 订单列表要分页"));
+        Assert.Equal("REQ-002 订单列表要分页", UiText.TaskRef("REQ-002", "订单列表要分页"));
+        Assert.Equal("REQ-003", UiText.TaskRef("REQ-003", null));
+    }
+
     [Theory]
     [InlineData(TaskStatus.Draft, "草稿")]
     [InlineData(TaskStatus.DocsReady, "文档就绪")]

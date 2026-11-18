@@ -193,6 +193,23 @@ else
                               @bind="SpecPurpose" @bind:event="oninput"></textarea>
                 </div>
 
+                @if (WorkspaceDoD.Count > 0)
+                {
+                    <div class="wb-form-row">
+                        <label class="wb-label">工作区级的完成定义</label>
+                        <ul class="wb-plain-list">
+                            @foreach (var item in WorkspaceDoD)
+                            {
+                                <li>@item</li>
+                            }
+                        </ul>
+                    </div>
+                    <p class="wb-hint">
+                        上面这些是<strong>工作区</strong>级的：这个工作区里所有项目都要满足，已经自动继承 ——
+                        下面只填这个项目<strong>额外</strong>要的，不用把上面再抄一遍。
+                    </p>
+                }
+
                 <div class="wb-form-row">
                     <label class="wb-label">完成定义（DoD）</label>
                     <textarea class="wb-input wb-textarea" rows="6"
@@ -432,6 +449,9 @@ else
     /// <summary>项目级的完成定义（只读展示 —— 里程碑那层是叠加，不是重抄）。</summary>
     private List<string> ProjectDoD { get; set; } = [];
 
+    /// <summary>工作区级的那几条（项目继承来的）。</summary>
+    private List<string> WorkspaceDoD { get; set; } = [];
+
     private MilestoneDto? EditingMilestone =>
         Guid.TryParse(EditMilestoneId, out var id)
             ? MilestoneItems.FirstOrDefault(m => m.Id == id)
@@ -443,6 +463,14 @@ else
         try
         {
             var spec = await Specs.GetAsync(ProjectId);
+
+            // 工作区级的那几条是继承来的 —— 摆出来让人看得见，才不会重抄一遍
+            var workspaceId = await Projects.GetAsync(ProjectId) is { } p ? p.WorkspaceId : Guid.Empty;
+            if (workspaceId != Guid.Empty)
+            {
+                var workspaceSpec = await Specs.GetForWorkspaceAsync(workspaceId);
+                WorkspaceDoD = workspaceSpec.DefinitionOfDone.ToList();
+            }
 
             SpecPurpose = spec.Purpose ?? string.Empty;
             SpecDefinitionOfDone = string.Join(Environment.NewLine, spec.DefinitionOfDone);

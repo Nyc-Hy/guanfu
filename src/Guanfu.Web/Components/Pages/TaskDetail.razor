@@ -656,6 +656,11 @@ else
                                     {
                                         @Handoff.Handoff!.Reason
                                     }
+                                    else if (string.IsNullOrWhiteSpace(Handoff.Handoff?.PreviousHolder))
+                                    {
+                                        @* 没人交过手，就没什么「为什么」*@
+                                        <span class="wb-muted">这个活还没转过手。</span>
+                                    }
                                     else
                                     {
                                         <span class="wb-muted">他没写理由 —— 接手的人得自己问。</span>
