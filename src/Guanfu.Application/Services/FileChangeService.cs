@@ -150,16 +150,18 @@ public sealed class FileChangeService(
             return 0;
         }
 
-        IReadOnlyList<GitFileChange> changes;
+        // 「读不到」与「没有改动」要分得开 —— 采不到产出时账上会少一段，
+        // 而人看不出少了什么。分不清就只能静默（静默最坏）。
+        var result = git.GetWorkingTreeChanges(repoPath);
 
-        try
+        if (result.Failed)
         {
-            changes = git.GetWorkingTreeFileChanges(repoPath);
-        }
-        catch (Exception)
-        {
+            // 不打断 agent 的活，但留一笔痕。
+            await RecordCaptureFailureAsync(taskId, sessionId, author, result.Error, cancellationToken);
             return 0;
         }
+
+        var changes = result.Changes;
 
         if (changes.Count == 0)
         {
@@ -225,6 +227,45 @@ public sealed class FileChangeService(
         }
 
         return added;
+    }
+
+    /// <summary>
+    /// 采集失败留一笔痕（任务流水里一眼看得见）。
+    ///
+    /// 静默的失败最坏：人以为产出记上了，其实没有。
+    /// </summary>
+    private async Task RecordCaptureFailureAsync(
+        Guid taskId,
+        Guid? sessionId,
+        string? author,
+        string? error,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            db.StatusEvents.Add(new StatusEvent
+            {
+                TaskId = taskId,
+                FromStatus = null,
+                ToStatus = null,
+                Source = TaskEventSource.System,
+                Actor = author,
+                Note = "没能采到工作区的改动（产出可能不完整）",
+                EventType = TaskEventTypes.ArtifactCaptureFailed,
+                Payload = GuanfuJson.Serialize(new
+                {
+                    reason = error,
+                    sessionId
+                }),
+                CreatedAt = clock.UtcNow
+            });
+
+            await db.SaveChangesAsync(cancellationToken);
+        }
+        catch (Exception)
+        {
+            // 连留痕都失败就算了 —— 不能因为「记一笔失败」把主流程带崩
+        }
     }
 
     public async Task<IReadOnlyList<TaskFileChangeDto>> ListAsync(

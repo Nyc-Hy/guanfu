@@ -201,6 +201,9 @@ public class AgentLauncherTests : IDisposable
 
         public IReadOnlyList<GitFileChange> GetWorkingTreeFileChanges(string repoPath) => [];
 
+        public GitWorkingTreeResult GetWorkingTreeChanges(string repoPath) =>
+            new([], Failed: true, Error: "测试环境无 git");
+
         public string? GetHeadSha(string repoPath) => null;
 
         public IReadOnlyList<GitWorktree> ListWorktrees(string repoPath) => [];

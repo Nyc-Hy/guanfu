@@ -34,6 +34,19 @@ public sealed record GitWorktree(
     bool Prunable = false);
 
 /// <summary>
+/// 读工作区改动的结果。
+///
+/// **「读不到」与「没有改动」必须分得开** —— 采不到产出时账上会少一段，
+/// 而人看不出少了什么。分不清就只能静默（静默最坏）。
+/// </summary>
+public sealed record GitWorkingTreeResult(
+    IReadOnlyList<GitFileChange> Changes,
+    /// <summary>仓库读不到（目录没了 / 不是仓库 / git 不可用）。</summary>
+    bool Failed = false,
+    /// <summary>读不到的原因。</summary>
+    string? Error = null);
+
+/// <summary>
 /// 只读 Git 检视。P3 会扩展出 commit/push（写操作走审批）。
 /// 这里刻意只做只读：任何写操作都不能出现在这条通路上。
 /// </summary>
@@ -53,6 +66,12 @@ public interface IGitInspector
 
     /// <summary>工作区里改了哪些文件（相对 HEAD，含未跟踪文件）。</summary>
     IReadOnlyList<GitFileChange> GetWorkingTreeFileChanges(string repoPath);
+
+    /// <summary>
+    /// 同上，但**分得清「读不到」与「没有改动」**。
+    /// 产出采集用这一份 —— 读不到时要留痕，不能静默。
+    /// </summary>
+    GitWorkingTreeResult GetWorkingTreeChanges(string repoPath);
 
     /// <summary>当前 HEAD 的 commit sha。读不到返回 null。</summary>
     string? GetHeadSha(string repoPath);

@@ -16,6 +16,28 @@ namespace Guanfu.Tests;
 /// </summary>
 public class FileChangeTests
 {
+    [Fact]
+    public async Task 采集失败要留痕不能静默()
+    {
+        // 静默的失败最坏：人以为产出记上了，其实账上少了一段。
+        using var host = new GuanfuTestHost();
+
+        var project = await host.Projects.CreateAsync("测试项目", repoPath: "/tmp/wb-some-repo");
+        var task = await host.Tasks.CreateAsync(project.Id, "采不到产出的活");
+
+        // 仓库读不到 → 采集失败
+        host.Git.WorkingTreeError = "git 读不了这个目录";
+
+        var service = new FileChangeService(host.Db, host.Git, host.Clock);
+        var captured = await service.CaptureWorkingTreeAsync(task.Id, project.Id, "/tmp/wb-some-repo");
+
+        Assert.Equal(0, captured);
+
+        var events = await host.Tasks.ListEventsAsync(task.Id);
+        var failure = Assert.Single(events.Where(e => e.EventType == TaskEventTypes.ArtifactCaptureFailed));
+        Assert.Contains("git 读不了这个目录", failure.Payload!);
+    }
+
     // ---------- numstat 解析 ----------
 
     [Fact]

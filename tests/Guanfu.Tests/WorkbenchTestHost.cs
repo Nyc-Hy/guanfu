@@ -150,6 +150,14 @@ public sealed class GuanfuTestHost : IDisposable
         public IReadOnlyList<GitFileChange> GetWorkingTreeFileChanges(string repoPath) =>
             WorkingTreeFileChanges;
 
+        /// <summary>读工作区时的错误（模拟「仓库读不到」）。</summary>
+        public string? WorkingTreeError { get; set; }
+
+        public GitWorkingTreeResult GetWorkingTreeChanges(string repoPath) =>
+            WorkingTreeError is null
+                ? new GitWorkingTreeResult(WorkingTreeFileChanges)
+                : new GitWorkingTreeResult([], Failed: true, Error: WorkingTreeError);
+
         public string? GetHeadSha(string repoPath) => HeadSha;
 
         /// <summary>仓库里的 worktree（默认只有主 checkout）。</summary>

@@ -391,6 +391,9 @@ public static class TaskEventTypes
     /// <summary>活干完了 —— 那个工位可以收了。</summary>
     public const string StationReadyToClean = "task.station_ready_to_clean";
 
+    /// <summary>产出采集失败（工作区读不到，产出可能不完整）。</summary>
+    public const string ArtifactCaptureFailed = "artifact.capture_failed";
+
     /// <summary>某个评审维度被认领（多 agent 分工）。</summary>
     public const string ReviewDimensionClaimed = "review.dimension_claimed";
 

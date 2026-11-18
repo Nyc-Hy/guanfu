@@ -787,12 +787,56 @@ public sealed class TaskService(
             await fileChanges.CaptureWorkingTreeAsync(
                 taskId, task.ProjectId, workDir, sessionId, actor, cancellationToken);
         }
-        catch (Exception)
+        catch (Exception ex)
         {
             // 采集是「锦上添花」，失败就算了 —— 状态已经推进。
             //
             // 这里连取消也不往上抛：状态迁移已经成功了，再抛异常的话调用方会以为
             // 迁移失败而重试 —— 那是真的把事情搞坏。
+            //
+            // 但**不能静默**：采不到产出 = 账上少了一段，而人看不出少了什么。
+            // 留一笔事件（不是抛错），谁都能看见「这次没采到」。
+            await RecordCaptureFailureAsync(taskId, sessionId, actor, ex, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// 采集失败留一笔痕。
+    ///
+    /// 静默的失败最坏：人以为产出记上了，其实没有。
+    /// 这条事件不进审计链（那是工具调用的账），它进任务流水 —— 一眼能看见。
+    /// </summary>
+    private async Task RecordCaptureFailureAsync(
+        Guid taskId,
+        Guid? sessionId,
+        string? actor,
+        Exception error,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            db.StatusEvents.Add(new StatusEvent
+            {
+                TaskId = taskId,
+                FromStatus = null,
+                ToStatus = null,
+                Source = TaskEventSource.System,
+                Actor = actor,
+                Note = "没能采到工作区的改动（产出可能不完整）",
+                EventType = TaskEventTypes.ArtifactCaptureFailed,
+                Payload = GuanfuJson.Serialize(new
+                {
+                    reason = error.Message,
+                    sessionId
+                }),
+                CreatedAt = clock.UtcNow
+            });
+
+            await db.SaveChangesAsync(cancellationToken);
+        }
+        catch (Exception)
+        {
+            // 连留痕都失败就算了 —— 不能因为「记一笔失败」把主流程带崩
         }
     }
 

@@ -117,20 +117,27 @@ public sealed class GitInspector : IGitInspector
     ///
     /// 读不到时返回空列表，不抛异常。
     /// </summary>
-    public IReadOnlyList<GitFileChange> GetWorkingTreeFileChanges(string repoPath)
+    public IReadOnlyList<GitFileChange> GetWorkingTreeFileChanges(string repoPath) =>
+        GetWorkingTreeChanges(repoPath).Changes;
+
+    /// <summary>
+    /// 读工作区改动 —— 读不到时明确说「读不到」，不跟「没有改动」混在一起。
+    /// </summary>
+    public GitWorkingTreeResult GetWorkingTreeChanges(string repoPath)
     {
         if (string.IsNullOrWhiteSpace(repoPath) || !Directory.Exists(repoPath))
         {
-            return [];
+            return new GitWorkingTreeResult([], Failed: true, Error: $"目录不存在: {repoPath}");
         }
 
         try
         {
-            return GetWorkingTreeFileChangesAsync(repoPath).GetAwaiter().GetResult();
+            var changes = GetWorkingTreeFileChangesAsync(repoPath).GetAwaiter().GetResult();
+            return new GitWorkingTreeResult(changes);
         }
-        catch (Exception)
+        catch (Exception ex)
         {
-            return [];
+            return new GitWorkingTreeResult([], Failed: true, Error: ex.Message);
         }
     }
 
