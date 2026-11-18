@@ -65,6 +65,13 @@ class Mcp:
             "Accept": "application/json, text/event-stream",
         }
         headers.update(self.headers)
+
+        # /mcp 的门禁要凭证（团队部署时这把钥匙决定「谁在操作、能看到什么」）。
+        # 本机单人用时那把共享人工凭证就够。
+        token = os.environ.get("WB_HUMAN_TOKEN", "")
+        if token:
+            headers.setdefault("X-Guanfu-Token", token)
+
         if self._session_id:
             headers["Mcp-Session-Id"] = self._session_id
 
@@ -410,6 +417,15 @@ def main() -> int:
         bool(handoff_pack.get("allowedTransitions")),
         "交接包要带上「现在能去哪」（不用再问一次状态机）",
     )
+
+    print("\n-- MCP 端点要凭证（团队部署的第一道门） --")
+    no_token = Mcp(args.url, headers={"X-Guanfu-Token": "不对的钥匙"})
+    try:
+        no_token.initialize()
+        denied = False
+    except Exception:
+        denied = True
+    expect(denied, "带错的凭证不该能连上 MCP")
 
     print("\n-- 工位清单：worktree 建了没人收 --")
     stations = mcp.call("guanfu_list_workstations", {})

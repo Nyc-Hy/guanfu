@@ -65,6 +65,9 @@ public static class ApplicationServiceCollectionExtensions
         // agent 的工作包：「我现在该干什么」一次给全
         services.AddScoped<IMyWorkService, MyWorkService>();
 
+        // 凭证：团队部署时「谁在操作」必须是真的 —— 签发时绑身份与可见范围
+        services.AddScoped<ICredentialService, CredentialService>();
+
         // 通知：单例 HttpClient（HttpClient 复用是对的，每次 new 才会耗尽端口）
         // 超时压短，通知失败不能拖住审批请求。
         services.AddSingleton<INotifier>(_ => new WebhookNotifier(new HttpClient

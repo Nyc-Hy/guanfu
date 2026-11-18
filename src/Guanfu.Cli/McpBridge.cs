@@ -32,7 +32,57 @@ public static class McpBridge
             endpoint,
             cts.Token,
             ResolveRepoPath(args),
-            ResolveAgentId(args));
+            ResolveAgentId(args),
+            ResolveToken(args));
+    }
+
+    /// <summary>
+    /// 访问凭证：<c>--token</c> > <c>GUANFU_TOKEN</c> 环境变量 > 数据目录里的凭证文件。
+    ///
+    /// 没有凭证也能连 —— 那把共享人工凭证兜着（本机单人用就是这么干的）。
+    /// </summary>
+    private static string? ResolveToken(List<string> args)
+    {
+        var flag = ReadOption(args, "--token");
+        if (!string.IsNullOrWhiteSpace(flag))
+        {
+            return flag;
+        }
+
+        var fromEnv = Environment.GetEnvironmentVariable("GUANFU_TOKEN")
+                      ?? Environment.GetEnvironmentVariable("WORKBENCH_TOKEN")
+                      ?? Environment.GetEnvironmentVariable("GUANFU_HUMAN_TOKEN")
+                      ?? Environment.GetEnvironmentVariable("WORKBENCH_HUMAN_TOKEN");
+        if (!string.IsNullOrWhiteSpace(fromEnv))
+        {
+            return fromEnv;
+        }
+
+        try
+        {
+            var home = Environment.GetEnvironmentVariable("GUANFU_HOME")
+                       ?? Environment.GetEnvironmentVariable("WORKBENCH_HOME");
+
+            if (string.IsNullOrWhiteSpace(home))
+            {
+                var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                var current = Path.Combine(profile, ".guanfu");
+                var legacy = Path.Combine(profile, ".workbench");
+                home = Directory.Exists(legacy) && !Directory.Exists(current) ? legacy : current;
+            }
+
+            var path = Path.Combine(home, ".human-token");
+            if (File.Exists(path))
+            {
+                return File.ReadAllText(path).Trim();
+            }
+        }
+        catch (Exception)
+        {
+            // 读不到就算了 —— 服务端会按「没带凭证」处理
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -112,14 +162,16 @@ public static class McpBridge
         string endpoint,
         CancellationToken cancellationToken,
         string? repoPath = null,
-        string? agentId = null)
+        string? agentId = null,
+        string? token = null)
     {
         var stdoutChannel = Channel.CreateUnbounded<string>(new UnboundedChannelOptions { SingleReader = true });
         var notificationChannel = Channel.CreateUnbounded<string>(new UnboundedChannelOptions { SingleReader = true });
         var session = new SessionState
         {
             RepoPath = repoPath,
-            AgentId = agentId
+            AgentId = agentId,
+            Token = token
         };
         var requestTasks = new ConcurrentBag<Task>();
 
@@ -370,6 +422,13 @@ public static class McpBridge
             request.Headers.TryAddWithoutValidation("X-Workbench-Agent", session.AgentId);
         }
 
+        // 凭证：/mcp 的门禁要它（团队部署时这把钥匙决定「谁在操作、能看到什么」）。
+        // 没带就退回共享人工凭证 —— 本机单人用时那把就够。
+        if (!string.IsNullOrWhiteSpace(session.Token))
+        {
+            request.Headers.TryAddWithoutValidation("X-Guanfu-Token", session.Token);
+        }
+
         return await sendAsync(request, cancellationToken);
     }
 
@@ -465,6 +524,9 @@ public static class McpBridge
 
         /// <summary>agent 标识，审计里用它区分是谁在干活。</summary>
         public string? AgentId;
+
+        /// <summary>访问凭证（MCP 端点的钥匙）。</summary>
+        public string? Token;
 
         public readonly SemaphoreSlim RecoveryGate = new(1, 1);
     }

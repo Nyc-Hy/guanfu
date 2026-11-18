@@ -149,6 +149,8 @@ public sealed class ToolCallAuditTests
 
         public string? CurrentMcpSessionId => null;
 
+        public Guanfu.Application.Services.CredentialIdentity? CurrentCredential => null;
+
         public string? CurrentAgentId => "header-agent";
     }
 

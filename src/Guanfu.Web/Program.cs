@@ -175,6 +175,11 @@ app.UseWhen(
 // 工作区搬迁 / 数据库连接）没凭证直接 401，其余端点保持开放。
 app.UseMiddleware<HumanTokenMiddleware>();
 
+// MCP 端点的门禁：团队的服务器上，/mcp 的工具是在**服务器上**执行的
+// （读文件、提交代码、跑命令），「谁能连上」等于「谁能操作服务器上的仓库」。
+// 单人本机用时走共享人工凭证（owner），团队用时给每���成员 / agent 签发凭证。
+app.UseMiddleware<CredentialMiddleware>();
+
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
 

@@ -17,7 +17,10 @@ public static class McpConnectInfo
               "mcpServers": {
                 "guanfu": {
                   "type": "http",
-                  "url": "{{endpoint}}"
+                  "url": "{{endpoint}}",
+                  "headers": {
+                    "X-Guanfu-Token": "<凭证>"
+                  }
                 }
               }
             }

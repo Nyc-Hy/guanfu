@@ -156,6 +156,17 @@ Secret）、跨库（`OtherDb.dbo.T`）、`INSERT … EXEC` 一律判「认不�
 | 落地 | `src/Guanfu.Domain/Entities.cs`（`StatusEvent`）、`TaskEventTypes`（固定标识表） |
 | 自动化证据 | 单测 `EventLedgerContractTests`（2）<br>端到端 A：`guanfu task events --format markdown/csv/json` |
 
+### H3. 团队部署：谁在操作必须是真的
+
+| 项 | 内容 |
+|---|---|
+| 能力 | **凭证**在签发时就把身份绑上（成员名 / agent id）+ 可见范围；运行时带的只是那把钥匙。明文只显示一次，库里只存哈希。**`/mcp` 端点必须认凭证** —— MCP 的工具是在**服务器上**执行的（读文件、提交代码、跑命令），「谁能连上 /mcp」等于「谁能操作服务器上的仓库」 |
+| 落地 | `src/Guanfu.Domain/Entities.cs`（`AccessCredential`）<br>`src/Guanfu.Application/Services/CredentialService.cs`（签发 / 校验 / 吊销）<br>`src/Guanfu.Web/CredentialMiddleware.cs`（`/mcp` 门禁）<br>`src/Guanfu.Web/Components/Pages/Credentials.razor`（「访问凭证」页签）<br>可见范围在 `ProjectScopeResolver.ResolveOrNullAsync` 统一卡 —— 所有带项目的工具都从那儿过 |
+| 自动化证据 | 单测 `CredentialServiceTests`（8：明文只给一次、错的换不到身份、吊销即失效、过期即失效、可见范围）<br>端到端 A：带错的凭证连不上 `/mcp` |
+
+**还差的**：凭证是自己签发的，没有接 SSO / OIDC —— 「谁签发了这把钥匙」仍然靠人自己写备注。
+真要上企业，把签发那一步接到公司的身份系统上；观复这边只管「签发时绑谁」。
+
 ### H2. 时间线不说谎：补报也带实际发生时间
 
 | 项 | 内容 |
@@ -307,11 +318,12 @@ Secret）、跨库（`OtherDb.dbo.T`）、`INSERT … EXEC` 一律判「认不�
 
 企业落地前要知道边界在哪。下面每一条都是**真实缺口**，不是「计划中」：
 
-1. **没有身份体系，只有一个共享的人工凭证。**
-   token 是「谁在操作」，不是「是谁在操作」—— 审计里的 `decidedBy` 仍然是人自己填的名字，
-   填错了系统不知道。已经做的只是**兜底**：裁决人不能为空（空了就拒），并且记下
-   所用人工凭证的哈希指纹（不存明文），好区分「同一个操作员」和「换了人操作」。
-   企业里要接 SSO / OIDC，并把裁决人换成真实登录态。
+1. **身份体系只做到「自己签发的凭证」，没接 SSO / OIDC。**
+   现在有两条线：一条是**共享的人工凭证**（数据目录里那个 token，= owner，全权），
+   一条是**按凭证签发的成员 / agent 钥匙**（绑身份 + 可见范围，`/mcp` 认它）。
+   审计里的 `decidedBy` 仍然是人自己填的名字 —— 凭证能证明「这把钥匙是谁的」，
+   但裁决那一栏还没换成凭证身份。
+   企业里要接 SSO / OIDC：签发那一步接公司的身份系统，裁决人换成真实登录态。
 2. **没有多租户数据隔离。**
    项目之间靠 `ProjectId` 约束（审批绑项目、查询按项目过滤），但同一个库、同一个进程，
    没有行级隔离也没有租户级密钥隔离。要多租户得改存储层。

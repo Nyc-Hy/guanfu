@@ -25,6 +25,11 @@
                 <span class="wb-chip">MCP Streamable HTTP</span>
             </div>
             <p class="wb-muted">Claude Code / Codex 等较新的客户端直接连这个地址。</p>
+            <p class="wb-hint">
+                <code>&lt;凭证&gt;</code> 那格要填真的凭证 ——
+                去「访问凭证」页签给这个 agent 签一把，把明文填进去。
+                团队部署时每个 agent 一把，只看它该看的项目。
+            </p>
             <pre class="wb-doc-code">@HttpConfig</pre>
             <div class="wb-form-row">
                 <button class="wb-btn" @onclick="() => CopyAsync(HttpConfig)">复制</button>

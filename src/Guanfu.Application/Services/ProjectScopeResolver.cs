@@ -31,6 +31,15 @@ public interface IAgentSessionAccessor
     string? CurrentAgentId { get; }
 
     /// <summary>
+    /// 当前请求**认证出来的身份**（凭证）。
+    ///
+    /// 「是谁」不该由运行时自报（<c>X-Guanfu-Agent</c> 头谁都能填）——
+    /// 团队部署时，身份必须来自签发时绑定了人的那把钥匙。
+    /// 没有凭证（单人本机用）时为 null，工具退回自报的口径。
+    /// </summary>
+    CredentialIdentity? CurrentCredential { get; }
+
+    /// <summary>
     /// 当前请求的 MCP 协议会话 id（<c>Mcp-Session-Id</c> 头）。
     ///
     /// 绑会话时要把它一起记上 —— 客户端（Claude Code 等）只会在后续请求里
@@ -95,6 +104,13 @@ public sealed class ProjectScopeResolver(
             ? null
             : await sessions.CurrentAsync(cancellationToken);
 
+        // 可见范围：**所有**带项目的工具都从这里过一遍 ——
+        // 凭证看不见的项目，就不该被读到（团队部署的最小权限边界）。
+        if (explicitProjectId is Guid scopedProjectId)
+        {
+            EnsureVisible(scopedProjectId);
+        }
+
         if (explicitProjectId is Guid projectId)
         {
             if (session is not null && session.ProjectId != projectId)
@@ -110,10 +126,30 @@ public sealed class ProjectScopeResolver(
 
         if (session is not null)
         {
+            EnsureVisible(session.ProjectId);
             return await BuildAsync(session.ProjectId, session, cancellationToken);
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// 这个项目在当前凭证的可见范围内吗。
+    ///
+    /// 没有凭证（单人本机用）就放行 —— 那时的口径是「本机就是自己」。
+    /// </summary>
+    private void EnsureVisible(Guid projectId)
+    {
+        var credential = sessions?.CurrentCredential;
+
+        if (credential is null || credential.AllowsProject(projectId))
+        {
+            return;
+        }
+
+        throw new GuanfuException(
+            $"当前凭证（{credential.Subject}）看不到这个项目。" +
+            "换一个项目，或让人给这把凭证加上可见范围。");
     }
 
     /// <summary>

@@ -208,6 +208,62 @@ public class WorkspaceSpec
 }
 
 /// <summary>
+/// 访问凭证（成员 / agent）。
+///
+/// **一个人用的时候不需要它** —— 那时只有一个共享的人工凭证。
+/// 但一台服务器给一个团队用时，「谁在操作」必须是真的：
+/// agent id 自报、审批人自己填名字，出了事查不出是谁。
+///
+/// 所以凭证在**签发**的时候就把身份绑上：绑谁、能看哪些项目。
+/// 运行时带的只是那把钥匙，明文只在签发时显示一次，库里只存哈希。
+/// </summary>
+public class AccessCredential
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+
+    /// <summary>成员（人）还是 agent。</summary>
+    public CredentialKind Kind { get; set; }
+
+    /// <summary>身份：成员名 / agent id。</summary>
+    public string Subject { get; set; } = string.Empty;
+
+    /// <summary>凭证哈希（SHA-256 的十六进制）。**不存明文**。</summary>
+    public string TokenHash { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 可见的项目（逗号分隔的 id）。空 = 全部可见。
+    ///
+    /// 「这个凭证能看见什么」是团队部署的最小权限边界：
+    /// 一个人只该看见自己负责的项目。
+    /// </summary>
+    public string? ProjectScope { get; set; }
+
+    /// <summary>备注（谁发的、给谁的）。</summary>
+    public string? Note { get; set; }
+
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>过期时间。为空 = 长期有效。</summary>
+    public DateTimeOffset? ExpiresAt { get; set; }
+
+    /// <summary>吊销时间。非空 = 已作废。</summary>
+    public DateTimeOffset? RevokedAt { get; set; }
+
+    /// <summary>谁签发的。</summary>
+    public string? CreatedBy { get; set; }
+}
+
+/// <summary>凭证的种类。</summary>
+public enum CredentialKind
+{
+    /// <summary>成员（人）—— 能裁决审批、改配置。</summary>
+    Member = 0,
+
+    /// <summary>agent —— 走 MCP 干活。</summary>
+    Agent = 1
+}
+
+/// <summary>
 /// 里程碑级规约。
 ///
 /// 与项目级规约**叠加**：项目级的规矩对所有活适用，里程碑级的只对这个里程碑里的活生效。

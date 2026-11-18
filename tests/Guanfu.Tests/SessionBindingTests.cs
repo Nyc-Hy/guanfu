@@ -220,6 +220,8 @@ public sealed class SessionBindingTests
 
         public string? CurrentMcpSessionId => null;
 
+        public Guanfu.Application.Services.CredentialIdentity? CurrentCredential => null;
+
         public string? CurrentAgentId => null;
     }
 }

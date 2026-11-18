@@ -90,6 +90,12 @@
                         <span class="wb-side-link-sub">把 agent 接进观复</span>
                     </span>
                 </a>
+                <a class="wb-side-link @(IsCurrent("/credentials") ? "active" : "")" href="/credentials">
+                    <span class="wb-side-text">
+                        <span class="wb-side-link-name">访问凭证</span>
+                        <span class="wb-side-link-sub">给成员与 agent 发钥匙</span>
+                    </span>
+                </a>
                 <a class="wb-side-link @(IsCurrent("/db-connections") ? "active" : "")" href="/db-connections">
                     <span class="wb-side-text">
                         <span class="wb-side-link-name">数据库连接</span>

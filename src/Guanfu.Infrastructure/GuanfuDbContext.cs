@@ -31,6 +31,8 @@ public sealed class GuanfuDbContext(DbContextOptions<GuanfuDbContext> options) :
     public DbSet<ProjectSpec> ProjectSpecs => Set<ProjectSpec>();
     public DbSet<MilestoneSpec> MilestoneSpecs => Set<MilestoneSpec>();
     public DbSet<WorkspaceSpec> WorkspaceSpecs => Set<WorkspaceSpec>();
+
+    public DbSet<AccessCredential> AccessCredentials => Set<AccessCredential>();
     public DbSet<SpecVerdict> SpecVerdicts => Set<SpecVerdict>();
 
     /// <inheritdoc />

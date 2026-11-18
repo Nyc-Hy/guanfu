@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol.Server;
 using Guanfu.Application;
 using Guanfu.Application.Services;
+using Guanfu.Domain;
 
 namespace Guanfu.Mcp;
 
@@ -50,11 +51,50 @@ public sealed class AgentSessionAccessor(
     internal const string LegacyRepoHeader = "X-Workbench-Repo";
     internal const string LegacyAgentHeader = "X-Workbench-Agent";
 
-    /// <summary>请求头里带的调用方标识。客户端不一定给工具显式传 callerId，得有这条线索。</summary>
+    /// <summary>
+    /// 认证出来的身份（凭证）。
+    ///
+    /// 宿主把认证结果放在 HttpContext.Items 里 —— 应用层不认 HTTP，
+    /// 由宿主负责翻译。
+    /// </summary>
+    public CredentialIdentity? CurrentCredential
+    {
+        get
+        {
+            var context = http?.HttpContext;
+
+            if (context is null)
+            {
+                return null;
+            }
+
+            return context.Items.TryGetValue(CredentialItemKey, out var value)
+                ? value as CredentialIdentity
+                : null;
+        }
+    }
+
+    /// <summary>宿主存放认证身份的 HttpContext.Items 键。</summary>
+    internal const string CredentialItemKey = "guanfu.credential";
+
+    /// <summary>
+    /// 请求头里带的调用方标识。客户端不一定给工具显式传 callerId，得有这条线索。
+    ///
+    /// **有凭证时以凭证为准** —— 头是自报的，谁都能填「我是 agent-a」。
+    /// </summary>
     public string? CurrentAgentId
     {
         get
         {
+            var credential = CurrentCredential;
+
+            // **agent 凭证**才是权威身份 —— 头是自报的，谁都能填「我是 agent-a」。
+            // 成员 / owner 凭证下，agent 身份仍由请求头说（owner 在跑他的 agent）。
+            if (credential is not null && credential.Kind == CredentialKind.Agent)
+            {
+                return credential.Subject;
+            }
+
             var context = http?.HttpContext;
             if (context is null)
             {
