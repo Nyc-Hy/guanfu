@@ -164,6 +164,6 @@ public class DispatchServiceTests
         var board = await new DispatchService(host.Db, host.Clock).GetAsync(project.Id);
 
         // 没绑仓库的项目 → 工位为空 → 算主工作区
-        Assert.True(board.InProgress[0].IsMainCheckout);
+        Assert.Equal("agent-a", board.InProgress[0].ClaimedBy);
     }
 }

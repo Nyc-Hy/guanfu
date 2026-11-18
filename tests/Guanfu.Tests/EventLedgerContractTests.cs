@@ -27,7 +27,6 @@ public sealed class EventLedgerContractTests
 
         var task = await host.Tasks.CreateAsync(project.Id, "写登录接口");
 
-        await host.Tasks.BindBranchAsync(task.Id, "feature/login");
         await host.Tasks.SetTypeAsync(task.Id, TaskType.Bug);
         await host.Tasks.ClaimAsync(task.Id, "agent-1");
         await host.Tasks.SetPlanAsync(task.Id, "背景", "理解", "拆解", "验收", "风险", "agent-1");

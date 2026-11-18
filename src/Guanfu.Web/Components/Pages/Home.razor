@@ -216,7 +216,7 @@ else
                         <div class="wb-table-scroll">
                             <table class="wb-table">
                                 <thead>
-                                <tr><th>任务</th><th>项目</th><th>状态</th><th>在谁手上</th><th>工位</th><th>最后动静</th></tr>
+                                <tr><th>任务</th><th>项目</th><th>状态</th><th>在谁手上</th><th>最后动静</th></tr>
                                 </thead>
                                 <tbody>
                                 @foreach (var t in Data.ActiveTasks)
@@ -235,24 +235,6 @@ else
                                                 <span class="wb-muted">还没人领</span>
                                             }
                                         </td>
-                                        <td class="wb-muted">
-                                            @if (!string.IsNullOrWhiteSpace(t.AgentId) && string.IsNullOrWhiteSpace(t.WorkPath))
-                                            {
-                                                <span class="wb-chip">⌂ 主工作区</span>
-                                            }
-                                            else if (t.IsMainCheckout)
-                                            {
-                                                <span class="wb-chip" title="@t.WorkPath">⌂ 主工作区</span>
-                                            }
-                                            else if (!string.IsNullOrWhiteSpace(t.WorkPath))
-                                            {
-                                                <span class="wb-chip wb-chip-ok" title="@t.WorkPath">⌂ @System.IO.Path.GetFileName(t.WorkPath)</span>
-                                            }
-                                            else
-                                            {
-                                                <span>—</span>
-                                            }
-                                        </td>
                                         <td class="wb-muted" title="@(t.LastActivityAt is null ? "" : Absolute(t.LastActivityAt.Value))">@(t.LastActivityAt is null ? "—" : Relative(t.LastActivityAt.Value))</td>
                                     </tr>
                                 }
@@ -267,16 +249,16 @@ else
             @if (Activity.Count == 0)
             {
                 <div class="wb-panel wb-panel-quiet">
-                    <h3>最近产出</h3>
-                    <p class="wb-muted">还没有产出记录。</p>
+                    <h3>最近活动</h3>
+                    <p class="wb-muted">还没有记录。</p>
                 </div>
             }
             else
             {
                 <div class="wb-panel">
                     <div class="wb-card-head">
-                        <h3>最近产出</h3>
-                        <span class="wb-muted">代码改动是观复自己从 git 数出来的，不是 agent 自报的</span>
+                        <h3>最近活动</h3>
+                        <span class="wb-muted">观复不管代码 —— 这里只有观复自己记下的事</span>
                     </div>
                     <div class="wb-table-scroll">
                         <table class="wb-table">
@@ -288,7 +270,7 @@ else
                             {
                                 <tr>
                                     <td class="wb-muted" title="@Absolute(item.At)">@Relative(item.At)</td>
-                                    <td><span class="wb-chip @(item.IsFile ? "wb-chip-ok" : "wb-chip-warn")">@(item.IsFile ? "代码改动" : "数据库")</span></td>
+                                    <td><span class="wb-chip wb-chip-warn">数据库</span></td>
                                     <td>@item.Text</td>
                                     <td>
                                         @if (item.TaskId is not null)
@@ -481,7 +463,7 @@ else
 }
 
 @code {
-    /// <summary>最近产出里的一行。代码改动与数据库调用合成一条流水。</summary>
+    /// <summary>最近活动里的一行（观复记下的事）。</summary>
     private sealed record ActivityItem(
         DateTimeOffset At,
         bool IsFile,
@@ -741,21 +723,10 @@ else
         }
     }
 
-    /// <summary>把「代码改动」和「数据库调用」合成一条按时间倒序的流水。</summary>
+    /// <summary>把「数据库调用」合成一条按时间倒序的流水。</summary>
     private static IReadOnlyList<ActivityItem> BuildActivity(OverviewDto data)
     {
         var items = new List<ActivityItem>();
-
-        foreach (var file in data.RecentFiles)
-        {
-            items.Add(new ActivityItem(
-                file.CreatedAt,
-                true,
-                $"{file.Path}（+{file.LinesAdded} / -{file.LinesDeleted}）",
-                file.TaskId,
-                UiText.TaskRef(file.TaskKey),
-                file.ProjectName));
-        }
 
         foreach (var call in data.RecentDbCalls)
         {

@@ -62,7 +62,6 @@ public sealed class HandoffService(
                     lastTest.Author,
                     lastTest.ReportedAt),
             review,
-            context.Station,
             context.Spec,
             context.RecentEvents,
             context.AllowedTransitions,

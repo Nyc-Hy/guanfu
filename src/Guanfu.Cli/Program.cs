@@ -397,12 +397,12 @@ static async Task<int> TaskCommandAsync(string url, List<string> cliArgs)
                 return 0;
             }
 
-            Console.WriteLine($"{"编号",-12} {"类型",-6} {"ID",-38} {"状态",-12} {"分支",-18} 标题");
+            Console.WriteLine($"{"编号",-12} {"类型",-6} {"ID",-38} {"状态",-12} 标题");
             foreach (var t in tasks)
             {
                 Console.WriteLine(
                     $"{Truncate(t.Key ?? "-", 12),-12} {TaskTypeLabel(t.Type),-6} {t.Id,-38} {UiText.Status(t.Status),-12} " +
-                    $"{Truncate(t.Branch ?? "-", 18),-18} {t.Title}");
+                    $"{t.Title}");
             }
 
             return 0;
@@ -422,11 +422,9 @@ static async Task<int> TaskCommandAsync(string url, List<string> cliArgs)
                 {
                     title = Arg(cliArgs, 2),
                     description = GetOption(cliArgs, "--desc"),
-                    type = GetOption(cliArgs, "--type"),
-                    branch = GetOption(cliArgs, "--branch")
+                    type = GetOption(cliArgs, "--type")
                 });
-            Console.WriteLine($"已创建任务 {created.Id} · {created.Key} · {created.Title}"
-                + (string.IsNullOrWhiteSpace(created.Branch) ? "" : $" · 分支 {created.Branch}"));
+            Console.WriteLine($"已创建任务 {created.Id} · {created.Key} · {created.Title}");
             return 0;
         }
 

@@ -74,7 +74,6 @@ public class ReviewGateTests
         Assert.False(pack.Task.IsArchived);
         Assert.Equal(summary.Stale, pack.Task.Stale);
         Assert.Equal(summary.Key, pack.Task.Key);
-        Assert.Equal(summary.Branch, pack.Task.Branch);
 
         // 映射只有一份：评审包与任务详情必须逐字段一致
         Assert.Equal(summary, pack.Task);

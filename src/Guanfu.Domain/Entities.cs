@@ -405,12 +405,6 @@ public class TaskItem
     /// </summary>
     public bool IsArchived { get; set; }
 
-    /// <summary>
-    /// 绑定的开发分支。为空表示不限制分支。
-    /// 绑了分支的任务只有在仓库当前分支与之一致时才会运行（见 <c>IBranchGuard</c>）。
-    /// </summary>
-    public string? Branch { get; set; }
-
     public string Title { get; set; } = string.Empty;
     public string? Description { get; set; }
 
@@ -457,22 +451,9 @@ public class TaskItem
     /// </summary>
     public int? PinnedOrder { get; set; }
 
-    /// <summary>
-    /// 这个 agent 干活的工作目录（绝对路径）。
-    ///
-    /// 为空 = 用项目的主工作区（仓库根）。非空 = agent 自己开的 git worktree。
-    ///
-    /// 为什么要有它：两个 agent 共用同一个工作区就会互相踩文件。
-    /// 主工作区同一时刻只允许**一个** agent 占着；要并行就得各开各的 worktree，
-    /// 并在这里登记 —— 观复靠它知道「谁在哪个目录干活」，
-    /// 也靠它挡住「两个人抢同一个目录」。
-    /// </summary>
-    public string? WorkPath { get; set; }
-
     public List<StatusEvent> StatusEvents { get; set; } = [];
     public List<Document> Documents { get; set; } = [];
     public List<Artifact> Artifacts { get; set; } = [];
-    public List<TaskFileChange> FileChanges { get; set; } = [];
     public List<Plan> Plans { get; set; } = [];
     public List<TestRun> TestRuns { get; set; } = [];
     public List<ReviewRound> ReviewRounds { get; set; } = [];
@@ -872,50 +853,6 @@ public class AgentSession
     public DateTimeOffset? EndedAt { get; set; }
 }
 
-/// <summary>
-/// 任务的产出文件 —— 开发过程中实际改了哪些文件。
-///
-/// 这是「产出可追溯」的落地：不是 agent 说它改了什么，而是观复自己去
-/// git 里数出来。采集点在提交之后（闸门执行完）与进入评审之前，
-/// agent 绕不过去。
-/// </summary>
-public class TaskFileChange
-{
-    public Guid Id { get; set; } = Guid.NewGuid();
-
-    public Guid TaskId { get; set; }
-    public TaskItem? Task { get; set; }
-
-    public Guid ProjectId { get; set; }
-    public Project? Project { get; set; }
-
-    /// <summary>哪次 agent 会话干的。审计里能顺着会话查到人。</summary>
-    public Guid? SessionId { get; set; }
-    public AgentSession? Session { get; set; }
-
-    /// <summary>仓库相对路径。</summary>
-    public string Path { get; set; } = string.Empty;
-
-    /// <summary>变更类型：Added / Modified / Deleted / Renamed。</summary>
-    public string ChangeKind { get; set; } = "Modified";
-
-    /// <summary>重命名前的路径。只有 Renamed 才有值。</summary>
-    public string? OldPath { get; set; }
-
-    public int LinesAdded { get; set; }
-    public int LinesDeleted { get; set; }
-
-    /// <summary>
-    /// 对应的 commit。空表示「工作区里改了但还没提交」——
-    /// 那种改动照样要能追到。
-    /// </summary>
-    public string? CommitSha { get; set; }
-
-    public string? Branch { get; set; }
-    public string? Author { get; set; }
-
-    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
-}
 
 /// <summary>
 /// 一次数据库调用的结构化记录。

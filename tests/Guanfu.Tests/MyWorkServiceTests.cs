@@ -25,8 +25,7 @@ public sealed class MyWorkServiceTests
             host.Clock,
             new DispatchService(host.Db, host.Clock),
             host.Reviews,
-            host.Specs,
-            new WorkstationService(host.Db, host.Git, host.Clock));
+            host.Specs);
 
         return (host, service, project.Id);
     }

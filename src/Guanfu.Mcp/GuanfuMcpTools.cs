@@ -30,7 +30,6 @@ public sealed class GuanfuMcpTools(
     IAgentSessionAccessor? sessionAccessor = null,
     ITaskUsageService? usage = null,
     IHandoffService? handoff = null,
-    IWorkstationService? stations = null,
     IMyWorkService? myWork = null)
 {
     /// <summary>
@@ -159,7 +158,7 @@ public sealed class GuanfuMcpTools(
         "requirement(需求，默认) / bug(缺陷) / optimization(优化)，" +
         "编号按类型分开分配（REQ-001 / BUG-001 / OPT-001，各类型独立计数）。" +
         "key 不给就自动分配下一个。milestoneId 把任务挂到某个迭代版本（如「12月版本」）下。" +
-        "branch 是绑定的开发分支 —— 绑了分支的任务，只有仓库当前就在那个分支上才会运行")]
+        "观复不碰代码，也不判断分支 —— 那是你自己仓库里的事。")]
     public async Task<TaskSummaryDto> CreateTaskAsync(
         Guid? projectId = null,
         string? title = null,
@@ -167,7 +166,6 @@ public sealed class GuanfuMcpTools(
         Guid? parentTaskId = null,
         Guid? milestoneId = null,
         string? type = null,
-        string? branch = null,
         string? key = null,
         CancellationToken cancellationToken = default)
     {
@@ -187,14 +185,14 @@ public sealed class GuanfuMcpTools(
         var scope = await ResolveScopeAsync(projectId, cancellationToken);
 
         return await tasks.CreateAsync(
-            scope.ProjectId, title!, description, parentTaskId, milestoneId, parsedType, branch, key, cancellationToken);
+            scope.ProjectId, title!, description, parentTaskId, milestoneId, parsedType, key, cancellationToken);
     }
 
     [McpServerTool(Name = "guanfu_list_tasks")]
     [Description(
-        "按项目 / 状态 / 关键字 / 迭代版本 / 编号 / 类型 / 分支列出任务。" +
-        "key 传了就是精确匹配编号，type 传了只出该类型（requirement / bug / optimization），" +
-        "branch 传了只出绑定该分支的任务。limit/offset 用来分页 —— 任务多的时候一定要给 limit，" +
+        "按项目 / 状态 / 关键字 / 迭代版本 / 编号 / 类型列出任务。" +
+        "key 传了就是精确匹配编号，type 传了只出该类型（requirement / bug / optimization）。" +
+        "limit/offset 用来分页 —— 任务多的时候一定要给 limit，" +
         "否则返回体会把 agent 的上下文撑爆。")]
     public async Task<IReadOnlyList<TaskSummaryDto>> ListTasksAsync(
         Guid? projectId = null,
@@ -204,7 +202,6 @@ public sealed class GuanfuMcpTools(
         string? key = null,
         string? type = null,
         CancellationToken cancellationToken = default,
-        string? branch = null,
         int? limit = null,
         int? offset = null,
         bool includeArchived = false)
@@ -237,7 +234,7 @@ public sealed class GuanfuMcpTools(
 
         return await tasks.ListAsync(
             effectiveProjectId, parsed, keyword, milestoneId, key, parsedType, cancellationToken,
-            branch, limit, offset, includeArchived);
+            limit, offset, includeArchived);
     }
 
     [McpServerTool(Name = "guanfu_list_events")]
@@ -331,73 +328,8 @@ public sealed class GuanfuMcpTools(
             .ToList();
     }
 
-    [McpServerTool(Name = "guanfu_list_workstations")]
-    [Description(
-        "列工位：这个项目（或整个工作区）里登记着哪些工位、谁在用、目录还在不在、" +
-        "**有没有人管**（活干完了 / 租约过期了，但目录还躺在那儿）。" +
-        "没人管的工位会附上清理的确切命令（git worktree remove）—— " +
-        "观复不替 agent 删目录，那是它自己仓库里的事。")]
-    public async Task<WorkstationsToolResult> ListWorkstationsAsync(
-        Guid? projectId = null,
-        CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            if (stations is null)
-            {
-                return WorkstationsToolResult.Fail("工位服务没注册。");
-            }
-
-            var resolvedProjectId = projectId;
-
-            if (resolvedProjectId is null)
-            {
-                var scope = scopeResolver is null
-                    ? null
-                    : await scopeResolver.ResolveOrNullAsync(null, cancellationToken);
-
-                resolvedProjectId = scope?.ProjectId;
-            }
-
-            var list = await stations.ListAsync(resolvedProjectId, cancellationToken);
-            return new WorkstationsToolResult(true, list);
-        }
-        catch (Exception ex) when (ex is GuanfuException or InvalidOperationException or NotFoundException)
-        {
-            return WorkstationsToolResult.Fail(ex.Message);
-        }
-    }
-
-    [McpServerTool(Name = "guanfu_release_workstation")]
-    [Description(
-        "放掉一个活登记的工位：把这个活占的工位还回去，并给出**清理目录的确切命令**。" +
-        "活干完了、工位不打算再用的时候调它 —— 否则 worktree 会一直躺在磁盘上，" +
-        "下一个 agent 不知道那个目录还在，人也不知道哪些能删。" +
-        "观复只清登记、不删目录（那是 agent 自己仓库里的事）；" +
-        "真正删不删，命令给你了，你自己决定。")]
-    public async Task<StationReleaseToolResult> ReleaseWorkstationAsync(
-        Guid taskId,
-        CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            if (stations is null)
-            {
-                return StationReleaseToolResult.Fail("工位服务没注册。");
-            }
-
-            var result = await stations.ReleaseAsync(taskId, cancellationToken);
-
-            return result.Ok
-                ? new StationReleaseToolResult(true, result.WorkPath, result.CleanupCommand)
-                : StationReleaseToolResult.Fail(result.Error ?? "放掉工位失败。");
-        }
-        catch (Exception ex) when (ex is GuanfuException or InvalidOperationException or NotFoundException)
-        {
-            return StationReleaseToolResult.Fail(ex.Message);
-        }
-    }
-
+    
+    
     [McpServerTool(Name = "guanfu_get_my_work")]
     [Description(
         "取「我现在该干什么」：跟你有关的部分一次给全 —— " +
@@ -476,51 +408,18 @@ public sealed class GuanfuMcpTools(
         }
     }
 
-    [McpServerTool(Name = "guanfu_get_workstation")]
-    [Description(
-        "问「我该在哪个目录干活」：主工作区被谁占着、这次调用该用哪个目录、" +
-        "主工作区被别人占时建议建哪个独立工位（worktree）以及**建它的确切命令**。" +
-        "观复不替 agent 建 worktree —— 它是你自己仓库里的事，" +
-        "这里给的是路径与命令，建好之后用 guanfu_claim_task 的 worktree 参数把工位报上来。")]
-    public async Task<WorkstationToolResult> GetWorkstationAsync(
-        Guid? taskId = null,
-        string? agentId = null,
-        string? taskKey = null,
-        CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            var scope = scopeResolver is null
-                ? null
-                : await scopeResolver.ResolveOrNullAsync(null, cancellationToken);
-
-            var resolvedId = await ResolveTaskIdAsync(taskId, taskKey, cancellationToken);
-            var resolvedAgentId = agentId ?? scope?.AgentId;
-
-            var station = await tasks.GetStationAsync(resolvedId, resolvedAgentId, cancellationToken);
-
-            return new WorkstationToolResult(true, station);
-        }
-        catch (Exception ex) when (ex is GuanfuException or InvalidOperationException or NotFoundException)
-        {
-            return WorkstationToolResult.Fail(ex.Message);
-        }
-    }
-
+    
     [McpServerTool(Name = "guanfu_claim_task")]
     [Description(
         "领取一个待认领任务，带租约。taskId 不给就用 taskKey（如 REQ-001）——在会话绑定的项目里找；" +
         "agentId 不给就用当前会话的 agent。已被他人持有且租约未过期时返回 ok=false 而不是报错。" +
         "认领成功后任务自动挂到本次会话上，之后的调用都归属到这个任务。" +
-        "worktree：你在哪个工作目录干活。**不传就是用项目的主工作区（仓库根）——" +
-        "主工作区同一时刻只允许一个 agent 占着**（两个人共用一个目录会互相踩文件）。" +
-        "要跟别人并行，就先 `git worktree add <目录>`，再把那个目录填进来。")]
+        "观复不替你管工位 —— 你在哪个目录干活是你自己的事。")]
     public async Task<ClaimResult> ClaimTaskAsync(
         Guid? taskId = null,
         string? agentId = null,
         int leaseMinutes = 30,
         string? taskKey = null,
-        string? worktree = null,
         string? note = null,
         CancellationToken cancellationToken = default)
     {
@@ -540,7 +439,7 @@ public sealed class GuanfuMcpTools(
             }
 
             var outcome = await tasks.ClaimAsync(
-                resolvedId, resolvedAgentId, leaseMinutes, cancellationToken, worktree, note);
+                resolvedId, resolvedAgentId, leaseMinutes, cancellationToken, note);
 
             // 认领成功 → 任务挂到本次会话上。之后这个会话的所有调用都自动归属这个任务，
             // 审计与事件账本不用 agent 自己填 taskId。
@@ -1105,24 +1004,7 @@ public sealed record ClaimResult(
     /// <summary>为什么交出来（上一位说的，或上一位接活时留的上下文）。</summary>
     string? HandoffReason = null);
 
-/// <summary>工位清单。失败时 error 给出原因，不抛异常。</summary>
-public sealed record WorkstationsToolResult(
-    bool Ok,
-    IReadOnlyList<WorkstationEntryDto>? Workstations = null,
-    string? Error = null)
-{
-    public static WorkstationsToolResult Fail(string error) => new(false, null, error);
-}
 
-/// <summary>放掉工位的结果。</summary>
-public sealed record StationReleaseToolResult(
-    bool Ok,
-    string? WorkPath = null,
-    string? CleanupCommand = null,
-    string? Error = null)
-{
-    public static StationReleaseToolResult Fail(string error) => new(false, null, null, error);
-}
 
 /// <summary>agent 的工作包。失败时 error 给出原因，不抛异常。</summary>
 public sealed record MyWorkToolResult(
@@ -1142,14 +1024,6 @@ public sealed record HandoffToolResult(
     public static HandoffToolResult Fail(string error) => new(false, null, error);
 }
 
-/// <summary>工位现状。失败时 error 给出原因，不抛异常。</summary>
-public sealed record WorkstationToolResult(
-    bool Ok,
-    WorkStationDto? Station = null,
-    string? Error = null)
-{
-    public static WorkstationToolResult Fail(string error) => new(false, null, error);
-}
 
 /// <summary>
 /// 按编号查任务的结果。找不到时不抛异常 —— MCP 会把异常吞成一句泛化信息，

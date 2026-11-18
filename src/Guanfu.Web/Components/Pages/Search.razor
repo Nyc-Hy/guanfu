@@ -3,7 +3,6 @@
 @inject ITaskService Tasks
 @inject IProjectService Projects
 @inject IDocumentService Documents
-@inject IFileChangeService FileChanges
 @inject IDbCallService DbCalls
 
 <PageTitle>全局搜索 · 观复</PageTitle>
@@ -12,7 +11,7 @@
     <div>
         <h1>全局搜索</h1>
         <p class="wb-muted">
-            搜任务（编号 + 标题）、项目、文档、产出文件与 SQL 执行记录。
+            搜任务（编号 + 标题）、项目、文档与 SQL 执行记录。
             编号不认写法差异：<code>req001</code> 和 <code>REQ-001</code> 是同一个。
         </p>
     </div>
@@ -39,7 +38,7 @@ else if (!Searched)
 {
     <div class="wb-note">输入关键词开始搜索。任务按编号精确匹配（归一化）与标题包含匹配；文件和 SQL 按内容包含匹配。</div>
 }
-else if (TaskHits.Count == 0 && ProjectHits.Count == 0 && DocHits.Count == 0 && FileHits.Count == 0 && DbHits.Count == 0)
+else if (TaskHits.Count == 0 && ProjectHits.Count == 0 && DocHits.Count == 0 && DbHits.Count == 0)
 {
     <div class="wb-empty">没有找到匹配「@LastQuery」的结果。</div>
 }
@@ -134,30 +133,6 @@ else
             </div>
         </section>
     }
-    else if (ActiveGroup == "files")
-    {
-        <section class="wb-panel">
-            <div class="wb-table-scroll wb-table-wide">
-                <table class="wb-table wb-task-table">
-                    <thead>
-                    <tr><th>文件</th><th>改动</th><th>任务</th><th>项目</th><th>增 / 删</th></tr>
-                    </thead>
-                    <tbody>
-                    @foreach (var hit in FileHits)
-                    {
-                        <tr>
-                            <td><a href="/tasks/@hit.TaskId"><code>@hit.Path</code></a></td>
-                            <td class="wb-muted">@UiText.ChangeKind(hit.ChangeKind)</td>
-                            <td class="wb-muted">@UiText.TaskRef(hit.TaskKey, hit.TaskTitle)</td>
-                            <td class="wb-muted">@hit.ProjectName</td>
-                            <td class="wb-muted">+@hit.LinesAdded / -@hit.LinesDeleted</td>
-                        </tr>
-                    }
-                    </tbody>
-                </table>
-            </div>
-        </section>
-    }
     else if (ActiveGroup == "db")
     {
         <section class="wb-panel">
@@ -207,7 +182,7 @@ else
 
     <p class="wb-hint">
         结果上限：任务 @TaskLimit 条、项目 @ProjectLimit 条、文档 @DocLimit 条、
-        产出文件 @FileLimit 条、SQL 执行记录 @DbCallLimit 条。
+        SQL 执行记录 @DbCallLimit 条。
         文档最多扫描 @DocScanTaskLimit 个任务下的文件，内容匹配最多解析 @DocContentScanLimit 个文档。
         @if (SkippedDocs > 0)
         {
@@ -251,14 +226,12 @@ else
         new("tasks", "任务", TaskHits.Count),
         new("projects", "项目", ProjectHits.Count),
         new("docs", "文档", DocHits.Count),
-        new("files", "产出文件", FileHits.Count),
         new("db", "SQL 执行记录", DbHits.Count)
     }.Where(g => g.Count > 0).ToList();
 
     private IReadOnlyList<TaskSummaryDto> TaskHits { get; set; } = [];
     private IReadOnlyList<ProjectSummaryDto> ProjectHits { get; set; } = [];
     private IReadOnlyList<DocHit> DocHits { get; set; } = [];
-    private IReadOnlyList<FileChangeHitDto> FileHits { get; set; } = [];
     private IReadOnlyList<DbCallHitDto> DbHits { get; set; } = [];
     private List<PageError> GroupErrors { get; set; } = [];
 
@@ -294,7 +267,6 @@ else
         TaskHits = [];
         ProjectHits = [];
         DocHits = [];
-        FileHits = [];
         DbHits = [];
         GroupErrors = [];
         SkippedDocs = 0;
@@ -306,7 +278,6 @@ else
             await SearchProjectsAsync(query);
             await SearchTasksAsync(query);
             await SearchDocumentsAsync(query);
-            await SearchFilesAsync(query);
             await SearchDbCallsAsync(query);
             Searched = true;
             ActiveGroup = ResultGroups.FirstOrDefault()?.Key ?? "tasks";
@@ -317,21 +288,6 @@ else
         }
     }
 
-    /// <summary>
-    /// 搜产出文件。观复自己从 git 数出来的改动 ——
-    /// 「哪个任务动过这个文件」是复盘时最常问的问题之一。
-    /// </summary>
-    private async Task SearchFilesAsync(string query)
-    {
-        try
-        {
-            FileHits = await FileChanges.SearchAsync(query, FileLimit);
-        }
-        catch (Exception ex)
-        {
-            GroupErrors.Add(PageError.From(ex, "搜索产出文件"));
-        }
-    }
 
     /// <summary>
     /// 搜数据库调用。SQL 原文、库名、目标表任一命中都算数 ——

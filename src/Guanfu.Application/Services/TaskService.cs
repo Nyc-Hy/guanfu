@@ -14,7 +14,6 @@ public interface ITaskService
         Guid? parentTaskId = null,
         Guid? milestoneId = null,
         TaskType type = TaskType.Requirement,
-        string? branch = null,
         string? key = null,
         CancellationToken cancellationToken = default);
 
@@ -33,7 +32,6 @@ public interface ITaskService
         string? key = null,
         TaskType? type = null,
         CancellationToken cancellationToken = default,
-        string? branch = null,
         int? limit = null,
         int? offset = null,
         bool includeArchived = false);
@@ -52,8 +50,6 @@ public interface ITaskService
     /// <summary>改任务类型（需求/缺陷/优化）。编号保持不变 —— 编号已经被引用了，不能说变就变。</summary>
     Task<TaskSummaryDto> SetTypeAsync(Guid id, TaskType type, CancellationToken cancellationToken = default);
 
-    /// <summary>绑定 / 解绑开发分支。传 null 或空串表示解绑。</summary>
-    Task<TaskSummaryDto> BindBranchAsync(Guid id, string? branch, CancellationToken cancellationToken = default);
 
     Task<TaskSummaryDto> ChangeStatusAsync(
         Guid id,
@@ -70,17 +66,12 @@ public interface ITaskService
 
     /// <summary>
     /// 领任务。agent 自己领，带租约。
-    ///
-    /// <paramref name="workPath"/>：agent 干活的工作目录（自己的 git worktree）。
-    /// 不给 = 用项目的主工作区 —— 主工作区同一时刻只允许一个 agent 占着，
-    /// 要并行就先开 worktree 并把路径报上来。
     /// </summary>
     Task<ClaimOutcomeDto> ClaimAsync(
         Guid id,
         string agentId,
         int leaseMinutes = 30,
         CancellationToken cancellationToken = default,
-        string? workPath = null,
         /// <summary>
         /// 领活时留的上下文（为什么接这个活 / 上一位留下的坑）——
         /// 下一个接手的人看得见。
@@ -167,17 +158,6 @@ public interface ITaskService
         string? agentId = null);
 
     /// <summary>
-    /// 工位现状 + 该去哪儿干活的建议。
-    ///
-    /// agent 领活之前要问的那个问题：「这个目录有人在用吗？我该去哪儿？」
-    /// 主工作区被别人占着时，这里直接给出该建的独立工位路径与建它的命令。
-    /// </summary>
-    Task<WorkStationDto> GetStationAsync(
-        Guid id,
-        string? agentId = null,
-        CancellationToken cancellationToken = default);
-
-    /// <summary>
     /// 设置分派信息：负责人、优先级、截止日、权重。
     /// 传 null 的字段表示不动（不是清空 —— 清空要走显式的 null 值）。
     /// </summary>
@@ -230,11 +210,7 @@ public sealed class TaskService(
     IClock clock,
     IGitInspector git,
     IReviewGate? reviewGate = null,
-    IBranchGuard? branchGuard = null,
-    IFileChangeService? fileChanges = null,
-    IWorkstationResolver? workstations = null,
     IProjectSpecService? specService = null,
-    IWorkstationService? stationService = null,
     ICurrentMemberScope? currentMember = null) : ITaskService
 {
     public const int StaleAfterHours = 72;
@@ -254,7 +230,6 @@ public sealed class TaskService(
         Guid? parentTaskId = null,
         Guid? milestoneId = null,
         TaskType type = TaskType.Requirement,
-        string? branch = null,
         string? key = null,
         CancellationToken cancellationToken = default)
     {
@@ -314,7 +289,6 @@ public sealed class TaskService(
                 ParentTaskId = parentTaskId,
                 MilestoneId = milestoneId,
                 Type = type,
-                Branch = string.IsNullOrWhiteSpace(branch) ? null : branch.Trim(),
                 Key = resolvedKey,
                 Title = title.Trim(),
                 Description = description,
@@ -372,7 +346,6 @@ public sealed class TaskService(
         string? key = null,
         TaskType? type = null,
         CancellationToken cancellationToken = default,
-        string? branch = null,
         int? limit = null,
         int? offset = null,
         bool includeArchived = false)
@@ -407,12 +380,6 @@ public sealed class TaskService(
         if (type is not null)
         {
             query = query.Where(t => t.Type == type.Value);
-        }
-
-        if (!string.IsNullOrWhiteSpace(branch))
-        {
-            var b = branch.Trim();
-            query = query.Where(t => t.Branch != null && t.Branch == b);
         }
 
         if (!string.IsNullOrWhiteSpace(keyword))
@@ -509,6 +476,7 @@ public sealed class TaskService(
         CancellationToken cancellationToken) =>
         PendingDependencyCounts.CountAsync(db, taskIds, cancellationToken);
 
+
     /// <summary>
     /// 「返回任务摘要」的统一出口：带上项目名与真实的前置欠账。
     /// 别在各处各写一遍 —— 漏掉 pending 就等于告诉 agent「没人挡着你」。
@@ -541,6 +509,10 @@ public sealed class TaskService(
         return ToSummary(task, project, pending.GetValueOrDefault(id));
     }
 
+    /// <summary>
+    /// 「返回任务摘要」的统一出口：带上项目名与真实的前置欠账。
+    /// 别在各处各写一遍 —— 漏掉 pending 就等于告诉 agent「没人挡着你」。
+    /// </summary>
     public async Task<TaskSummaryDto> SetTypeAsync(
         Guid id,
         TaskType type,
@@ -580,45 +552,6 @@ public sealed class TaskService(
         return await SummaryWithPendingAsync(task, cancellationToken);
     }
 
-    public async Task<TaskSummaryDto> BindBranchAsync(
-        Guid id,
-        string? branch,
-        CancellationToken cancellationToken = default)
-    {
-        var task = await db.Tasks.FirstOrDefaultAsync(t => t.Id == id, cancellationToken)
-                   ?? throw new NotFoundException("任务", id);
-
-        var value = string.IsNullOrWhiteSpace(branch) ? null : branch.Trim();
-
-        if (!string.Equals(task.Branch, value, StringComparison.Ordinal))
-        {
-            var before = task.Branch;
-            task.Branch = value;
-            task.UpdatedAt = clock.UtcNow;
-            task.LastActivityAt = clock.UtcNow;
-
-            db.StatusEvents.Add(new StatusEvent
-            {
-                TaskId = task.Id,
-                // 这不是状态迁移 —— from/to 留空
-                FromStatus = null,
-                ToStatus = null,
-                Source = TaskEventSource.Human,
-                Note = before is null
-                    ? $"绑定分支: {value}"
-                    : value is null
-                        ? $"解绑分支: {before}"
-                        : $"绑定分支: {before} → {value}",
-                EventType = TaskEventTypes.BranchBound,
-                Payload = GuanfuJson.Serialize(new { from = before, to = value }),
-                CreatedAt = clock.UtcNow
-            });
-
-            await db.SaveChangesAsync(cancellationToken);
-        }
-
-        return await SummaryWithPendingAsync(task, cancellationToken);
-    }
 
     public async Task<TaskSummaryDto> ChangeStatusAsync(
         Guid id,
@@ -636,11 +569,6 @@ public sealed class TaskService(
         TaskStatusMachine.EnsureTransition(from, to);
 
         // 分支守卫：绑了分支的任务，只有仓库当前就在那个分支上才允许开跑
-        if (to == TaskStatus.InDev && branchGuard is not null)
-        {
-            await EnsureBranchAsync(id, cancellationToken);
-        }
-
         // 依赖守卫：前置任务没做完就不许开写代码
         if (to == TaskStatus.InDev)
         {
@@ -741,190 +669,10 @@ public sealed class TaskService(
 
         await db.SaveChangesAsync(cancellationToken);
 
-        // 活干完了 —— 那个工位可以收了。
-        // worktree 建了没人收是常态：活结项了，目录还躺在那儿。
-        // 这里留一笔（账上看得见），工位清单上也会标出来。
-        if (terminal && !string.IsNullOrWhiteSpace(task.WorkPath))
-        {
-            db.StatusEvents.Add(new StatusEvent
-            {
-                TaskId = id,
-                FromStatus = from,
-                ToStatus = to,
-                Source = source,
-                Actor = actor,
-                Note = $"活干完了，工位可以收了：{task.WorkPath}",
-                EventType = TaskEventTypes.StationReadyToClean,
-                Payload = GuanfuJson.Serialize(new { workPath = task.WorkPath }),
-                CreatedAt = now
-            });
-
-            await db.SaveChangesAsync(cancellationToken);
-        }
-
-        // 进 Review：把「已产出但还没提交」的那部分采下来。
-        //
-        // 这一步放在**服务层**而不是某个入口里 —— 以前只有 MCP 那条路会采，
-        // 人从界面上把任务推到 Review（以及 CI 走 REST）就漏了，
-        // 而「还没提交就进评审」恰恰是最该看见的那部分产出。
-        if (to == TaskStatus.Review)
-        {
-            await CaptureWorkingTreeAsync(id, sessionId, actor, cancellationToken);
-        }
-
         return await SummaryWithPendingAsync(task, cancellationToken);
     }
 
-    /// <summary>
-    /// 快照工作区里改了但还没提交的文件，落到任务名下。
-    ///
-    /// 采集失败（项目没配仓库 / 读不到 git）**不抛异常** ——
-    /// 状态已经推进成功了，不能因为「顺手记个流水」失败就把这次迁移带崩。
-    /// </summary>
-    private async Task CaptureWorkingTreeAsync(
-        Guid taskId,
-        Guid? sessionId,
-        string? actor,
-        CancellationToken cancellationToken)
-    {
-        if (fileChanges is null)
-        {
-            return;
-        }
 
-        try
-        {
-            var task = await db.Tasks.AsNoTracking()
-                .FirstOrDefaultAsync(t => t.Id == taskId, cancellationToken);
-
-            if (task is null)
-            {
-                return;
-            }
-
-            var project = await db.Projects.AsNoTracking()
-                .FirstOrDefaultAsync(p => p.Id == task.ProjectId, cancellationToken);
-
-            // 项目没配仓库 —— 没有「产出文件」这回事
-            if (project is null || string.IsNullOrWhiteSpace(project.RepoPath))
-            {
-                return;
-            }
-
-            // 采集的目录 = 这个任务的**工位**。
-            // agent 在自己的 worktree 里干活，产出就记那个 worktree 的 ——
-            // 记主工作区的话，账上记的是别人的改动。
-            var workDir = workstations is null
-                ? project.RepoPath!
-                : await workstations.ResolveAsync(task.ProjectId, taskId, null, cancellationToken)
-                  ?? project.RepoPath!;
-
-            await fileChanges.CaptureWorkingTreeAsync(
-                taskId, task.ProjectId, workDir, sessionId, actor, cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            // 采集是「锦上添花」，失败就算了 —— 状态已经推进。
-            //
-            // 这里连取消也不往上抛：状态迁移已经成功了，再抛异常的话调用方会以为
-            // 迁移失败而重试 —— 那是真的把事情搞坏。
-            //
-            // 但**不能静默**：采不到产出 = 账上少了一段，而人看不出少了什么。
-            // 留一笔事件（不是抛错），谁都能看见「这次没采到」。
-            await RecordCaptureFailureAsync(taskId, sessionId, actor, ex, cancellationToken);
-        }
-    }
-
-    /// <summary>
-    /// 采集失败留一笔痕。
-    ///
-    /// 静默的失败最坏：人以为产出记上了，其实没有。
-    /// 这条事件不进审计链（那是工具调用的账），它进任务流水 —— 一眼能看见。
-    /// </summary>
-    private async Task RecordCaptureFailureAsync(
-        Guid taskId,
-        Guid? sessionId,
-        string? actor,
-        Exception error,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            db.StatusEvents.Add(new StatusEvent
-            {
-                TaskId = taskId,
-                FromStatus = null,
-                ToStatus = null,
-                Source = TaskEventSource.System,
-                Actor = actor,
-                Note = "没能采到工作区的改动（产出可能不完整）",
-                EventType = TaskEventTypes.ArtifactCaptureFailed,
-                Payload = GuanfuJson.Serialize(new
-                {
-                    reason = error.Message,
-                    sessionId
-                }),
-                CreatedAt = clock.UtcNow
-            });
-
-            await db.SaveChangesAsync(cancellationToken);
-        }
-        catch (Exception)
-        {
-            // 连留痕都失败就算了 —— 不能因为「记一笔失败」把主流程带崩
-        }
-    }
-
-    /// <summary>
-    /// 工位：agent 干活的工作目录。
-    ///
-    /// <see cref="Path"/> 为空 = 项目没绑仓库，没有文件系统面，工位这件事不存在。
-    /// <see cref="IsMain"/> = 用的是项目主工作区（仓库根），它同一时刻只允许一个 agent 占。
-    /// </summary>
-    private sealed record Station(string? Path, bool IsMain);
-
-    /// <summary>
-    /// 算出这次的工位。
-    ///
-    /// 不给 worktree = 用主工作区；给了就必须是**这个仓库的** worktree ——
-    /// 校验靠读 `.git` 文件（worktree 的 .git 是文件，主 checkout 的是目录）。
-    /// </summary>
-    private static Station ResolveStation(Project? project, string? workPath)
-    {
-        // 项目没绑仓库 —— 没有文件系统面，也就没有工位可言
-        if (project is null || string.IsNullOrWhiteSpace(project.RepoPath))
-        {
-            if (!string.IsNullOrWhiteSpace(workPath))
-            {
-                throw new GuanfuException("项目没有绑定仓库路径，没有工位可登记。");
-            }
-
-            return new Station(null, false);
-        }
-
-        var root = Path.GetFullPath(project.RepoPath);
-
-        if (string.IsNullOrWhiteSpace(workPath))
-        {
-            return new Station(root, true);
-        }
-
-        var check = WorkPathPolicy.ValidateWorktree(project.RepoRoot ?? root, workPath);
-        if (!check.Ok)
-        {
-            throw new GuanfuException(check.Error!);
-        }
-
-        return new Station(check.ResolvedPath, false);
-    }
-
-    /// <summary>
-    /// 并行上限检查。
-    ///
-    /// 上限是**节流阀**不是安全闸门：它拦的是「并发过头」，
-    /// 所以这里读一下当前活跃数就够了，不必跟认领放在同一条 UPDATE 里。
-    /// （工位独占才是必须原子的那个 —— 那是会踩文件的事。）
-    /// </summary>
     /// <summary>
     /// 并行上限：项目级的（这个项目里别挤）+ 工作区级的（整个工作区别挤）。
     ///
@@ -1005,59 +753,12 @@ public sealed class TaskService(
     /// <summary>
     /// 谁占着这个工位 —— 给出能照着做的错误信息（照着改就能继续）。
     /// </summary>
-    private async Task<string?> FindStationConflictAsync(
-        Guid projectId,
-        Station station,
-        string agentId,
-        CancellationToken cancellationToken)
-    {
-        if (station.Path is null)
-        {
-            return null;
-        }
-
-        var now = clock.UtcNow;
-        var lower = station.Path.ToLowerInvariant();
-
-        var other = await db.Tasks.AsNoTracking()
-            .Where(t => t.ProjectId == projectId &&
-                        t.ClaimedByAgentId != null &&
-                        t.ClaimedByAgentId != agentId &&
-                        t.LeaseExpiresAt != null &&
-                        t.LeaseExpiresAt > now &&
-                        ((t.WorkPath != null && t.WorkPath.ToLower() == lower) ||
-                         (t.WorkPath == null && station.IsMain)))
-            .OrderByDescending(t => t.LeaseExpiresAt)
-            .Select(t => new { t.Id, t.Key, t.ClaimedByAgentId, t.WorkPath })
-            .FirstOrDefaultAsync(cancellationToken);
-
-        if (other is null)
-        {
-            return null;
-        }
-
-        var where = other.WorkPath is null ? "项目主工作区" : other.WorkPath;
-        var taskRef = other.Key ?? other.Id.ToString();
-
-        return $"工作区「{where}」正被 {other.ClaimedByAgentId} 占着（任务 {taskRef}）。" +
-               "两个 agent 共用一个工作区会互相踩文件 —— " +
-               "请先 `git worktree add <目录>` 开一个自己的工位，领任务时带上 worktree 参数。";
-    }
-
     public async Task<ClaimOutcomeDto> ClaimAsync(
         Guid id,
         string agentId,
         int leaseMinutes = 30,
         CancellationToken cancellationToken = default,
         /// <summary>
-        /// agent 干活的工作目录（自己的 git worktree）。
-        ///
-        /// 不给 = 用项目的主工作区（仓库根）—— 主工作区同一时刻只允许一个 agent 占着。
-        /// 要并行就先 `git worktree add` 再把路径报上来。
-        ///
-        /// 参数放在 CancellationToken 之后，不破坏既有位置参数调用。
-        /// </summary>
-        string? workPath = null,
         string? note = null)
     {
         if (string.IsNullOrWhiteSpace(agentId))
@@ -1072,20 +773,8 @@ public sealed class TaskService(
         // 不拦的话 agent 会拿着没做完的前置开跑，出来的东西自然是错的。
         await EnsureDependenciesSatisfiedAsync(id, cancellationToken);
 
-        // ---- 工位（工作区）----
-        // 工位要**先**算出来：分支守卫得看工位里的分支 ——
-        // agent 在自己的 worktree 上干活，当前分支是 worktree 的分支，
-        // 拿主工作区的分支去比会把对的分支判成不对。
         var project = await db.Projects.AsNoTracking()
             .FirstOrDefaultAsync(p => p.Id == task.ProjectId, cancellationToken);
-
-        var station = ResolveStation(project, workPath);
-
-        // 领取 = agent 准备开跑，绑定分支的任务必须在对的分支上才能领
-        if (branchGuard is not null)
-        {
-            await EnsureBranchAsync(id, cancellationToken, station.Path ?? project?.RepoPath);
-        }
 
         var now = clock.UtcNow;
         var leaseAlive = task.ClaimedByAgentId is not null &&
@@ -1103,51 +792,23 @@ public sealed class TaskService(
 
         var expiresAt = now.AddMinutes(Math.Clamp(leaseMinutes, 1, 24 * 60));
 
-        // 工位比较用的两个局部量：路径（小写，SQLite 的 = 分大小写）与「是不是主工作区」。
-        var stationLower = station.Path?.ToLowerInvariant();
-        var stationIsMain = station.IsMain;
-
         // 原子认领：条件更新抢租约。
         // 「先读后写」挡不住并发 —— 两个 agent 会同时读到租约已空，
         // 然后各写各的，后写的把先写的覆盖掉，先到的 agent 还以为自己还在跑。
-        //
-        // **工位独占也放进同一条 UPDATE** —— 占用判断与认领必须是一步：
-        // 分两步的话，两个 agent 会同时看到「主工作区没人占」，
-        // 然后一起领走两个任务，在同一个目录里互相踩文件。
         var affected = await db.Tasks
             .Where(t => t.Id == id &&
                         (t.ClaimedByAgentId == null ||
                          t.LeaseExpiresAt == null ||
                          t.LeaseExpiresAt <= now ||
-                         t.ClaimedByAgentId == agentId) &&
-                        !db.Tasks.Any(other => other.Id != id &&
-                                               other.ProjectId == task.ProjectId &&
-                                               other.ClaimedByAgentId != null &&
-                                               other.ClaimedByAgentId != agentId &&
-                                               other.LeaseExpiresAt != null &&
-                                               other.LeaseExpiresAt > now &&
-                                               station.Path != null &&
-                                               ((other.WorkPath != null &&
-                                                 other.WorkPath.ToLower() == stationLower) ||
-                                                (other.WorkPath == null && stationIsMain))))
+                         t.ClaimedByAgentId == agentId))
             .ExecuteUpdateAsync(s => s
                 .SetProperty(t => t.ClaimedByAgentId, agentId)
                 .SetProperty(t => t.LeaseExpiresAt, expiresAt)
-                .SetProperty(t => t.WorkPath, station.Path)
                 .SetProperty(t => t.UpdatedAt, now)
                 .SetProperty(t => t.LastActivityAt, now), cancellationToken);
 
         if (affected == 0)
         {
-            // 先看是不是工位被占了 —— 给个能照着做的错误信息
-            var conflict = await FindStationConflictAsync(
-                task.ProjectId, station, agentId, cancellationToken);
-
-            if (conflict is not null)
-            {
-                throw new GuanfuException(conflict);
-            }
-
             throw new GuanfuException("任务刚被别的 agent 认领了，请重新领取。");
         }
 
@@ -1156,7 +817,6 @@ public sealed class TaskService(
         // 刚抢到的租约当场丢失。
         task.ClaimedByAgentId = agentId;
         task.LeaseExpiresAt = expiresAt;
-        task.WorkPath = station.Path;
         task.UpdatedAt = now;
         task.LastActivityAt = now;
 
@@ -1927,13 +1587,7 @@ public sealed class TaskService(
             .Take(Math.Clamp(eventLimit, 1, 200))
             .ToListAsync(cancellationToken);
 
-        // git 状态看**工位**：agent 在自己的 worktree 里干活，
-        // HEAD 与当前分支都是 worktree 的 —— 看主工作区会给出错的那一份。
-        var workDir = workstations is null
-            ? project?.RepoPath
-            : await workstations.ResolveAsync(task.ProjectId, task.Id, null, cancellationToken) ?? project?.RepoPath;
-
-        var gitState = workDir is null ? null : git.Inspect(workDir);
+        var gitState = project?.RepoPath is { } repoPath ? git.Inspect(repoPath) : null;
 
         var projectContext = new ProjectContextDto(
             project?.Id ?? task.ProjectId,
@@ -1944,17 +1598,9 @@ public sealed class TaskService(
             gitState?.Dirty ?? false,
             project?.RepoRemote);
 
-        // 分支就绪与否一并带出去：agent 拿到上下文就知道现在能不能开跑
-        var branchCheck = branchGuard is null
-            ? null
-            : await branchGuard.CheckAsync(id, cancellationToken, workDir);
-
         // 前置欠账也要真算 —— 上下文是 agent 开工前唯一的一次性信息包，
         // 这里给 0 就等于告诉它「没人挡着你」。
         var pending = await PendingDependencyCountsAsync([id], cancellationToken);
-
-        // 工位：领活前要知道「哪儿已经有人了」，不然只能靠踩文件发现。
-        var station = await BuildStationAsync(task, project, cancellationToken, agentId);
 
         // 项目级规约：人定的规矩，agent 开工前要读 ——
         // 「什么算做完」「提交怎么写」「测试怎么跑」都在这儿。
@@ -1971,110 +1617,9 @@ public sealed class TaskService(
             artifacts.Select(ToArtifactDto).ToList(),
             events.Select(ToEventDto).ToList(),
             TaskStatusMachine.AllowedFrom(task.Status).Select(s => s.ToString()).ToList(),
-            gitState?.Branch,
-            branchCheck?.Ok ?? true,
-            station,
             specDto);
     }
 
-    /// <summary>工位现状 + 建议（给 agent 单独问「我该去哪儿」用）。</summary>
-    public async Task<WorkStationDto> GetStationAsync(
-        Guid id,
-        string? agentId = null,
-        CancellationToken cancellationToken = default)
-    {
-        var task = await db.Tasks.AsNoTracking().FirstOrDefaultAsync(t => t.Id == id, cancellationToken)
-                   ?? throw new NotFoundException("任务", id);
-
-        var project = await db.Projects.AsNoTracking()
-            .FirstOrDefaultAsync(p => p.Id == task.ProjectId, cancellationToken);
-
-        return await BuildStationAsync(task, project, cancellationToken, agentId);
-    }
-
-    /// <summary>
-    /// 工位现状：主工作区被谁占着、并行上限、还剩几个位置、**我该去哪儿干活**。
-    ///
-    /// agent 领活之前要看一眼 —— 不然它会以为自己能直接开工，
-    /// 结果跟另一个 agent 在同一个目录里互相踩文件。
-    /// 主工作区被占时，这里直接把该用的独立工位路径与建它的命令给出来：
-    /// **观复不替 agent 建 worktree**（规矩 35），但它得知道该建在哪。
-    /// </summary>
-    private async Task<WorkStationDto> BuildStationAsync(
-        TaskItem task,
-        Project? project,
-        CancellationToken cancellationToken,
-        string? agentId = null)
-    {
-        // 工位现状由工位服务算 —— 上下文包与 agent 的工作包必须一致，
-        // 两边各算一套的话 agent 会看到互相打架的说法。
-        if (stationService is not null)
-        {
-            return await stationService.DescribeAsync(task.ProjectId, task.Id, agentId, cancellationToken);
-        }
-
-        var now = clock.UtcNow;
-
-        var leases = await db.Tasks.AsNoTracking()
-            .Where(t => t.ProjectId == task.ProjectId &&
-                        t.ClaimedByAgentId != null &&
-                        t.LeaseExpiresAt != null &&
-                        t.LeaseExpiresAt > now)
-            .Select(t => new { t.Id, t.Key, t.ClaimedByAgentId, t.WorkPath })
-            .ToListAsync(cancellationToken);
-
-        var mainHolder = leases.FirstOrDefault(l =>
-            l.WorkPath is null ||
-            (project?.RepoPath is not null &&
-             string.Equals(l.WorkPath, project.RepoPath, StringComparison.OrdinalIgnoreCase)));
-
-        var heldByOther = mainHolder is not null &&
-                          !string.Equals(mainHolder.ClaimedByAgentId, agentId, StringComparison.Ordinal);
-
-        var repoRoot = project?.RepoRoot ??
-                       (string.IsNullOrWhiteSpace(project?.RepoPath) ? null : project.RepoPath);
-        var displayRoot = project?.RepoPath;
-
-        var suggestedWorktree = heldByOther
-            ? WorkstationAdvice.SuggestWorktree(displayRoot, task.Key)
-            : null;
-
-        var suggestedBranch = suggestedWorktree is null
-            ? null
-            : WorkstationAdvice.SuggestBranch(task.Key, task.Branch);
-
-        var effective = task.WorkPath;
-        var isolated = false;
-
-        if (!string.IsNullOrWhiteSpace(effective))
-        {
-            var check = WorkPathPolicy.ValidateWorktree(repoRoot ?? effective, effective);
-            isolated = check.Ok && check.IsIsolated;
-
-            if (!check.Ok)
-            {
-                effective = project?.RepoPath;
-            }
-        }
-        else
-        {
-            effective = project?.RepoPath;
-        }
-
-        return new WorkStationDto(
-            displayRoot,
-            mainHolder?.ClaimedByAgentId,
-            mainHolder?.Key,
-            project?.MaxConcurrentAgents ?? 0,
-            leases.Count,
-            task.WorkPath,
-            !heldByOther,
-            effective,
-            isolated,
-            suggestedWorktree,
-            suggestedBranch,
-            WorkstationAdvice.SetupCommands(displayRoot, suggestedWorktree, suggestedBranch));
-    }
 
     /// <summary>
     /// 没有规约服务时的退路：直接读项目级规约。
@@ -2220,22 +1765,6 @@ public sealed class TaskService(
         }
     }
 
-    /// <summary>
-    /// 分支守卫。绑定了分支的任务，只有仓库当前分支与之一致时才放行。
-    /// 错误信息要带上「当前在哪个分支」，agent 才能自己纠正。
-    /// </summary>
-    private async Task EnsureBranchAsync(
-        Guid taskId,
-        CancellationToken cancellationToken,
-        string? repoPath = null)
-    {
-        var check = await branchGuard!.CheckAsync(taskId, cancellationToken, repoPath);
-
-        if (!check.Ok)
-        {
-            throw new BranchMismatchException(check);
-        }
-    }
 
     /// <summary>
     /// 前置任务都做完了吗？没做完就拒。
@@ -2438,15 +1967,13 @@ public sealed class TaskService(
             task.MilestoneId,
             task.Key,
             task.Type,
-            task.Branch,
             task.IsArchived,
             task.Assignee,
             task.AssigneeMemberId,
             task.Priority,
             task.DueAt,
             task.Weight,
-            pendingDependencies,
-            task.WorkPath);
+            pendingDependencies);
     }
 
     internal static StatusEventDto ToEventDto(StatusEvent e) => new(

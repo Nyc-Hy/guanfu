@@ -42,7 +42,7 @@ public sealed class VisibilityTests
 
         // 布置：分派是管理员的动作，用没有身份的口径做（单机模式）。
         var setup = new TaskService(
-            host.Db, host.Clock, host.Git, host.Reviews, host.BranchGuard, null, null, null, null, new FakeScope(null));
+            host.Db, host.Clock, host.Git, host.Reviews, null, new FakeScope(null));
 
         await setup.SetAssignmentAsync(mine.Id, "爱丽丝", assigneeMemberId: alice.Id);
         await setup.SetAssignmentAsync(theirs.Id, "鲍勃", assigneeMemberId: bob.Id);
@@ -51,7 +51,7 @@ public sealed class VisibilityTests
         var scope = new FakeScope(Member(alice.Id));
 
         var tasks = new TaskService(
-            host.Db, host.Clock, host.Git, host.Reviews, host.BranchGuard, null, null, null, null, scope);
+            host.Db, host.Clock, host.Git, host.Reviews, null, scope);
 
         var visible = await tasks.ListAsync(projectId: project.Id);
 
@@ -75,14 +75,14 @@ public sealed class VisibilityTests
         var theirs = await host.Tasks.CreateAsync(project.Id, "别人的活");
 
         var setup = new TaskService(
-            host.Db, host.Clock, host.Git, host.Reviews, host.BranchGuard, null, null, null, null, new FakeScope(null));
+            host.Db, host.Clock, host.Git, host.Reviews, null, new FakeScope(null));
 
         await setup.SetAssignmentAsync(theirs.Id, "鲍勃", assigneeMemberId: bob.Id);
 
         var scope = new FakeScope(Member(boss.Id, MemberRole.Admin));
 
         var tasks = new TaskService(
-            host.Db, host.Clock, host.Git, host.Reviews, host.BranchGuard, null, null, null, null, scope);
+            host.Db, host.Clock, host.Git, host.Reviews, null, scope);
 
         var visible = await tasks.ListAsync(projectId: project.Id);
 
@@ -97,7 +97,7 @@ public sealed class VisibilityTests
         await host.Tasks.CreateAsync(project.Id, "某个活");
 
         var tasks = new TaskService(
-            host.Db, host.Clock, host.Git, host.Reviews, host.BranchGuard, null, null, null, null, new FakeScope(null));
+            host.Db, host.Clock, host.Git, host.Reviews, null, new FakeScope(null));
 
         var visible = await tasks.ListAsync(projectId: project.Id);
 
@@ -119,7 +119,7 @@ public sealed class VisibilityTests
         var scope = new FakeScope(Member(alice.Id));
 
         var tasks = new TaskService(
-            host.Db, host.Clock, host.Git, host.Reviews, host.BranchGuard, null, null, null, null, scope);
+            host.Db, host.Clock, host.Git, host.Reviews, null, scope);
 
         await Assert.ThrowsAsync<GuanfuException>(
             () => tasks.SetAssignmentAsync(task.Id, "鲍勃", assigneeMemberId: bob.Id));
@@ -190,7 +190,7 @@ public sealed class VisibilityTests
         var task = await host.Tasks.CreateAsync(project.Id, "没人要的活");
 
         var tasks = new TaskService(
-            host.Db, host.Clock, host.Git, host.Reviews, host.BranchGuard, null, null, null, null, new FakeScope(null));
+            host.Db, host.Clock, host.Git, host.Reviews, null, new FakeScope(null));
 
         var claimed = await tasks.ClaimForMemberAsync(task.Id, alice.Id);
 

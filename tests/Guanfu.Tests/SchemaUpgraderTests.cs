@@ -30,7 +30,7 @@ public class SchemaUpgraderTests : IDisposable
 
     /// <summary>
     /// 造一个「最初版本」的老库：有 workspaces / projects / tasks / status_events，
-    /// 但没有后来加的列（tasks.Key、tasks.MilestoneId、tasks.Type、tasks.Branch、
+    /// 但没有后来加的列（tasks.Key、tasks.MilestoneId、tasks.Type、
     /// projects 的四个配置列）和后来加的表。
     /// </summary>
     private void CreateLegacyDatabase()
@@ -118,7 +118,7 @@ public class SchemaUpgraderTests : IDisposable
         var columns = await ReadColumnsAsync("tasks");
 
         Assert.Contains("Type", columns);
-        Assert.Contains("Branch", columns);
+        Assert.Contains("Status", columns);
     }
 
     [Fact]
@@ -133,7 +133,7 @@ public class SchemaUpgraderTests : IDisposable
         var columns = await ReadColumnsAsync("tasks");
 
         Assert.Contains("Type", columns);
-        Assert.Contains("Branch", columns);
+        Assert.Contains("AssigneeMemberId", columns);
     }
 
     [Fact]
@@ -181,7 +181,7 @@ public class SchemaUpgraderTests : IDisposable
         Assert.Contains("Key", taskColumns);
         Assert.Contains("MilestoneId", taskColumns);
         Assert.Contains("Type", taskColumns);
-        Assert.Contains("Branch", taskColumns);
+        Assert.Contains("Status", taskColumns);
 
         var projectColumns = await ReadColumnsAsync("projects");
         Assert.Contains("AllowedCommandsJson", projectColumns);
@@ -481,7 +481,7 @@ public class SchemaUpgraderTests : IDisposable
         {
             await conn.OpenAsync();
             await using var cmd = conn.CreateCommand();
-            cmd.CommandText = "CREATE INDEX \"IX_tasks_Branch\" ON \"tasks\" (\"Title\");";
+            cmd.CommandText = "CREATE INDEX \"IX_tasks_AssigneeMemberId\" ON \"tasks\" (\"Title\");";
             await cmd.ExecuteNonQueryAsync();
         }
 
@@ -491,11 +491,11 @@ public class SchemaUpgraderTests : IDisposable
         await using var check = new SqliteConnection($"Data Source={_dbPath}");
         await check.OpenAsync();
         await using var verify = check.CreateCommand();
-        verify.CommandText = "SELECT sql FROM sqlite_master WHERE type='index' AND name='IX_tasks_Branch';";
+        verify.CommandText = "SELECT sql FROM sqlite_master WHERE type='index' AND name='IX_tasks_AssigneeMemberId';";
         var sql = (string?)await verify.ExecuteScalarAsync();
 
         Assert.NotNull(sql);
-        Assert.Contains("Branch", sql);
+        Assert.Contains("AssigneeMemberId", sql);
         Assert.DoesNotContain("Title", sql);
     }
 

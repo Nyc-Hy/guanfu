@@ -65,7 +65,6 @@ public sealed record MyWorkDto(
     /// <summary>我认领了但还没交结论的评审维度。</summary>
     IReadOnlyList<string> PendingReviewDimensions,
     /// <summary>我的工位（在哪干活、主工作区被谁占着）。</summary>
-    WorkStationDto? Station,
     /// <summary>当前任务能去哪（状态机允许的迁移）。</summary>
     IReadOnlyList<string> AllowedTransitions,
     DateTimeOffset GeneratedAt);
@@ -84,8 +83,7 @@ public sealed class MyWorkService(
     IClock clock,
     IDispatchService dispatch,
     IReviewService reviews,
-    IProjectSpecService specs,
-    IWorkstationService stations) : IMyWorkService
+    IProjectSpecService specs) : IMyWorkService
 {
     public async Task<MyWorkDto> GetAsync(
         Guid projectId,
@@ -145,9 +143,6 @@ public sealed class MyWorkService(
             }
         }
 
-        // 我的工位（与上下文包里那份同源 —— 一处算，两处用）
-        var station = await stations.DescribeAsync(projectId, current?.Id, agentId, cancellationToken);
-
         // 当前任务能去哪
         var transitions = current is null
             ? []
@@ -163,7 +158,6 @@ public sealed class MyWorkService(
             spec,
             review,
             pendingDimensions,
-            station,
             transitions,
             now);
     }
@@ -335,13 +329,11 @@ public sealed class MyWorkService(
         task.MilestoneId,
         task.Key,
         task.Type,
-        task.Branch,
         task.IsArchived,
         task.Assignee,
         task.AssigneeMemberId,
         task.Priority,
         task.DueAt,
         task.Weight,
-        0,
-        task.WorkPath);
+        0);
 }

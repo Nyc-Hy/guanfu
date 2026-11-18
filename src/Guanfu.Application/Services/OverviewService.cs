@@ -20,24 +20,7 @@ public sealed record OverviewTaskDto(
     string ProjectName,
     string Status,
     string? AgentId,
-    string? Branch,
-    DateTimeOffset? LastActivityAt,
-    /// <summary>agent 干活的工作目录（自己的 worktree）。为空 = 主工作区。</summary>
-    string? WorkPath = null,
-    /// <summary>true = 用的是项目主工作区（不是自己的 worktree）。</summary>
-    bool IsMainCheckout = false);
-
-/// <summary>总览里的最近产出文件。</summary>
-public sealed record OverviewFileChangeDto(
-    Guid TaskId,
-    string? TaskKey,
-    string ProjectName,
-    string Path,
-    string ChangeKind,
-    int LinesAdded,
-    int LinesDeleted,
-    string? CommitSha,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset? LastActivityAt);
 
 /// <summary>总览里的最近数据库调用。</summary>
 public sealed record OverviewDbCallDto(
@@ -69,7 +52,6 @@ public sealed record OverviewSessionDto(
 public sealed record OverviewDto(
     IReadOnlyList<OverviewApprovalDto> PendingApprovals,
     IReadOnlyList<OverviewTaskDto> ActiveTasks,
-    IReadOnlyList<OverviewFileChangeDto> RecentFiles,
     IReadOnlyList<OverviewDbCallDto> RecentDbCalls,
     IReadOnlyList<OverviewSessionDto> ActiveSessions,
     IReadOnlyList<ProjectSummaryDto> Projects);
@@ -84,23 +66,6 @@ public sealed class OverviewService(IAppDbContext db, IClock clock) : IOverviewS
     /// <summary>会话多久没动静就算「不在活跃」。</summary>
     private static readonly TimeSpan SessionIdleAfter = TimeSpan.FromHours(2);
 
-    /// <summary>
-    /// 这个任务用的是不是项目主工作区。
-    ///
-    /// 登记的工位跟项目仓库根一样 = 主工作区（界面上说「主工作区」，
-    /// 不然人只看到一个目录名，不知道那是共享的那一个）。
-    /// </summary>
-    private static bool IsMainCheckout(TaskItem task, IReadOnlyDictionary<Guid, string?> repoPaths)
-    {
-        if (string.IsNullOrWhiteSpace(task.WorkPath))
-        {
-            return true;
-        }
-
-        return repoPaths.TryGetValue(task.ProjectId, out var repoPath) &&
-               !string.IsNullOrWhiteSpace(repoPath) &&
-               string.Equals(repoPath, task.WorkPath, StringComparison.OrdinalIgnoreCase);
-    }
 
     public async Task<OverviewDto> GetAsync(CancellationToken cancellationToken = default)
     {
@@ -148,37 +113,7 @@ public sealed class OverviewService(IAppDbContext db, IClock clock) : IOverviewS
                 projectNames.TryGetValue(t.ProjectId, out var pname) ? pname : "—",
                 t.Status.ToString(),
                 t.ClaimedByAgentId,
-                t.Branch,
-                t.LastActivityAt,
-                t.WorkPath,
-                IsMainCheckout(t, repoPaths)))
-            .ToList();
-
-        var recentFiles = await db.TaskFileChanges
-            .AsNoTracking()
-            .OrderByDescending(c => c.CreatedAt)
-            .Take(12)
-            .ToListAsync(cancellationToken);
-
-        var taskKeys = await db.Tasks
-            .AsNoTracking()
-            .Where(t => recentFiles.Select(c => c.TaskId).Contains(t.Id))
-            .Select(t => new { t.Id, t.Key })
-            .ToListAsync(cancellationToken);
-
-        var keyByTask = taskKeys.ToDictionary(x => x.Id, x => x.Key);
-
-        var files = recentFiles
-            .Select(c => new OverviewFileChangeDto(
-                c.TaskId,
-                keyByTask.TryGetValue(c.TaskId, out var key) ? key : null,
-                projectNames.TryGetValue(c.ProjectId, out var pname) ? pname : "—",
-                c.Path,
-                c.ChangeKind,
-                c.LinesAdded,
-                c.LinesDeleted,
-                c.CommitSha,
-                c.CreatedAt))
+                t.LastActivityAt))
             .ToList();
 
         var recentCalls = await db.DbCallRecords
@@ -269,7 +204,6 @@ public sealed class OverviewService(IAppDbContext db, IClock clock) : IOverviewS
         return new OverviewDto(
             approvals,
             tasks,
-            files,
             calls,
             activeSessions,
             projectSummaries);

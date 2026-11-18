@@ -38,7 +38,6 @@ public sealed record TaskSummaryDto(
     Guid? MilestoneId = null,
     string? Key = null,
     TaskType Type = TaskType.Requirement,
-    string? Branch = null,
     bool IsArchived = false,
     /// <summary>负责人（人名或 agent id）。</summary>
     string? Assignee = null,
@@ -51,9 +50,7 @@ public sealed record TaskSummaryDto(
     /// <summary>在项目进度里的权重。</summary>
     double Weight = 1d,
     /// <summary>还没完成的前置任务数。大于 0 表示这任务现在动不了。</summary>
-    int PendingDependencies = 0,
-    /// <summary>agent 干活的工作目录（自己的 git worktree）。为空 = 用项目主工作区。</summary>
-    string? WorkPath = null);
+    int PendingDependencies = 0);
 
 /// <summary>项目配置。跟概览分开：概览是给人看的汇总，配置是给人和 agent 改的字段集合。</summary>
 public sealed record ProjectConfigDto(
@@ -277,15 +274,6 @@ public sealed record TaskContextDto(
     IReadOnlyList<ArtifactDto> Artifacts,
     IReadOnlyList<StatusEventDto> RecentEvents,
     IReadOnlyList<string> AllowedTransitions,
-    /// <summary>仓库当前分支。跟任务绑定的分支不一致时，agent 不该贸然开跑。</summary>
-    string? CurrentBranch = null,
-    /// <summary>当前分支是否满足任务绑定的分支要求。</summary>
-    bool BranchReady = true,
-    /// <summary>
-    /// 工位现状：主工作区被谁占着、并行上限、这个任务登记的工位。
-    /// agent 领活前要看 —— 不然只能靠踩文件发现有人在同目录干活。
-    /// </summary>
-    WorkStationDto? Station = null,
     /// <summary>
     /// 项目级规约（人定的规矩）。agent 开工前要读 ——
     /// 「什么算做完」「提交怎么写」「测试怎么跑」都在这儿。
@@ -309,7 +297,6 @@ public sealed record HandoffPackDto(
     IReadOnlyList<ArtifactDto> Artifacts,
     TestResultDto? LastTestResult,
     ReviewRoundDto? Review,
-    WorkStationDto? Station,
     ProjectSpecDto? Spec,
     IReadOnlyList<StatusEventDto> RecentEvents,
     IReadOnlyList<string> AllowedTransitions,
@@ -341,36 +328,6 @@ public sealed record HandoffInfoDto(
     string? CurrentHolder,
     /// <summary>现在持有者的租约到期时间。</summary>
     DateTimeOffset? LeaseExpiresAt);
-
-/// <summary>工位（工作区）现状。</summary>
-public sealed record WorkStationDto(
-    /// <summary>项目主工作区（仓库根）。为空 = 项目没绑仓库，没有文件系统面。</summary>
-    string? MainCheckout,
-    /// <summary>主工作区现在被谁占着（agentId）。没人占就是 null。</summary>
-    string? MainCheckoutHolder,
-    /// <summary>占着主工作区的那个任务编号。</summary>
-    string? MainCheckoutTaskKey,
-    /// <summary>这个项目的并行上限（0 = 不限）。</summary>
-    int MaxConcurrentAgents = 0,
-    /// <summary>项目里当前活着的租约数。</summary>
-    int ActiveLeases = 0,
-    /// <summary>这个任务登记的工位（null = 主工作区）。</summary>
-    string? WorkPath = null,
-    /// <summary>主工作区现在能不能用（没被**别人**占着就是 true）。</summary>
-    bool MainCheckoutAvailable = true,
-    /// <summary>这次调用该用的目录（登记的工位优先，回退主工作区）。</summary>
-    string? EffectiveWorkPath = null,
-    /// <summary>该用的目录是不是独立 worktree（true = 不跟别人共用）。</summary>
-    bool Isolated = false,
-    /// <summary>建议的独立工位路径（主工作区被占时用它）。</summary>
-    string? SuggestedWorktree = null,
-    /// <summary>建议的分支名。</summary>
-    string? SuggestedBranch = null,
-    /// <summary>
-    /// 建这个工位的确切命令。**观复不替 agent 建 worktree** ——
-    /// 它自己仓库里的事，观复只给路径与命令，外加事后校验。
-    /// </summary>
-    IReadOnlyList<string>? SetupCommands = null);
 
 /// <summary>单个评审维度的结论。</summary>
 public sealed record ReviewItemDto(
@@ -442,7 +399,6 @@ public sealed record ReviewPackDto(
     PlanDto? Plan,
     IReadOnlyList<ArtifactDto> Artifacts,
     IReadOnlyList<DocumentDto> Documents,
-    IReadOnlyList<string> ChangedFiles,
     IReadOnlyList<ReviewDimensionDto> Dimensions,
     /// <summary>项目级规约（人定的规矩）—— 评审时的尺子。</summary>
     ProjectSpecDto? Spec = null,
@@ -547,22 +503,6 @@ public sealed record DbConnectionConfigDto(
     bool TrustServerCertificate = true);
 
 /// <summary>
-/// 任务产出文件 —— 开发过程中实际改了哪些文件。
-/// 观复自己去 git 里数出来的，不是 agent 自报的。
-/// </summary>
-public sealed record TaskFileChangeDto(
-    Guid Id,
-    string Path,
-    string ChangeKind,
-    string? OldPath,
-    int LinesAdded,
-    int LinesDeleted,
-    string? CommitSha,
-    string? Branch,
-    string? Author,
-    DateTimeOffset CreatedAt);
-
-/// <summary>
 /// 一次数据库调用的记录。SQL 原文、目标库、目标表摊成列 —— 查得动，
 /// 不用人肉展开审计里的 JSON。
 /// </summary>
@@ -584,23 +524,6 @@ public sealed record DbCallRecordDto(
     Guid? ApprovalId,
     string? CallerId,
     long DurationMs,
-    DateTimeOffset CreatedAt);
-
-/// <summary>
-/// 搜索命中的产出文件。
-///
-/// 全局搜索要能答「哪个任务动过这个文件」—— 光给路径不够，
-/// 得同时给出任务编号和项目名，否则人还得自己点进去确认。
-/// </summary>
-public sealed record FileChangeHitDto(
-    Guid TaskId,
-    string? TaskKey,
-    string? TaskTitle,
-    string ProjectName,
-    string Path,
-    string ChangeKind,
-    int LinesAdded,
-    int LinesDeleted,
     DateTimeOffset CreatedAt);
 
 /// <summary>搜索命中的数据库调用。</summary>

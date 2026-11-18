@@ -26,7 +26,6 @@ public sealed class GuanfuDbContext(DbContextOptions<GuanfuDbContext> options) :
     public DbSet<TaskDependency> TaskDependencies => Set<TaskDependency>();
     public DbSet<SchemaVersion> SchemaVersions => Set<SchemaVersion>();
     public DbSet<AgentSession> AgentSessions => Set<AgentSession>();
-    public DbSet<TaskFileChange> TaskFileChanges => Set<TaskFileChange>();
     public DbSet<DbCallRecord> DbCallRecords => Set<DbCallRecord>();
     public DbSet<ProjectSpec> ProjectSpecs => Set<ProjectSpec>();
     public DbSet<MilestoneSpec> MilestoneSpecs => Set<MilestoneSpec>();
@@ -146,7 +145,6 @@ public sealed class GuanfuDbContext(DbContextOptions<GuanfuDbContext> options) :
             e.HasIndex(t => t.AssigneeMemberId);
             e.HasIndex(t => t.ParentTaskId);
             e.HasIndex(t => t.MilestoneId);
-            e.HasIndex(t => t.Branch);
             e.HasIndex(t => t.Assignee);
 
             // 编号在项目内唯一。这条索引是编号并发分配的兜底 ——
@@ -247,7 +245,6 @@ public sealed class GuanfuDbContext(DbContextOptions<GuanfuDbContext> options) :
             e.Property(x => x.Content).HasMaxLength(32000);
             e.Property(x => x.ExternalPath).HasMaxLength(1000);
             e.Property(x => x.CommitSha).HasMaxLength(64);
-            e.Property(x => x.Branch).HasMaxLength(200);
             e.Property(x => x.Author).HasMaxLength(200);
             e.Property(x => x.EditedBy).HasMaxLength(200);
 
@@ -600,39 +597,7 @@ public sealed class GuanfuDbContext(DbContextOptions<GuanfuDbContext> options) :
             e.HasIndex(x => x.LastSeenAt);
 
             // 同一个 MCP 协议会话只对应一条 agent 会话。
-            // 协议会话 id 为空的行不参与唯一性判断（SQLite 的唯一索引不约束多个 NULL）。
-            e.HasIndex(x => x.McpSessionId).IsUnique();
-        });
-
-        modelBuilder.Entity<TaskFileChange>(e =>
-        {
-            e.ToTable("task_file_changes");
-            e.HasKey(x => x.Id);
-            e.Property(x => x.Path).HasMaxLength(1000).IsRequired();
-            e.Property(x => x.ChangeKind).HasMaxLength(32);
-            e.Property(x => x.OldPath).HasMaxLength(1000);
-            e.Property(x => x.CommitSha).HasMaxLength(64);
-            e.Property(x => x.Branch).HasMaxLength(200);
-            e.Property(x => x.Author).HasMaxLength(200);
-
-            e.HasOne(x => x.Task)
-                .WithMany(t => t.FileChanges)
-                .HasForeignKey(x => x.TaskId)
-                .OnDelete(DeleteBehavior.Cascade);
-
-            e.HasOne(x => x.Project)
-                .WithMany()
-                .HasForeignKey(x => x.ProjectId)
-                .OnDelete(DeleteBehavior.Cascade);
-
-            e.HasOne(x => x.Session)
-                .WithMany()
-                .HasForeignKey(x => x.SessionId)
-                .OnDelete(DeleteBehavior.SetNull);
-
-            e.HasIndex(x => new { x.TaskId, x.CreatedAt });
-            e.HasIndex(x => x.ProjectId);
-            e.HasIndex(x => x.CommitSha);
+            e.HasIndex(x => x.McpSessionId);
         });
 
         modelBuilder.Entity<DbCallRecord>(e =>
@@ -652,11 +617,6 @@ public sealed class GuanfuDbContext(DbContextOptions<GuanfuDbContext> options) :
                 .WithMany()
                 .HasForeignKey(x => x.ProjectId)
                 .OnDelete(DeleteBehavior.Cascade);
-
-            e.HasOne(x => x.Task)
-                .WithMany()
-                .HasForeignKey(x => x.TaskId)
-                .OnDelete(DeleteBehavior.SetNull);
 
             e.HasOne(x => x.Task)
                 .WithMany()

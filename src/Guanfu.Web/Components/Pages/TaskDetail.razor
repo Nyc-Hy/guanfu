@@ -52,30 +52,11 @@ else
                     <span> · </span>
                     <span class="wb-chip">@Context.Task.Key</span>
                 }
-                @if (!string.IsNullOrWhiteSpace(Context.Task.Branch))
-                {
-                    <span> · </span>
-                    <span class="wb-chip @(Context.BranchReady ? "wb-chip-ok" : "wb-chip-warn")">⎇ @Context.Task.Branch</span>
-                }
                 <span> · </span>
                 <span class="wb-chip @UiText.StatusClass(Context.Task.Status)">@UiText.Status(Context.Task.Status)</span>
                 @if (!string.IsNullOrWhiteSpace(Context.Task.ClaimedBy))
                 {
                     <span> · 持有者 @Context.Task.ClaimedBy</span>
-                }
-                @if (!string.IsNullOrWhiteSpace(Context.Task.WorkPath))
-                {
-                    // 工位一直显示 —— 活干完了租约会清掉，
-                    // 但「这活是在哪个目录干的」是这活的历史，不该跟着消失。
-                    <span> · </span>
-                    @if (IsMainCheckout)
-                    {
-                        <span class="wb-chip" title="@Context.Task.WorkPath">⌂ 主工作区</span>
-                    }
-                    else
-                    {
-                        <span class="wb-chip wb-chip-ok" title="@Context.Task.WorkPath">⌂ @System.IO.Path.GetFileName(Context.Task.WorkPath)</span>
-                    }
                 }
                 @if (!string.IsNullOrWhiteSpace(Context.Project.Branch))
                 {
@@ -143,7 +124,7 @@ else
                 </button>
                 <button class="wb-tab @(ActiveTab == "deliver" ? "wb-tab-active" : "")" role="tab"
                         aria-selected="@(ActiveTab == "deliver")" @onclick='() => GoTab("deliver")'>
-                    产出 <span class="wb-count">@(Context.Artifacts.Count + FileChangeItems.Count)</span>
+                    产出 <span class="wb-count">@Context.Artifacts.Count</span>
                 </button>
                 <button class="wb-tab @(ActiveTab == "handoff" ? "wb-tab-active" : "")" role="tab"
                         aria-selected="@(ActiveTab == "handoff")" @onclick='() => GoTab("handoff")'>
@@ -660,49 +641,6 @@ else
 
             <section class="wb-panel">
                 <div class="wb-card-head">
-                    <h3>代码改动</h3>
-                    <span class="wb-muted">@FileChangeItems.Count 个 · 观复自己从 git 数的</span>
-                </div>
-                @if (FileChangeItems.Count == 0)
-                {
-                    <p class="wb-muted">还没有文件改动记录。提交代码或推进到评审后会自动采集。</p>
-                }
-                else
-                {
-                    <div class="wb-table-scroll">
-                        <table class="wb-table">
-                            <thead>
-                            <tr><th>文件</th><th>类型</th><th>增删</th><th>提交</th><th>时间</th></tr>
-                            </thead>
-                            <tbody>
-                            @foreach (var change in FileChangeItems)
-                            {
-                                <tr>
-                                    <td>
-                                        <code>@change.Path</code>
-                                        @if (!string.IsNullOrWhiteSpace(change.OldPath))
-                                        {
-                                            <div class="wb-muted">原：@change.OldPath</div>
-                                        }
-                                    </td>
-                                    <td><span class="wb-chip">@UiText.ChangeKind(change.ChangeKind)</span></td>
-                                    <td class="wb-muted">+@change.LinesAdded / -@change.LinesDeleted</td>
-                                    <td class="wb-muted">
-                                        @(change.CommitSha is null ? "未提交" : change.CommitSha[..Math.Min(8, change.CommitSha.Length)])
-                                    </td>
-                                    <td class="wb-muted">@change.CreatedAt.ToLocalTime().ToString("MM-dd HH:mm")</td>
-                                </tr>
-                            }
-                            </tbody>
-                        </table>
-                    </div>
-                }
-            </section>
-            }
-            else if (ActiveTab == "handoff")
-            {
-            <section class="wb-panel">
-                <div class="wb-card-head">
                     <h3>交接包</h3>
                     <span class="wb-muted">接手的人一次拿全 · 结构化事实，不编故事</span>
                 </div>
@@ -771,27 +709,6 @@ else
                                     else
                                     {
                                         <span class="wb-muted">没人持有 —— 接手的人可以直接领。</span>
-                                    }
-                                </td>
-                            </tr>
-                            <tr>
-                                <td>工位</td>
-                                <td>
-                                    @if (!string.IsNullOrWhiteSpace(Handoff.Station?.EffectiveWorkPath))
-                                    {
-                                        <code>@Handoff.Station!.EffectiveWorkPath</code>
-                                        @if (Handoff.Station.Isolated)
-                                        {
-                                            <span class="wb-chip wb-chip-ok">独立工位</span>
-                                        }
-                                        else
-                                        {
-                                            <span class="wb-chip wb-chip-warn">主工作区（共享）</span>
-                                        }
-                                    }
-                                    else
-                                    {
-                                        <span class="wb-muted">项目没绑仓库。</span>
                                     }
                                 </td>
                             </tr>
@@ -1082,48 +999,6 @@ else
                     <div class="wb-muted">用量统计还没加载。</div>
                 }
 
-                <h4>工位</h4>
-                @if (Context.Station is { } station)
-                {
-                    @if (station.MainCheckoutAvailable)
-                    {
-                        <div class="wb-muted">主工作区空着，可以直接用。</div>
-                    }
-                    else
-                    {
-                        <div class="wb-muted">
-                            主工作区被 @station.MainCheckoutHolder 占着
-                            @if (!string.IsNullOrWhiteSpace(station.MainCheckoutTaskKey))
-                            {
-                                <text>（@station.MainCheckoutTaskKey）</text>
-                            }
-                            ，要并行就得另开一个。
-                        </div>
-                    }
-
-                    @if (!string.IsNullOrWhiteSpace(station.SuggestedWorktree))
-                    {
-                        <div class="wb-muted">建议的独立工位：</div>
-                        <pre class="wb-pre">@station.SuggestedWorktree</pre>
-                        @if (station.SetupCommands is { Count: > 0 })
-                        {
-                            <pre class="wb-pre">@string.Join("\n", station.SetupCommands)</pre>
-                        }
-                    }
-
-                    @* 活干完了 → 那个工位该拆了。观复不替 agent 删目录，只给命令。 *@
-                    @if (IsFinished && !string.IsNullOrWhiteSpace(Context.Task.WorkPath)
-                        && !string.IsNullOrWhiteSpace(Context.Project.RepoPath))
-                    {
-                        <div class="wb-muted">活干完了，这个工位可以收了：</div>
-                        <pre class="wb-pre">git -C @Context.Project.RepoPath worktree remove @Context.Task.WorkPath</pre>
-                    }
-                }
-                else
-                {
-                    <div class="wb-muted">项目没绑仓库，没有文件系统面。</div>
-                }
-
                 <h4>迭代版本</h4>
                 <div class="wb-field-row">
                     <select class="wb-input" @bind="SelectedMilestoneId" @bind:after="AssignMilestoneAsync">
@@ -1206,7 +1081,7 @@ else
                 </p>
                 <p class="wb-hint">归档不是删除：流水、产物、评审全都留着，只是默认不在列表里出现。</p>
 
-                <h4>类型与分支</h4>
+                <h4>类型</h4>
                 <div class="wb-field-row">
                     <label class="wb-label">类型</label>
                     <select class="wb-input" @bind="SelectedType" @bind:after="ChangeTypeAsync">
@@ -1218,29 +1093,10 @@ else
                 <p class="wb-muted">编号 @Context.Task.Key 由类型决定（需求 REQ- / 缺陷 BUG- / 优化 OPT-），改类型不改编号。</p>
 
                 <div class="wb-field-row">
-                    <label class="wb-label">绑定分支</label>
-                    <div class="wb-field-ctl">
-                        <input class="wb-input" @bind="BranchInput" placeholder="如 feature/login" />
-                        <button class="wb-btn" disabled="@Busy" @onclick="BindBranchAsync">绑定</button>
-                    </div>
                 </div>
                 <p class="wb-muted">
-                    仓库当前分支：<code>@(Context.CurrentBranch ?? "未知")</code>
+                    分支是 agent 自己仓库里的事 —— 观复不绑定、不校验。
                 </p>
-                @if (!string.IsNullOrWhiteSpace(Context.Task.Branch) && !Context.BranchReady)
-                {
-                    <p class="wb-error">
-                        当前不在绑定分支「@Context.Task.Branch」上，这个任务不会运行。
-                    </p>
-                }
-                else if (!string.IsNullOrWhiteSpace(Context.Task.Branch))
-                {
-                    <p class="wb-muted">分支就绪，可以运行。</p>
-                }
-                else
-                {
-                    <p class="wb-muted">没绑分支，不受分支限制。</p>
-                }
             </section>
         </aside>
     </div>
@@ -1290,7 +1146,6 @@ else
     private IReadOnlyList<StatusEventDto> Events { get; set; } = [];
 
     /// <summary>产出文件。观复自己从 git 数的，不是 agent 自报的。</summary>
-    private IReadOnlyList<TaskFileChangeDto> FileChangeItems { get; set; } = [];
 
     /// <summary>干过这个任务的 agent 会话。</summary>
     private IReadOnlyList<AgentSessionDto> SessionItems { get; set; } = [];
@@ -1522,11 +1377,6 @@ else
     private bool IsFinished =>
         Context?.Task.Status is TaskStatus.Done or TaskStatus.Cancelled;
 
-    private bool IsMainCheckout =>
-        string.IsNullOrWhiteSpace(Context?.Task.WorkPath) ||
-        string.IsNullOrWhiteSpace(Context?.Project.RepoPath) ||
-        string.Equals(Context.Project.RepoPath, Context.Task.WorkPath, StringComparison.OrdinalIgnoreCase);
-
     private async Task ReloadAsync(bool syncInputs)
     {
         Loading = true;
@@ -1541,20 +1391,18 @@ else
             var currentReviewTask = InScopeAsync(sp => sp.GetRequiredService<IReviewService>().GetCurrentAsync(TaskId));
             var reviewHistoryTask = InScopeAsync(sp => sp.GetRequiredService<IReviewService>().ListAsync(TaskId));
             var eventsTask = InScopeAsync(sp => sp.GetRequiredService<ITaskService>().ListEventsAsync(TaskId, 100));
-            var fileChangesTask = InScopeAsync(sp => sp.GetRequiredService<IFileChangeService>().ListAsync(TaskId));
             var sessionsTask = InScopeAsync(sp => sp.GetRequiredService<IAgentSessionService>().ListByTaskAsync(TaskId));
             var specItemsTask = InScopeAsync(sp => sp.GetRequiredService<IReviewService>().GetSpecItemsAsync(TaskId));
             var usageTask = InScopeAsync(sp => sp.GetRequiredService<ITaskUsageService>().GetTaskUsageAsync(TaskId));
 
             await Task.WhenAll(
-                milestonesTask, currentReviewTask, reviewHistoryTask, eventsTask, fileChangesTask, sessionsTask,
+                milestonesTask, currentReviewTask, reviewHistoryTask, eventsTask, sessionsTask,
                 specItemsTask, usageTask);
 
             MilestoneItems = milestonesTask.Result;
             CurrentReview = currentReviewTask.Result;
             ReviewHistory = reviewHistoryTask.Result;
             Events = eventsTask.Result;
-            FileChangeItems = fileChangesTask.Result;
             SessionItems = sessionsTask.Result;
             SpecItems = specItemsTask.Result;
             Usage = usageTask.Result;
@@ -1598,7 +1446,6 @@ else
             TaskType.Optimization => "optimization",
             _ => "requirement"
         };
-        BranchInput = Context.Task.Branch ?? string.Empty;
         AssigneeInput = Context.Task.Assignee ?? string.Empty;
         AssigneeMemberValue = Context.Task.AssigneeMemberId?.ToString() ?? string.Empty;
         PriorityInput = Context.Task.Priority.ToString();
@@ -1625,7 +1472,7 @@ else
 
     private string GetSpecNote(string key) => _specNotes.TryGetValue(key, out var note) ? note : string.Empty;
 
-    private void SetSpecNote(string key, string value) => _specNotes[key] = value;
+    private void SetSpecNote(string key, string? value) => _specNotes[key] = value ?? string.Empty;
 
     /// <summary>回写规约某一条的判定。</summary>
     private async Task SubmitSpecVerdictAsync(string item, bool satisfied, bool skipped)
@@ -1798,7 +1645,65 @@ else
 
     // ---- 分派 / 归档 ----
 
-    /// <summary>认领这个活（人也能认领，不只是 agent）。</summary>
+    private async Task ToggleDocumentAsync(Guid id)
+    {
+        if (!_expandedDocuments.Add(id))
+        {
+            _expandedDocuments.Remove(id);
+            return;
+        }
+
+        if (!_documentText.ContainsKey(id))
+        {
+            try
+            {
+                _documentOutline[id] = await Documents.GetOutlineAsync(id);
+                _documentText[id] = await Documents.GetTextAsync(id);
+
+                // 能解析出块就渲染块；解析不出来（脚本、纯代码）就按代码块显示。
+                var parsed = await Documents.ParseAsync(id);
+                _documentBlocks[id] = parsed.Blocks;
+            }
+            catch (Exception ex)
+            {
+                _documentText[id] = "读取失败: " + ex.Message;
+            }
+        }
+
+        StateHasChanged();
+    }
+
+    private async Task ChangeTypeAsync()
+    {
+        if (!TaskTypes.TryParse(SelectedType, out var type))
+        {
+            Error = PageError.Simple($"未知类型: {SelectedType}");
+            return;
+        }
+
+        if (Busy)
+        {
+            return;
+        }
+
+        Busy = true;
+        StateHasChanged();
+
+        try
+        {
+            await Tasks.SetTypeAsync(TaskId, type);
+            Error = null;
+            await RefreshContextAndEventsAsync();
+        }
+        catch (Exception ex)
+        {
+            Error = PageError.From(ex, "修改任务类型");
+        }
+        finally
+        {
+            Busy = false;
+        }
+    }
     private async Task ClaimForMeAsync()
     {
         if (Busy || CurrentMemberId is null)
@@ -2075,93 +1980,6 @@ else
     private IReadOnlyList<ParsedOutlineDto> DocumentOutline(Guid id) =>
         _documentOutline.TryGetValue(id, out var outline) ? outline : [];
 
-    /// <summary>就地展开文档：按需解析，解析结果缓存住，翻回去不用再解析一遍。</summary>
-    private async Task ToggleDocumentAsync(Guid id)
-    {
-        if (!_expandedDocuments.Add(id))
-        {
-            _expandedDocuments.Remove(id);
-            return;
-        }
-
-        if (!_documentText.ContainsKey(id))
-        {
-            try
-            {
-                _documentOutline[id] = await Documents.GetOutlineAsync(id);
-                _documentText[id] = await Documents.GetTextAsync(id);
-
-                // 能解析出块就渲染块；解析不出来（脚本、纯代码）就按代码块显示。
-                var parsed = await Documents.ParseAsync(id);
-                _documentBlocks[id] = parsed.Blocks;
-            }
-            catch (Exception ex)
-            {
-                _documentText[id] = "读取失败: " + ex.Message;
-            }
-        }
-
-        StateHasChanged();
-    }
-
-    private async Task ChangeTypeAsync()
-    {
-        if (!TaskTypes.TryParse(SelectedType, out var type))
-        {
-            Error = PageError.Simple($"未知类型: {SelectedType}");
-            return;
-        }
-
-        if (Busy)
-        {
-            return;
-        }
-
-        Busy = true;
-        StateHasChanged();
-
-        try
-        {
-            await Tasks.SetTypeAsync(TaskId, type);
-            Error = null;
-            await RefreshContextAndEventsAsync();
-        }
-        catch (Exception ex)
-        {
-            Error = PageError.From(ex, "修改任务类型");
-        }
-        finally
-        {
-            Busy = false;
-        }
-    }
-
-    private async Task BindBranchAsync()
-    {
-        if (Busy)
-        {
-            return;
-        }
-
-        Busy = true;
-        StateHasChanged();
-
-        try
-        {
-            // 空串 = 解绑
-            await Tasks.BindBranchAsync(TaskId, string.IsNullOrWhiteSpace(BranchInput) ? null : BranchInput);
-            Error = null;
-            await RefreshContextAndEventsAsync();
-        }
-        catch (Exception ex)
-        {
-            Error = PageError.From(ex, "绑定分支");
-        }
-        finally
-        {
-            Busy = false;
-        }
-    }
 
     private async Task StartReviewAsync()
     {

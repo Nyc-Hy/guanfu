@@ -382,21 +382,6 @@ def main() -> int:
     )
     expect("suggestions" in work, "工作包应带上接下来该做什么的建议")
     expect("spec" in work, "工作包应带上生效的规约")
-    expect("station" in work, "工作包应带上我的工位")
-
-    print("\n-- 工位：agent 该去哪儿干活 --")
-    station = mcp.call("guanfu_get_workstation", {"taskId": task_id})
-    expect(station.get("ok"), "应能问到工位现状")
-    station_dto = station.get("station") or {}
-    expect(
-        "mainCheckoutAvailable" in station_dto,
-        f"工位要回答「主工作区能不能用」（实际：{station_dto}）",
-    )
-    expect(
-        "effectiveWorkPath" in station_dto,
-        f"工位要回答「这次该用哪个目录」（实际：{station_dto}）",
-    )
-
     print("\n-- 交接包：接手的人一次拿全 --")
     pack_result = mcp.call("guanfu_get_handoff_pack", {"taskId": task_id})
     expect(pack_result.get("ok"), "应能取到交接包")
@@ -426,11 +411,6 @@ def main() -> int:
     except Exception:
         denied = True
     expect(denied, "带错的凭证不该能连上 MCP")
-
-    print("\n-- 工位清单：worktree 建了没人收 --")
-    stations = mcp.call("guanfu_list_workstations", {})
-    expect(stations.get("ok"), f"应能列工位（实际：{stations}）")
-    expect(isinstance(stations.get("workstations"), list), "工位清单要是个列表")
 
     print("\n-- 批量导入文档 --")
     batch = mcp.call(
@@ -682,8 +662,8 @@ def main() -> int:
     expect(not blocked2.get("ok"), "有不通过维度不该能结项")
     expect("不通过" in (blocked2.get("error") or ""), "错误信息应指出有不通过的维度")
 
-    # ── C 类型与分支 ──────────────────────────────────────────────────
-    section("链路 C：类型编号与分支守卫")
+    # ── C 类型编号 ────────────────────────────────────────────────────
+    section("链路 C：类型编号")
 
     print("\n-- 类型决定编号前缀，各类型独立计数 --")
     keys = {}
@@ -701,37 +681,6 @@ def main() -> int:
 
     bugs = mcp.call("guanfu_list_tasks", {"projectId": project_id, "type": "bug"})
     expect(all(t.get("type") == "Bug" for t in (bugs or [])), "按类型过滤应只出缺陷")
-
-    print("\n-- 绑了分支，当前分支不对就不许领 --")
-    repo = make_temp_repo("main")
-    if repo is None:
-        print("  (跳过：环境里没有 git)")
-    else:
-        try:
-            rest_json(rest, "PUT", f"/api/projects/{project_id}/config", {"repoPath": repo})
-
-            bound = mcp.call(
-                "guanfu_create_task",
-                {
-                    "projectId": project_id,
-                    "title": "e2e 绑分支",
-                    "type": "requirement",
-                    "branch": "feature/login",
-                },
-            )
-
-            claimed = mcp.call(
-                "guanfu_claim_task", {"taskId": bound["id"], "agentId": "e2e-agent"}
-            )
-            print(f"  ok={claimed.get('ok')} error={claimed.get('error')}")
-            expect(not claimed.get("ok"), "当前分支不对时不该能领任务")
-            expect("feature/login" in (claimed.get("error") or ""), "错误信息应点名绑定的分支")
-            expect("main" in (claimed.get("error") or ""), "错误信息应说明当前在哪个分支")
-
-            context = mcp.call("guanfu_get_context", {"taskId": bound["id"]})
-            expect(context.get("branchReady") is False, "上下文应标出分支未就绪")
-        finally:
-            shutil.rmtree(repo, ignore_errors=True)
 
     section("结果")
     if FAILURES:

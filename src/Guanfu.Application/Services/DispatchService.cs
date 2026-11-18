@@ -47,10 +47,6 @@ public sealed record DispatchTaskDto(
     string? Assignee,
     /// <summary>领着这个活的 agent（租约里的）。</summary>
     string? ClaimedBy,
-    /// <summary>它登记的工位（自己的 worktree）。空 = 主工作区。</summary>
-    string? WorkPath,
-    /// <summary>true = 用的是项目主工作区（共享的，同一时刻只允许一个 agent）。</summary>
-    bool IsMainCheckout,
     /// <summary>还差几个前置任务。</summary>
     int PendingDependencies,
     /// <summary>卡住它的前置任务编号（直接前置，未完成的那些）。</summary>
@@ -114,7 +110,7 @@ public sealed class DispatchService(IAppDbContext db, IClock clock) : IDispatchS
             .Select(t => new
             {
                 t.Id, t.Key, t.Title, t.Type, t.Priority, t.Weight, t.Status,
-                t.CreatedAt, t.ClaimedByAgentId, t.LeaseExpiresAt, t.WorkPath,
+                t.CreatedAt, t.ClaimedByAgentId, t.LeaseExpiresAt,
                 t.Assignee, t.PinnedOrder
             })
             .ToListAsync(cancellationToken);
@@ -163,18 +159,11 @@ public sealed class DispatchService(IAppDbContext db, IClock clock) : IDispatchS
             .GroupBy(e => e.TaskId)
             .ToDictionary(g => g.Key, g => g.Last().Actor);
 
-        // 主工作区现在被谁占着
-        var project = await db.Projects.AsNoTracking()
-            .FirstOrDefaultAsync(p => p.Id == projectId, cancellationToken);
-        var mainCheckout = project?.RepoPath;
-
+        // 现在被谁领着
         var mainHolder = tasks.FirstOrDefault(t =>
             t.LeaseExpiresAt is not null &&
             t.LeaseExpiresAt.Value > now &&
-            t.ClaimedByAgentId is not null &&
-            (t.WorkPath is null ||
-             (mainCheckout is not null &&
-              string.Equals(mainCheckout, t.WorkPath, StringComparison.OrdinalIgnoreCase))));
+            t.ClaimedByAgentId is not null);
 
         var suggestions = new List<DispatchSuggestionDto>();
 
@@ -392,10 +381,6 @@ public sealed class DispatchService(IAppDbContext db, IClock clock) : IDispatchS
             return depth;
         }
 
-        var project = await db.Projects.AsNoTracking()
-            .FirstOrDefaultAsync(p => p.Id == projectId, cancellationToken);
-        var mainCheckout = project?.RepoPath;
-
         var ready = new List<DispatchTaskDto>();
         var inProgress = new List<DispatchTaskDto>();
         var blocked = new List<DispatchTaskDto>();
@@ -425,10 +410,6 @@ public sealed class DispatchService(IAppDbContext db, IClock clock) : IDispatchS
                 task.Assignee,
                 // 租约过期的「前主人」不算现在在干 —— 免得看板上显示有人占着，其实没人管
                 leaseAlive ? task.ClaimedByAgentId : null,
-                task.WorkPath,
-                string.IsNullOrWhiteSpace(task.WorkPath) ||
-                (mainCheckout is not null &&
-                 string.Equals(mainCheckout, task.WorkPath, StringComparison.OrdinalIgnoreCase)),
                 blockers.Count,
                 blockers
                     .Select(b => byId.TryGetValue(b, out var t) ? (t.Key ?? b.ToString()) : b.ToString())

@@ -372,34 +372,6 @@ public class GateHardeningTests
             async () => await host.Tasks.CreateAsync(project.Id, "二", key: "REQ-001"));
     }
 
-    // ---- R1：进 Review 的产出采集（服务层，三条路都覆盖） ----
-
-    [Fact]
-    public async Task 推进到评审时工作区的改动会被采下来()
-    {
-        using var host = new GuanfuTestHost();
-        var project = await host.Projects.CreateAsync("P");
-        await host.Projects.UpdateConfigAsync(project.Id, repoPath: "/tmp/repo");
-
-        host.Git.WorkingTreeFileChanges =
-        [
-            new GitFileChange("src/a.cs", "M", 3, 1)
-        ];
-
-        var fileChanges = new FileChangeService(host.Db, host.Git, host.Clock);
-        var tasks = new TaskService(host.Db, host.Clock, host.Git, null, null, fileChanges);
-
-        var task = await tasks.CreateAsync(project.Id, "要评审的活");
-        await tasks.ChangeStatusAsync(task.Id, TaskStatus.DocsReady);
-        await tasks.ChangeStatusAsync(task.Id, TaskStatus.Planned);
-        await tasks.ChangeStatusAsync(task.Id, TaskStatus.InDev);
-        await tasks.ChangeStatusAsync(task.Id, TaskStatus.Testing);
-        await tasks.ChangeStatusAsync(task.Id, TaskStatus.Review);
-
-        var changes = await fileChanges.ListAsync(task.Id);
-        Assert.Contains(changes, c => c.Path == "src/a.cs");
-    }
-
     // ---- R2：验链要能跨批 ----
 
     [Fact]

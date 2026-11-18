@@ -9,7 +9,7 @@
   F3 跨项目要拒：会话在 A 项目，显式传 B 项目 → 必须被拒
   F4 按编号认领：claim(taskKey) 就能领，不用先查 GUID
   F5 认领之后审计自动带任务：agent 不用自己填 taskId
-  F6 提交之后产出文件自动落库：观复自己数出来的，不是 agent 自报的
+  F6 提交要人工审批：批了才真的提交
 
 用法:
     python3 tests/e2e/session_e2e.py --url http://127.0.0.1:5199
@@ -130,10 +130,10 @@ def main() -> int:
         "认领到的应该是那个任务",
     )
 
-    # ── F4.1 工位独占：主工作区同一时刻只允许一个 agent 占 ────────
-    print("\n-- F4.1 主工作区同一时刻只允许一个 agent 占 --")
-    # 另一个 agent（也绑同一个仓库）想在主工作区干活 → 必须被拒。
-    # 两个人共用一个目录会互相踩文件，这是 agent 时代最常见的事故。
+    # ── F4.1 并行：观复不再管工位 ──────────────────────────────────
+    # 工位是「agent 在哪干活」的事 —— 那是它自己仓库里的事，观复不碰。
+    # 所以两个 agent 同时领活**不该**被观复拦下。
+    print("\n-- F4.1 两个 agent 可以并行领活（观复不管工位） --")
     second = bound.call("guanfu_create_task", {
         "title": f"第二个活 {suffix}",
         "type": "requirement",
@@ -143,66 +143,33 @@ def main() -> int:
     other_agent = Mcp(args.url, headers={"X-Guanfu-Repo": repo, "X-Guanfu-Agent": "e2e-agent-2"})
     other_agent.initialize()
 
-    blocked = other_agent.call(
+    parallel = other_agent.call(
         "guanfu_claim_task", {"taskKey": second_key, "agentId": "e2e-agent-2"}
     )
-    expect(blocked.get("ok") is not True, "另一个 agent 不该能占用同一个主工作区")
     expect(
-        "占着" in (blocked.get("error") or ""),
-        f"错误信息应说明工作区被谁占着（实际：{blocked.get('error')}）",
-    )
-    expect(
-        "worktree" in (blocked.get("error") or ""),
-        f"错误信息应给出出路（开自己的 worktree）（实际：{blocked.get('error')}）",
+        parallel.get("ok") is True,
+        f"两个 agent 并行领活不该被观复拦下（实际：{parallel.get('error')}）",
     )
 
-    # 开了自己的 worktree → 允许并行
-    worktree = os.path.join(os.path.dirname(repo), f"wt-{suffix}")
-    subprocess.run(
-        ["git", "worktree", "add", "-q", worktree, "-b", f"feature/e2e-{suffix}"],
-        cwd=repo, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    # 文件工具按**会话自己的目录**读 —— agent 在哪干活就在哪操作。
+    marker = "session-dir-marker.txt"
+    with open(os.path.join(repo, marker), "w", encoding="utf-8") as handle:
+        handle.write("会话目录里的文件")
+    read_back = other_agent.call("fs_read", {"path": marker})
+    expect(
+        read_back.get("ok") is True and "会话目录" in (read_back.get("content") or ""),
+        f"文件工具应按会话目录读文件（实际：{read_back.get('error') or read_back.get('content')}）",
     )
-    if os.path.isdir(worktree):
-        parallel = other_agent.call(
-            "guanfu_claim_task",
-            {"taskKey": second_key, "agentId": "e2e-agent-2", "worktree": worktree},
-        )
-        expect(
-            parallel.get("ok") is True,
-            f"带自己的 worktree 时应能并行领活（实际：{parallel.get('error')}）",
-        )
-        expect(
-            (parallel.get("task") or {}).get("workPath") is not None,
-            "认领结果里应带上登记的工位",
-        )
-
-        # 工具要**认工位**：文件只存在于 worktree 里，读它必须读得到 ——
-        # 读的是主工作区的话，agent 看不到自己的产出，产出采集也会记错文件。
-        marker = "wt-only-marker.txt"
-        with open(os.path.join(worktree, marker), "w", encoding="utf-8") as handle:
-            handle.write("只在 worktree 里的文件")
-        read_back = other_agent.call("fs_read", {"path": marker})
-        expect(
-            read_back.get("ok") is True and "只在 worktree" in (read_back.get("content") or ""),
-            f"文件工具应按工位读 worktree 里的文件（实际：{read_back.get('error') or read_back.get('content')}）",
-        )
-        listing = other_agent.call("fs_list", {})
-        expect(
-            listing.get("root") is not None and worktree in (listing.get("root") or ""),
-            f"fs_list 的根应是工位（实际：{listing.get('root')}）",
-        )
-    else:
-        print("  ⚠ git worktree 不可用，跳过并行领活场景")
+    listing = other_agent.call("fs_list", {})
+    expect(
+        listing.get("root") is not None and repo in (listing.get("root") or ""),
+        f"fs_list 的根应是会话绑的目录（实际：{listing.get('root')}）",
+    )
 
     context = bound.call("guanfu_get_context", {"taskKey": task_key})
     expect(
         (context.get("task") or {}).get("id") == task_id,
         f"按编号取上下文应拿到那个任务（实际：{context.get('error') or context.get('task')}）",
-    )
-    station = context.get("station") or {}
-    expect(
-        station.get("mainCheckoutHolder") is not None,
-        f"上下文里应说明主工作区被谁占着（实际：{station}）",
     )
 
     # ── F4.2 每任务工具调用上限 ───────────────────────────────────
@@ -236,10 +203,9 @@ def main() -> int:
     # 拿它去领别的任务会把会话的任务改掉，后面的断言就全乱了。
     third = Mcp(args.url, headers={"X-Guanfu-Repo": repo, "X-Guanfu-Agent": "e2e-agent-3"})
     third.initialize()
-    # 主工作区被别的 agent 占着（工位独占）→ 接手方得声明自己的 worktree
     takeover = third.call(
         "guanfu_claim_task",
-        {"taskId": second["id"], "agentId": "e2e-agent-3", "worktree": worktree},
+        {"taskId": second["id"], "agentId": "e2e-agent-3"},
     )
     expect(takeover.get("ok"), f"接手应成功（实际：{takeover.get('error')}）")
     expect(
@@ -281,8 +247,8 @@ def main() -> int:
         "审计里的项目归属应是被绑定的那个项目",
     )
 
-    # ── F6 提交之后产出文件自动落库 ───────────────────────────────
-    print("\n-- F6 提交之后产出文件自动落库 --")
+    # ── F6 提交要人工审批 ─────────────────────────────────────────
+    print("\n-- F6 提交要人工审批，批了才真的提交 --")
     rest_json(rest, "PUT", f"/api/projects/{project_id}/config", {
         "repoPath": repo,
         "allowedCommands": ["git", "touch"],
@@ -310,16 +276,6 @@ def main() -> int:
             "taskId": task_id,
         })
         expect(committed.get("ok") is True, f"批准后提交应成功（实际：{committed.get('error')}）")
-
-    changes = rest_json(rest, "GET", f"/api/tasks/{task_id}/file-changes")
-    expect(len(changes) >= 1, f"产出文件应自动落库（实际：{len(changes)} 条）")
-    if changes:
-        paths = [c.get("path") for c in changes]
-        expect("hello.txt" in paths, f"产出文件里应包含 hello.txt（实际：{paths}）")
-        expect(
-            any(c.get("commitSha") for c in changes),
-            "产出文件应绑到那次提交的 commit",
-        )
 
     print("\n" + "=" * 60)
     if FAILURES:

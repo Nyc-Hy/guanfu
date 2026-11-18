@@ -539,10 +539,6 @@ public sealed class ReviewService(
             .OrderBy(d => d.UploadedAt)
             .ToListAsync(cancellationToken);
 
-        var changedFiles = string.IsNullOrWhiteSpace(project?.RepoPath)
-            ? []
-            : git.Inspect(project!.RepoPath!).ChangedFilePaths;
-
         // 任务摘要复用 TaskService 的映射 —— 别在这儿抄第二份，
         // 抄的那份漏了 IsArchived/Assignee/Priority/DueAt/Weight/PendingDependencies/Stale。
         var pending = await PendingDependencyCounts.CountAsync(db, [taskId], cancellationToken);
@@ -564,7 +560,6 @@ public sealed class ReviewService(
             plan is null ? null : TaskService.ToPlanDto(plan),
             artifacts.Select(TaskService.ToArtifactDto).ToList(),
             documents.Select(TaskService.ToDocumentDto).ToList(),
-            changedFiles,
             ReviewDimensions.All
                 .Select(d => new ReviewDimensionDto(d.Key, d.Name, d.Question, d.Checklist))
                 .ToList(),

@@ -18,72 +18,20 @@ namespace Guanfu.Tests;
 /// </summary>
 public sealed class SearchTests
 {
-    [Fact]
-    public async Task 能按路径搜到产出文件()
-    {
-        using var host = new GuanfuTestHost();
-        var project = await host.Projects.CreateAsync("搜索项目");
-        var task = await host.Tasks.CreateAsync(project.Id, "写登录接口");
 
-        host.Git.CommitFileChanges = [new GitFileChange("src/Auth/Login.cs", "Modified", 3, 1)];
-        var files = new FileChangeService(host.Db, host.Git, host.Clock);
-        await files.CaptureCommitAsync(task.Id, project.Id, "/tmp/repo", "sha-1");
 
-        var hits = await files.SearchAsync("login");
-
-        var hit = Assert.Single(hits);
-        Assert.Equal("src/Auth/Login.cs", hit.Path);
-        Assert.Equal(task.Id, hit.TaskId);
-    }
-
-    [Fact]
-    public async Task 搜产出文件不分大小写()
-    {
-        using var host = new GuanfuTestHost();
-        var project = await host.Projects.CreateAsync("搜索项目");
-        var task = await host.Tasks.CreateAsync(project.Id, "写登录接口");
-
-        host.Git.CommitFileChanges = [new GitFileChange("src/Auth/Login.cs", "Modified", 3, 1)];
-        var files = new FileChangeService(host.Db, host.Git, host.Clock);
-        await files.CaptureCommitAsync(task.Id, project.Id, "/tmp/repo", "sha-1");
-
-        // 人打小写，文件路径是大写开头的
-        var hits = await files.SearchAsync("LOGIN");
-
-        Assert.Single(hits);
-    }
-
-    [Fact]
-    public async Task 搜产出文件带得上任务编号与项目名()
-    {
-        using var host = new GuanfuTestHost();
-        var project = await host.Projects.CreateAsync("搜索项目");
-        var task = await host.Tasks.CreateAsync(project.Id, "写登录接口");
-
-        host.Git.CommitFileChanges = [new GitFileChange("src/a.cs", "Modified", 1, 0)];
-        var files = new FileChangeService(host.Db, host.Git, host.Clock);
-        await files.CaptureCommitAsync(task.Id, project.Id, "/tmp/repo", "sha-1");
-
-        var hit = Assert.Single(await files.SearchAsync("a.cs"));
-
-        Assert.Equal("REQ-001", hit.TaskKey);
-        Assert.Equal("写登录接口", hit.TaskTitle);
-        Assert.Equal("搜索项目", hit.ProjectName);
-    }
 
     [Fact]
     public async Task 搜不到时不返回东西()
     {
         using var host = new GuanfuTestHost();
         var project = await host.Projects.CreateAsync("搜索项目");
-        var task = await host.Tasks.CreateAsync(project.Id, "写登录接口");
+        var calls = new DbCallService(host.Db, host.Clock);
 
-        host.Git.CommitFileChanges = [new GitFileChange("src/a.cs", "Modified", 1, 0)];
-        var files = new FileChangeService(host.Db, host.Git, host.Clock);
-        await files.CaptureCommitAsync(task.Id, project.Id, "/tmp/repo", "sha-1");
+        await calls.RecordAsync(Entry(project.Id, "db_execute", "SELECT 1", "Read"));
 
-        Assert.Empty(await files.SearchAsync("不存在的路径"));
-        Assert.Empty(await files.SearchAsync("  "));
+        Assert.Empty(await calls.SearchAsync("不存在的路径"));
+        Assert.Empty(await calls.SearchAsync("  "));
     }
 
     [Fact]

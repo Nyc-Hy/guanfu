@@ -21,8 +21,7 @@ public sealed class AgentLauncher(
     IAppDbContext db,
     IClock clock,
     IServiceScopeFactory scopeFactory,
-    IOptions<GuanfuOptions> options,
-    IBranchGuard branchGuard) : IAgentLauncher
+    IOptions<GuanfuOptions> options) : IAgentLauncher
 {
     /// <summary>
     /// 外部 agent 最长跑多久。agent 跑歪了不会自己停 ——
@@ -37,14 +36,6 @@ public sealed class AgentLauncher(
 
         var project = await db.Projects.FirstOrDefaultAsync(p => p.Id == task.ProjectId, cancellationToken)
                       ?? throw new NotFoundException("项目", task.ProjectId);
-
-        // 分支守卫：绑了分支的任务，只有仓库当前就在那个分支上才允许拉起 agent
-        var branch = await branchGuard.CheckAsync(taskId, cancellationToken);
-        if (!branch.Ok)
-        {
-            return new AgentLaunchResult(false, null, string.Empty, project.RepoPath ?? string.Empty,
-                branch.Error ?? "当前分支与任务绑定的分支不一致，不予启动。");
-        }
 
         if (string.IsNullOrWhiteSpace(project.AgentCommand))
         {

@@ -41,8 +41,7 @@ public sealed class GuanfuTestHost : IDisposable
 
         Git = new FakeGitInspector();
         Reviews = new ReviewService(_db, Clock, Git, Specs);
-        BranchGuard = new BranchGuard(_db, Git);
-        Tasks = new TaskService(_db, Clock, Git, Reviews, BranchGuard);
+        Tasks = new TaskService(_db, Clock, Git, Reviews);
     }
 
     public TestClock Clock { get; }
@@ -78,9 +77,6 @@ public sealed class GuanfuTestHost : IDisposable
     public ToolAuditService Audit => new(_db, Clock);
 
     public ReviewService Reviews { get; }
-
-    /// <summary>分支守卫。测试里可以换成假的 git 状态。</summary>
-    public BranchGuard BranchGuard { get; }
 
     /// <summary>可改的 git 状态（默认「测试环境无 git」）。</summary>
     public FakeGitInspector Git { get; }

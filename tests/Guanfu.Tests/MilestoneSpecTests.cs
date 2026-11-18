@@ -106,7 +106,7 @@ public class MilestoneSpecTests
 
         // 评审服务要拿到同一份规约（同一个口径）
         var reviews = new ReviewService(host.Db, host.Clock, host.Git, specs);
-        var tasks = new TaskService(host.Db, host.Clock, host.Git, reviews, null, null, null, specs);
+        var tasks = new TaskService(host.Db, host.Clock, host.Git, reviews, specs);
 
         await tasks.ChangeStatusAsync(task.Id, TaskStatus.DocsReady);
         await tasks.ChangeStatusAsync(task.Id, TaskStatus.Planned);
@@ -141,7 +141,7 @@ public class MilestoneSpecTests
             DefinitionOfDone: ["额外写迁移说明"]));
 
         var reviews = new ReviewService(host.Db, host.Clock, host.Git, specs);
-        var tasks = new TaskService(host.Db, host.Clock, host.Git, reviews, null, null, null, specs);
+        var tasks = new TaskService(host.Db, host.Clock, host.Git, reviews, specs);
 
         await tasks.ChangeStatusAsync(task.Id, TaskStatus.DocsReady);
         await tasks.ChangeStatusAsync(task.Id, TaskStatus.Planned);

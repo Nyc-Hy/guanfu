@@ -59,8 +59,6 @@ public sealed class GeneralMcpTools(
     IClock clock,
     IGitInspector? gitInspector = null,
     IProjectScopeResolver? scopeResolver = null,
-    IFileChangeService? fileChanges = null,
-    IWorkstationResolver? workstations = null,
     IAgentSessionAccessor? sessions = null)
 {
     /// <summary>
@@ -212,7 +210,7 @@ public sealed class GeneralMcpTools(
             }
 
             // 工作目录 = 这次任务的工位（自己的 worktree）；没有工位就是主工作区。
-            var workDir = await ResolveWorkDirAsync(scope, config.RepoPath!, cancellationToken);
+            var workDir = ResolveWorkDir(scope, config.RepoPath!);
 
             // 审批绑内容（P0-3）：先取待提交内容的指纹。读不到仓库状态就拒 ——
             // 不能让人批一个连内容都看不见的提交。gitInspector 缺省时跳过绑定（兼容旧宿主）。
@@ -284,17 +282,6 @@ public sealed class GeneralMcpTools(
                         started, gate.ApprovalId, cancellationToken);
 
                     // 提交成功之后，把这次提交改了什么文件采下来。
-                    // 这是「产出可追溯」的关键点：观复自己去 git 里数出来，
-                    // 不靠 agent 自报 —— agent 绕不过去。
-                    //
-                    // 放在审计之后：审计记的是「这次提交花了多久」，
-                    // 不该把顺手记流水的耗时算进去。
-                    if (result.Ok)
-                    {
-                        await CaptureCommitFilesAsync(
-                            taskId, scope, workDir, callerId, cancellationToken);
-                    }
-
                     return new WriteToolResult(
                         result.Ok,
                         gate.ApprovalId,
@@ -311,71 +298,15 @@ public sealed class GeneralMcpTools(
         }
     }
 
-    /// <summary>
-    /// 把刚提交的那次 commit 改动的文件采下来，落到任务名下。
-    ///
-    /// 采集失败（读不到仓库 / git 挂了）**不抛异常** ——
-    /// 提交已经成功了，不能因为「顺手记个流水」失败就把 agent 的活带崩。
-    /// </summary>
-    private async Task CaptureCommitFilesAsync(
-        Guid? taskId,
-        ProjectScope scope,
-        string repoPath,
-        string? callerId,
-        CancellationToken cancellationToken)
-    {
-        // 没有任务归属就无处可挂 —— 跳过采集，不报错。
-        if (fileChanges is null || gitInspector is null || taskId is null)
-        {
-            return;
-        }
-
-        try
-        {
-            var sha = gitInspector.GetHeadSha(repoPath);
-            if (string.IsNullOrWhiteSpace(sha))
-            {
-                return;
-            }
-
-            await fileChanges.CaptureCommitAsync(
-                taskId.Value,
-                scope.ProjectId,
-                repoPath,
-                sha,
-                scope.SessionId,
-                callerId,
-                cancellationToken);
-        }
-        catch (Exception)
-        {
-            // 采集是「锦上添花」，失败就算了 —— 提交已经落地。
-            //
-            // 这里连取消也不往上抛：提交已经成功了，再抛异常的话工具会返回
-            // ok=false，agent 会以为提交失败而重试 —— 那是真的把事情搞坏。
-        }
-    }
 
     /// <summary>
-    /// 这次调用该在哪个目录上干活 —— 任务登记了工位就用工位，没有就是项目主工作区。
+    /// 这次调用该在哪个目录上干活 —— 会话自己绑的目录，没有就退回项目记的路径。
     ///
-    /// 工具认工位是必须的：agent 在自己的 worktree 里写代码，
-    /// 观复却去读主工作区的话，产出采集会把**主工作区**的改动记成这个任务的产出。
+    /// 观复不再替 agent 管工位（那是它自己仓库里的事）：
+    /// agent 在哪干活就在哪操作，观复只按会话给的目录跑命令。
     /// </summary>
-    private async Task<string> ResolveWorkDirAsync(
-        ProjectScope scope,
-        string fallback,
-        CancellationToken cancellationToken)
-    {
-        if (workstations is null)
-        {
-            return fallback;
-        }
-
-        var station = await workstations.ResolveAsync(
-            scope.ProjectId, scope.TaskId, scope.AgentId, cancellationToken);
-        return string.IsNullOrWhiteSpace(station) ? fallback : station;
-    }
+    private static string ResolveWorkDir(ProjectScope scope, string fallback) =>
+        string.IsNullOrWhiteSpace(scope.RepoPath) ? fallback : scope.RepoPath;
 
     /// <summary>提交审批摘要：带上改动文件数与清单，人批的时候看得见到底要提交什么。</summary>
     private string BuildCommitSummary(string projectName, string message, string repoPath)
@@ -450,7 +381,7 @@ public sealed class GeneralMcpTools(
                 : $"远端 {remote}" + (string.IsNullOrWhiteSpace(branch) ? "" : $" 分支 {branch}");
 
             // 工作目录 = 工位（跟提交一致：在哪个 worktree 提交，就推哪个 worktree 的分支）
-            var workDir = await ResolveWorkDirAsync(scope, config.RepoPath!, cancellationToken);
+            var workDir = ResolveWorkDir(scope, config.RepoPath!);
 
             // 审批绑内容：把 HEAD 一起算进指纹。
             // 只绑「推分支 X 到远端 Y」不够 —— 等待人工期间又跑了一次被批准的
@@ -606,7 +537,7 @@ public sealed class GeneralMcpTools(
             }
 
             // 工作目录 = 工位：agent 的命令要在它自己的 worktree 里跑
-            var workDir = await ResolveWorkDirAsync(scope, config.RepoPath!, cancellationToken);
+            var workDir = ResolveWorkDir(scope, config.RepoPath!);
 
             var gate = await approvalGate.AcquireAsync(
                 "shell_run", "shell.write", command,

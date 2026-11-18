@@ -70,7 +70,7 @@ public static class GuanfuApi
         // ---- 任务 ----
         api.MapGet("/tasks", async (
             ITaskService tasks, Guid? projectId, string? status, string? keyword, Guid? milestoneId,
-            string? key, string? type, string? branch, int? limit, int? offset, bool? includeArchived,
+            string? key, string? type, int? limit, int? offset, bool? includeArchived,
             CancellationToken ct) =>
         {
             TaskStatus? parsed = null;
@@ -109,7 +109,7 @@ public static class GuanfuApi
 
             return Results.Ok(await tasks.ListAsync(
                 projectId, parsed, keyword, milestoneId, key, parsedType, ct,
-                branch, limit, offset, includeArchived ?? false));
+                limit, offset, includeArchived ?? false));
         });
 
         api.MapPost("/projects/{projectId:guid}/tasks", async (
@@ -123,7 +123,7 @@ public static class GuanfuApi
 
             var task = await tasks.CreateAsync(
                 projectId, request.Title, request.Description, request.ParentTaskId, request.MilestoneId,
-                type, request.Branch, request.Key, ct);
+                type, request.Key, ct);
             return Results.Created($"/api/tasks/{task.Id}", task);
         });
 
@@ -145,11 +145,6 @@ public static class GuanfuApi
             if (!string.IsNullOrWhiteSpace(request.Type) && TaskTypes.TryParse(request.Type, out var type))
             {
                 updated = await tasks.SetTypeAsync(taskId, type, ct);
-            }
-
-            if (request.Branch is not null)
-            {
-                updated = await tasks.BindBranchAsync(taskId, request.Branch, ct);
             }
 
             return Results.Ok(updated);
@@ -183,12 +178,6 @@ public static class GuanfuApi
             var events = await tasks.ListEventsAsync(taskId, take, ct);
             return Results.Ok(events);
         });
-
-        // 产出文件：这个任务实际改了哪些文件。观复自己从 git 数的，
-        // 不是 agent 自报的 —— 所以这条是可查的证据，不是自我声明。
-        api.MapGet("/tasks/{taskId:guid}/file-changes", async (
-            Guid taskId, IFileChangeService fileChanges, CancellationToken ct) =>
-            Results.Ok(await fileChanges.ListAsync(taskId, ct)));
 
         // 会话：谁在什么时候接的这个任务。工作目录、agent 标识都在里头。
         api.MapGet("/tasks/{taskId:guid}/sessions", async (
@@ -319,7 +308,7 @@ public static class GuanfuApi
             // 返回形状不变（CLI 依赖扁平的任务摘要）；
             // 协作上下文（上一个是谁、为什么交）走事件流与 MCP 的领取结果。
             var outcome = await tasks.ClaimAsync(
-                taskId, request.AgentId, request.LeaseMinutes ?? 30, ct, request.WorkPath, request.Note);
+                taskId, request.AgentId, request.LeaseMinutes ?? 30, ct, request.Note);
 
             return Results.Ok(outcome.Task);
         });
@@ -367,11 +356,6 @@ public static class GuanfuApi
             Guid taskId, PostEventRequest request, ITaskService tasks, CancellationToken ct) =>
             Results.Ok(await tasks.PostEventAsync(
                 taskId, request.Message, TaskEventSource.Ci, request.Actor, request.OccurredAt, ct)));
-
-        // 工位：谁在哪个目录干活，有没有没人管的工位（worktree 建了没人收）。
-        api.MapGet("/projects/{projectId:guid}/stations", async (
-            Guid projectId, IWorkstationService stations, CancellationToken ct) =>
-            Results.Ok(await stations.ListAsync(projectId, ct)));
 
         // ---- 文档 ----
         api.MapGet("/tasks/{taskId:guid}/documents", async (
@@ -1082,19 +1066,15 @@ public static class GuanfuApi
 public sealed record CreateProjectRequest(string Name, string? Description, string? RepoPath = null);
 public sealed record CreateTaskRequest(
     string Title, string? Description, Guid? ParentTaskId, Guid? MilestoneId = null,
-    string? Type = null, string? Branch = null, string? Key = null);
+    string? Type = null, string? Key = null);
 
-/// <summary>改任务。Type / Branch 传了才改；Branch 传空串表示解绑。</summary>
-public sealed record UpdateTaskRequest(string? Type = null, string? Branch = null);
+/// <summary>改任务。Type 传了才改。</summary>
+public sealed record UpdateTaskRequest(string? Type = null);
 public sealed record ChangeStatusRequest(string Status, string? Note, string? Actor, string? Source);
-/// <summary>
-/// 领任务。<see cref="WorkPath"/> = agent 干活的工作目录（自己的 git worktree）；
-/// 不给就是用项目主工作区 —— 主工作区同一时刻只允许一个 agent 占着。
-/// </summary>
+/// <summary>领任务。</summary>
 public sealed record ClaimTaskRequest(
     string AgentId,
     int? LeaseMinutes,
-    string? WorkPath = null,
     /// <summary>领活时留的上下文（为什么接这个活）。</summary>
     string? Note = null);
 /// <summary>

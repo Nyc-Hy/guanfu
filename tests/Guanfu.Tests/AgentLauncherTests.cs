@@ -154,8 +154,7 @@ public class AgentLauncherTests : IDisposable
             db,
             new FixedClock(DateTimeOffset.UtcNow),
             scopeFactory,
-            Options.Create(new GuanfuOptions { HomeDirectory = _home }),
-            new BranchGuard(db, new NoGit()));
+            Options.Create(new GuanfuOptions { HomeDirectory = _home }));
 
         return (launcher, db, task, scopeFactory);
     }

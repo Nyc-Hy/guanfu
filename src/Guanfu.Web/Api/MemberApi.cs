@@ -153,7 +153,7 @@ public static class MemberApi
 
             var member = await members.CreateAsync(
                 request.UserName,
-                request.DisplayName,
+                string.IsNullOrWhiteSpace(request.DisplayName) ? request.UserName : request.DisplayName,
                 request.Password,
                 role,
                 context.User.Identity?.Name);

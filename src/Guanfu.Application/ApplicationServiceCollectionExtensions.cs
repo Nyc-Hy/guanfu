@@ -20,15 +20,9 @@ public static class ApplicationServiceCollectionExtensions
         services.AddScoped<IMetricsService, MetricsService>();
         services.AddScoped<IFileSystemService, FileSystemService>();
 
-        // 工位解析：文件 / git / shell 工具按任务登记的工位走
-        services.AddScoped<IWorkstationResolver, WorkstationResolver>();
-
-        // 工位清单与放行：worktree 建了没人收 —— 得有人能看见、能放掉
-        services.AddScoped<IWorkstationService, WorkstationService>();
         services.AddScoped<IReviewService, ReviewService>();
         // 评审服务同时是门禁的实现 —— 注册同一个实例，别造两份
         services.AddScoped<IReviewGate>(sp => sp.GetRequiredService<IReviewService>());
-        services.AddScoped<IBranchGuard, BranchGuard>();
         services.AddScoped<IShellRunner, ShellRunner>();
         services.AddScoped<ITaskDependencyService, TaskDependencyService>();
         services.AddScoped<IExportService, ExportService>();
@@ -39,10 +33,6 @@ public static class ApplicationServiceCollectionExtensions
         // 作用域解析：一次工具调用算在谁头上。宿主（HTTP 层）提供当前会话，
         // 这里只管解析规则。
         services.AddScoped<IProjectScopeResolver, ProjectScopeResolver>();
-
-        // 产出文件：观复自己去 git 里数出「这个任务改了哪些文件」，
-        // 不靠 agent 自报。
-        services.AddScoped<IFileChangeService, FileChangeService>();
 
         // 数据库调用记录：把 SQL 原文、目标库、目标表摊成列，查得动。
         services.AddScoped<IDbCallService, DbCallService>();

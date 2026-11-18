@@ -29,7 +29,6 @@ public interface IAppDbContext
     DbSet<TaskDependency> TaskDependencies { get; }
     DbSet<SchemaVersion> SchemaVersions { get; }
     DbSet<AgentSession> AgentSessions { get; }
-    DbSet<TaskFileChange> TaskFileChanges { get; }
     DbSet<DbCallRecord> DbCallRecords { get; }
     DbSet<ProjectSpec> ProjectSpecs { get; }
     DbSet<MilestoneSpec> MilestoneSpecs { get; }

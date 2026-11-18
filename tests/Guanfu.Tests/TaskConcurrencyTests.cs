@@ -30,7 +30,7 @@ public class TaskConcurrencyTests
     }
 
     private static TaskService NewTaskService(GuanfuTestHost host, IAppDbContext db) =>
-        new(db, host.Clock, host.Git, host.Reviews, host.BranchGuard);
+        new(db, host.Clock, host.Git, host.Reviews);
 
     private static async Task<Guid> CreateTaskAsync(GuanfuTestHost host)
     {

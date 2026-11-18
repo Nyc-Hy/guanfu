@@ -20,14 +20,17 @@ public interface IFileSystemService
         Guid projectId,
         string? relativePath = null,
         CancellationToken cancellationToken = default,
-        /// <summary>
-        /// 这次调用属于哪个任务 —— 有活跃租约且登记了工位时，文件工具按**工位**走。
-        /// </summary>
+        /// <summary>这次调用属于哪个任务。</summary>
         Guid? taskId = null,
+        /// <summary>这次调用的 agent。</summary>
+        string? agentId = null,
         /// <summary>
-        /// 这次调用的 agent。会话没挂任务时靠它找回工位。
+        /// 这次调用的工作目录（会话自己绑的目录）。
+        ///
+        /// **观复不再按项目限定 agent 能碰哪个目录** —— 那是 agent 自己仓库的事。
+        /// 给了就用它当根；没给就退回项目记的仓库路径（那只是一条信息）。
         /// </summary>
-        string? agentId = null);
+        string? rootPath = null);
 
     Task<FileReadResult> ReadAsync(
         Guid projectId,
@@ -35,10 +38,12 @@ public interface IFileSystemService
         int maxBytes = 512 * 1024,
         CancellationToken cancellationToken = default,
         Guid? taskId = null,
-        string? agentId = null);
+        string? agentId = null,
+        /// <summary>这次调用的工作目录（会话自己绑的目录）。</summary>
+        string? rootPath = null);
 }
 
-public sealed class FileSystemService(IAppDbContext db, IWorkstationResolver? workstations = null) : IFileSystemService
+public sealed class FileSystemService(IAppDbContext db) : IFileSystemService
 {
     public const int DefaultMaxBytes = 512 * 1024;
 
@@ -47,9 +52,10 @@ public sealed class FileSystemService(IAppDbContext db, IWorkstationResolver? wo
         string? relativePath = null,
         CancellationToken cancellationToken = default,
         Guid? taskId = null,
-        string? agentId = null)
+        string? agentId = null,
+        string? rootPath = null)
     {
-        var root = await ResolveRootAsync(projectId, taskId, agentId, cancellationToken);
+        var root = await ResolveRootAsync(projectId, rootPath, cancellationToken);
         var target = ResolveInside(root, relativePath);
 
         if (!Directory.Exists(target))
@@ -84,14 +90,15 @@ public sealed class FileSystemService(IAppDbContext db, IWorkstationResolver? wo
         int maxBytes = DefaultMaxBytes,
         CancellationToken cancellationToken = default,
         Guid? taskId = null,
-        string? agentId = null)
+        string? agentId = null,
+        string? rootPath = null)
     {
         if (string.IsNullOrWhiteSpace(relativePath))
         {
             throw new GuanfuException("文件路径不能为空。");
         }
 
-        var root = await ResolveRootAsync(projectId, taskId, agentId, cancellationToken);
+        var root = await ResolveRootAsync(projectId, rootPath, cancellationToken);
         var target = ResolveInside(root, relativePath);
 
         if (!File.Exists(target))
@@ -214,17 +221,13 @@ public sealed class FileSystemService(IAppDbContext db, IWorkstationResolver? wo
     /// </summary>
     private async Task<string> ResolveRootAsync(
         Guid projectId,
-        Guid? taskId,
-        string? agentId,
+        string? rootPath,
         CancellationToken cancellationToken)
     {
-        var station = workstations is null
-            ? null
-            : await workstations.ResolveAsync(projectId, taskId, agentId, cancellationToken);
-
-        if (!string.IsNullOrWhiteSpace(station))
+        // 会话自己的目录优先 —— agent 在哪干活就在哪操作。
+        if (!string.IsNullOrWhiteSpace(rootPath) && Directory.Exists(rootPath))
         {
-            return station;
+            return Path.GetFullPath(rootPath);
         }
 
         var project = await db.Projects
