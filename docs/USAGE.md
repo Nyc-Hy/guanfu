@@ -190,13 +190,15 @@ REST 有每分钟 300 次的限流；`/api` 写方法要求 `Origin` 与 `Host` 
 10. **评审分工**：一轮七个维度可以拆给几个 agent 各评各的 ——
     先 `workbench_claim_review_dimension` 认领（带租约，到期可接手），再逐维度回写。
     别人认领的维度不能替他交结论。
+    评完之后 `workbench_get_review` 会给出本轮的**分工**（judgements：谁评了哪一条）、
+    还差几条（pendingCount）、几条不通过（failedCount）—— 收尾的人一次看完。
 11. **接手别人放下的活**：先调 `workbench_get_handoff_pack` —— 一次拿全：
     上一个是谁、为什么交出来、做到哪一步、规约、文档、产出、测试、工位、当前能去哪。
     交接链（`handoffChain`）是这个活转过几次手、每次谁交给谁、为什么。
 12. **干完了把工位收掉**：调 `workbench_release_workstation` —— 工作台清掉登记，
     并给出 `git worktree remove <目录>` 的确切命令。**工作台不替 agent 删目录**
     （那是它自己仓库里的事）。想知道哪些工位没人管了，调 `workbench_list_workstations`
-    （项目页的「工位」页签也看得见）。
+    （项目页的「工位」页签也看得见；活干完的工位标成「该收了」）。
 
 人全程只做三件事：建项目建任务传文档、批审批、看审计与度量。
 

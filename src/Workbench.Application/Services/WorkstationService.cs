@@ -32,7 +32,12 @@ public sealed record WorkstationDto(
     /// 清理它的确切命令。**工作台不替 agent 删目录** ——
     /// 那是它自己仓库里的事，工作台只给命令（还有哪一步要人确认）。
     /// </summary>
-    string? CleanupCommand);
+    string? CleanupCommand,
+    /// <summary>
+    /// 活干完了、该收这个工位了（任务已完成 / 已取消，但目录还在）。
+    /// 跟「没人管」不同：这是**该收了**，提醒人去清。
+    /// </summary>
+    bool ReadyToClean = false);
 
 /// <summary>放掉工位的结果。</summary>
 public sealed record StationReleaseResult(
@@ -93,6 +98,7 @@ public sealed class WorkstationService(
                 t.Id,
                 t.Key,
                 t.Title,
+                t.Status,
                 t.ClaimedByAgentId,
                 t.WorkPath,
                 t.LeaseExpiresAt,
@@ -114,6 +120,9 @@ public sealed class WorkstationService(
 
             var leaseAlive = task.LeaseExpiresAt is DateTimeOffset expires && expires > now;
 
+            // 活干完了（已完成 / 已取消）→ 该收这个工位了
+            var readyToClean = task.Status is TaskStatus.Done or TaskStatus.Cancelled;
+
             stations.Add(new WorkstationDto(
                 task.Id,
                 task.Key,
@@ -126,6 +135,7 @@ public sealed class WorkstationService(
                 LeaseAlive: leaseAlive,
                 task.LeaseExpiresAt,
                 Orphaned: !leaseAlive,
+                ReadyToClean: readyToClean,
                 CleanupCommand: CleanupCommand(project?.RepoPath, path)));
         }
 
@@ -157,6 +167,7 @@ public sealed class WorkstationService(
                     LeaseAlive: false,
                     LeaseExpiresAt: null,
                     Orphaned: true,
+                    ReadyToClean: true,
                     CleanupCommand: CleanupCommand(repoPath, worktree.Path)));
             }
         }

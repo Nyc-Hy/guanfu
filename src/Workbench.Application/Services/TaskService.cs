@@ -705,6 +705,27 @@ public sealed class TaskService(
 
         await db.SaveChangesAsync(cancellationToken);
 
+        // 活干完了 —— 那个工位可以收了。
+        // worktree 建了没人收是常态：活结项了，目录还躺在那儿。
+        // 这里留一笔（账上看得见），工位清单上也会标出来。
+        if (terminal && !string.IsNullOrWhiteSpace(task.WorkPath))
+        {
+            db.StatusEvents.Add(new StatusEvent
+            {
+                TaskId = id,
+                FromStatus = from,
+                ToStatus = to,
+                Source = source,
+                Actor = actor,
+                Note = $"活干完了，工位可以收了：{task.WorkPath}",
+                EventType = TaskEventTypes.StationReadyToClean,
+                Payload = WorkbenchJson.Serialize(new { workPath = task.WorkPath }),
+                CreatedAt = now
+            });
+
+            await db.SaveChangesAsync(cancellationToken);
+        }
+
         // 进 Review：把「已产出但还没提交」的那部分采下来。
         //
         // 这一步放在**服务层**而不是某个入口里 —— 以前只有 MCP 那条路会采，

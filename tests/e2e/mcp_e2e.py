@@ -506,6 +506,18 @@ def main() -> int:
         )
         expect(result.get("ok"), f"{dimension['key']} 回写应成功（实际：{result}）")
 
+    # 分工的收尾：收尾的人（协调者）要一眼看出谁评了哪条、还差几条
+    current = (mcp.call("workbench_get_review", {"taskId": task_id}).get("round")) or {}
+    judgements = current.get("judgements") or []
+    expect(len(judgements) == 7, f"评审轮应带着 7 条分工（实际：{judgements}）")
+    expect(
+        any(j.get("dimension") == "security" and j.get("reviewer") == "e2e-reviewer-1"
+            for j in judgements),
+        f"分工里该看得见谁评了哪一条（实际：{judgements}）",
+    )
+    expect(current.get("pendingCount") == 0, "七条都评完了，不该还有待评")
+    expect(current.get("failedCount") == 0, "七条都通过，不该有不通过")
+
     print("\n-- 逐条判定完成定义 --")
     for item in spec_items:
         verdict = mcp.call(

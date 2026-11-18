@@ -692,7 +692,17 @@ public sealed class ReviewService(
                     round = current.Round,
                     verdict = current.Verdict.ToString(),
                     skipped = current.Items.Count(i => i.Status == ReviewStatus.Skipped),
-                    commitHash = current.CommitHash
+                    commitHash = current.CommitHash,
+                    // 分工也留一份：事后翻账本就知道每条是谁说的
+                    judgements = current.Items
+                        .OrderBy(i => i.Order)
+                        .Select(i => new
+                        {
+                            dimension = i.Dimension,
+                            result = i.Status.ToString(),
+                            reviewer = i.Reviewer
+                        })
+                        .ToList()
                 }),
                 CreatedAt = clock.UtcNow
             });
@@ -1168,8 +1178,11 @@ public sealed class ReviewService(
         return entity;
     }
 
-    private static ReviewRoundDto ToDto(ReviewRound round, List<ReviewItem>? items = null) =>
-        new(
+    private static ReviewRoundDto ToDto(ReviewRound round, List<ReviewItem>? items = null)
+    {
+        var all = (items ?? round.Items).OrderBy(i => i.Order).ToList();
+
+        return new ReviewRoundDto(
             round.Id,
             round.TaskId,
             round.Round,
@@ -1178,8 +1191,17 @@ public sealed class ReviewService(
             round.Reviewer,
             round.StartedAt,
             round.FinishedAt,
-            (items ?? round.Items).OrderBy(i => i.Order).Select(ToItemDto).ToList(),
-            round.CommitHash);
+            all.Select(ToItemDto).ToList(),
+            round.CommitHash,
+            // 分工与结论：收尾的人（协调者）要一眼看出谁还没交、哪条不通过
+            all.Select(i => new ReviewJudgementDto(
+                i.Dimension,
+                i.DimensionName,
+                i.Status.ToString(),
+                i.Reviewer)).ToList(),
+            all.Count(i => i.Status == ReviewStatus.Pending),
+            all.Count(i => i.Status == ReviewStatus.Failed));
+    }
 
     private static SpecVerdictDto ToSpecVerdictDto(SpecVerdict verdict) => new(
         verdict.Id,

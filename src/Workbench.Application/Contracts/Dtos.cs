@@ -321,6 +321,22 @@ public sealed record ReviewItemDto(
     DateTimeOffset? ClaimedUntil = null);
 
 /// <summary>一轮评审。</summary>
+/// <summary>
+/// 一轮评审的分工与结论：谁评了哪一条、结论是什么。
+///
+/// 一轮七个维度可以拆给几个 agent 各评各的 —— 收尾的人（协调者）要一眼看出：
+/// 谁还没交、哪条不通过、每条是谁说的。
+/// </summary>
+public sealed record ReviewJudgementDto(
+    /// <summary>维度标识。</summary>
+    string Dimension,
+    /// <summary>维度中文名。</summary>
+    string DimensionName,
+    /// <summary>结论：Pending / Passed / Failed / Skipped。</summary>
+    string Status,
+    /// <summary>谁评的（agent id / 子 agent 名）。</summary>
+    string? Reviewer);
+
 public sealed record ReviewRoundDto(
     Guid Id,
     Guid TaskId,
@@ -332,7 +348,13 @@ public sealed record ReviewRoundDto(
     DateTimeOffset? FinishedAt,
     IReadOnlyList<ReviewItemDto> Items,
     /// <summary>开轮时的仓库 HEAD。为空表示老轮次或项目没配仓库。</summary>
-    string? CommitHash = null);
+    string? CommitHash = null,
+    /// <summary>本轮的分工与结论（谁评了哪一条）。</summary>
+    IReadOnlyList<ReviewJudgementDto>? Judgements = null,
+    /// <summary>还没给结论的维度数。</summary>
+    int PendingCount = 0,
+    /// <summary>不通过的维度数。</summary>
+    int FailedCount = 0);
 
 /// <summary>评审维度的定义（检查清单）。</summary>
 public sealed record ReviewDimensionDto(

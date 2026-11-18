@@ -149,6 +149,50 @@ public sealed class ReviewClaimTests
     }
 
     [Fact]
+    public async Task 轮次带着分工与结论()
+    {
+        var (host, task, _) = await SetupAsync();
+        using var _ = host;
+
+        await host.Reviews.ClaimDimensionAsync(task.Id, "security", "reviewer-1");
+        await host.Reviews.ClaimDimensionAsync(task.Id, "code_quality", "reviewer-2");
+        await host.Reviews.SubmitAsync(task.Id, "security", true, reviewer: "reviewer-1");
+        await host.Reviews.SubmitAsync(task.Id, "code_quality", false, "有问题", reviewer: "reviewer-2");
+
+        var round = await host.Reviews.GetCurrentAsync(task.Id);
+
+        // 分工：谁评了哪一条，结论是什么
+        Assert.Equal(7, round!.Judgements!.Count);
+        var security = round.Judgements.Single(j => j.Dimension == "security");
+        Assert.Equal("reviewer-1", security.Reviewer);
+        Assert.Equal("Passed", security.Status);
+
+        // 收尾的人要能一眼看出还差几条、几条不通过
+        Assert.Equal(5, round.PendingCount);
+        Assert.Equal(1, round.FailedCount);
+    }
+
+    [Fact]
+    public async Task 轮次结束的账本里留着分工()
+    {
+        var (host, task, _) = await SetupAsync();
+        using var _ = host;
+
+        for (var i = 0; i < 7; i++)
+        {
+            var dimension = ReviewDimensions.Keys.ElementAt(i);
+            await host.Reviews.SubmitAsync(task.Id, dimension, true, reviewer: $"reviewer-{i}");
+        }
+
+        var events = await host.Tasks.ListEventsAsync(task.Id);
+        var closed = events.Single(e => e.EventType == TaskEventTypes.ReviewRoundClosed);
+
+        // 事后翻账本就知道每条是谁说的
+        Assert.Contains("judgements", closed.Payload!);
+        Assert.Contains("reviewer-0", closed.Payload!);
+    }
+
+    [Fact]
     public async Task MCP工具能认领维度()
     {
         var (host, task, _) = await SetupAsync();

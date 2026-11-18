@@ -130,6 +130,35 @@ public sealed class WorkstationServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task 活干完了的工位标成该收()
+    {
+        using var host = new WorkbenchTestHost();
+        var project = await host.Projects.CreateAsync("测试项目", repoPath: _repo);
+        var task = await host.Tasks.CreateAsync(project.Id, "干完的活");
+
+        await host.Tasks.ClaimAsync(task.Id, "agent-a", workPath: _worktree);
+
+        var service = new WorkstationService(host.Db, host.Git, host.Clock);
+        Assert.False((await service.ListAsync(project.Id)).Single().ReadyToClean);
+
+        // 推到已完成 —— 活干完了，那个工位该拆
+        await host.Tasks.ChangeStatusAsync(task.Id, TaskStatus.DocsReady);
+        await host.Tasks.ChangeStatusAsync(task.Id, TaskStatus.Planned);
+        await host.Tasks.ChangeStatusAsync(task.Id, TaskStatus.InDev);
+        await host.Tasks.ChangeStatusAsync(task.Id, TaskStatus.Testing);
+        await host.Tasks.ChangeStatusAsync(task.Id, TaskStatus.Review);
+        await host.Tasks.ChangeStatusAsync(task.Id, TaskStatus.Done);
+
+        var station = (await service.ListAsync(project.Id)).Single();
+        Assert.True(station.ReadyToClean);
+        Assert.Contains("worktree remove", station.CleanupCommand!);
+
+        // 账上也要留一笔 —— 事后翻得到「这个工位该收」
+        var events = await host.Tasks.ListEventsAsync(task.Id);
+        Assert.Contains(events, e => e.EventType == TaskEventTypes.StationReadyToClean);
+    }
+
+    [Fact]
     public async Task 放掉工位会清登记并给出清理命令()
     {
         using var host = new WorkbenchTestHost();

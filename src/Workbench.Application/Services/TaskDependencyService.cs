@@ -388,6 +388,9 @@ public static class TaskEventTypes
     /// <summary>放掉工位（worktree 登记被清掉，等着清理）。</summary>
     public const string StationReleased = "task.station_released";
 
+    /// <summary>活干完了 —— 那个工位可以收了。</summary>
+    public const string StationReadyToClean = "task.station_ready_to_clean";
+
     /// <summary>某个评审维度被认领（多 agent 分工）。</summary>
     public const string ReviewDimensionClaimed = "review.dimension_claimed";
 

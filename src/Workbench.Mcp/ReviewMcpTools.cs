@@ -66,8 +66,9 @@ public sealed class ReviewMcpTools(IReviewService reviews, IAgentSessionAccessor
 
     [McpServerTool(Name = "workbench_get_review_pack")]
     [Description(
-        "取评审包：每个维度的检查清单 + 任务上下文（需求理解、验收标准、文档、产物）+ 变更文件列表。" +
-        "拿到包之后逐维度评审（可以开子 agent 并行），再逐维度调 workbench_submit_review 回写结论。")]
+        "取评审包：每个维度的检查清单 + 任务上下文（需求理解、验收标准、文档、产物）+ 变更文件列表" +
+        "+ 本轮分工（round.judgements：谁评了哪一条、结论是什么）。" +
+        "拿到包之后逐维度评审（可以开子 agent 并行认领），再逐维度调 workbench_submit_review 回写结论。")]
     public async Task<ReviewToolResult> GetReviewPackAsync(
         Guid taskId,
         int? round = null,
@@ -194,7 +195,10 @@ public sealed class ReviewMcpTools(IReviewService reviews, IAgentSessionAccessor
     }
 
     [McpServerTool(Name = "workbench_get_review")]
-    [Description("取当前评审轮次（含各维度当前结论与汇总判定）")]
+    [Description(
+        "取当前评审轮次：各维度当前结论 + **本轮的分工**（judgements：谁评了哪一条、结论是什么）" +
+        "+ 还差几条（pendingCount）/ 几条不通过（failedCount）。" +
+        "收尾的人（协调者）调这个就知道还差谁的活、哪条要改。")]
     public async Task<ReviewToolResult> GetReviewAsync(
         Guid taskId,
         CancellationToken cancellationToken = default)

@@ -313,6 +313,18 @@ else
                                 HEAD @CurrentReview.CommitHash[..Math.Min(8, CurrentReview.CommitHash.Length)]
                             </span>
                         }
+                        @* 分工的收尾：收尾的人要一眼看出「还差几条、哪条不通过、每条是谁说的」 *@
+                        <span class="wb-chip wb-chip-muted">
+                            已判 @(CurrentReview.Items.Count - CurrentReview.PendingCount)/@CurrentReview.Items.Count
+                            @if (CurrentReview.PendingCount > 0)
+                            {
+                                <text> · 还差 @CurrentReview.PendingCount 条</text>
+                            }
+                            @if (CurrentReview.FailedCount > 0)
+                            {
+                                <text> · @CurrentReview.FailedCount 条不通过</text>
+                            }
+                        </span>
                     }
                     <button class="wb-btn" disabled="@Busy" @onclick="StartReviewAsync">开始一轮评审</button>
                 </div>
@@ -1003,6 +1015,14 @@ else
                             <pre class="wb-pre">@string.Join("\n", station.SetupCommands)</pre>
                         }
                     }
+
+                    @* 活干完了 → 那个工位该拆了。工作台不替 agent 删目录，只给命令。 *@
+                    @if (IsFinished && !string.IsNullOrWhiteSpace(Context.Task.WorkPath)
+                        && !string.IsNullOrWhiteSpace(Context.Project.RepoPath))
+                    {
+                        <div class="wb-muted">活干完了，这个工位可以收了：</div>
+                        <pre class="wb-pre">git -C @Context.Project.RepoPath worktree remove @Context.Task.WorkPath</pre>
+                    }
                 }
                 else
                 {
@@ -1303,6 +1323,10 @@ else
     /// 界面上要分得清：主工作区是**共享**的那一个（同一时刻只允许一个 agent 占），
     /// 自己的 worktree 是隔离的 —— 两者的提示不一样。
     /// </summary>
+    /// <summary>活已经干完（已完成 / 已取消）—— 工位可以收了。</summary>
+    private bool IsFinished =>
+        Context?.Task.Status is TaskStatus.Done or TaskStatus.Cancelled;
+
     private bool IsMainCheckout =>
         string.IsNullOrWhiteSpace(Context?.Task.WorkPath) ||
         string.IsNullOrWhiteSpace(Context?.Project.RepoPath) ||

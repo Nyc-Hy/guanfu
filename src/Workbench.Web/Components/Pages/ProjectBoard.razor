@@ -289,7 +289,11 @@ else
                                 }
                             </td>
                             <td>
-                                @if (station.Orphaned)
+                                @if (station.ReadyToClean)
+                                {
+                                    <span class="wb-chip wb-chip-warn">该收了</span>
+                                }
+                                else if (station.Orphaned)
                                 {
                                     <span class="wb-chip wb-chip-warn">没人管了</span>
                                 }
@@ -318,8 +322,9 @@ else
                 </table>
             </div>
             <p class="wb-hint">
-                「没人管了」= 活干完了 / 租约过期了，但那个目录还在磁盘上。
-                工作台不替 agent 删目录 —— 那是它自己仓库里的事，这里只给清理的确切命令。
+                「该收了」= 活干完了，那个工位该拆；「没人管了」= 租约过期了没人认领，
+                但目录还在磁盘上。工作台不替 agent 删目录 —— 那是它自己仓库里的事，
+                这里只给清理的确切命令。
             </p>
         }
     </section>
