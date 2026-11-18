@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.0" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="$(EfCoreVersion)" />
+    <PackageReference Include="xunit" Version="2.5.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.5.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Guanfu.Domain\Guanfu.Domain.csproj" />
+    <ProjectReference Include="..\..\src\Guanfu.Application\Guanfu.Application.csproj" />
+    <ProjectReference Include="..\..\src\Guanfu.Documents\Guanfu.Documents.csproj" />
+    <ProjectReference Include="..\..\src\Guanfu.Infrastructure\Guanfu.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\Guanfu.Mcp\Guanfu.Mcp.csproj" />
+    <ProjectReference Include="..\..\src\Guanfu.Web\Guanfu.Web.csproj" />
+    <!-- MCP stdio 桥接的协议逻辑也要能测（JSON-RPC 流污染就是这么发现的） -->
+    <ProjectReference Include="..\..\src\Guanfu.Cli\Guanfu.Cli.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+</Project>

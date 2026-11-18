@@ -1,0 +1,1590 @@
+/* ==========================================================================
+   观复样式 —— 设计系统
+   单一 token 源（:root）+ 双主题（暗色默认 / 亮色可选）。
+   页面只引用语义类（wb-panel / wb-btn / wb-table …），不写行内样式。
+   ========================================================================== */
+
+/* ---------- 1. 主题 token ---------- */
+
+:root {
+    color-scheme: dark;
+
+    /* 表面层次：底 → 面板 → 面板内嵌 → 悬浮 */
+    --wb-bg: #0b0d12;
+    --wb-side-bg: #0e1117;
+    --wb-surface: #141821;
+    --wb-surface-2: #1a1f2a;
+    --wb-surface-3: #222836;
+
+    /* 描边 */
+    --wb-border: #232a36;
+    --wb-border-strong: #333c4d;
+
+    /* 文字 */
+    --wb-text: #e9ecf3;
+    --wb-text-2: #bcc5d6;
+    --wb-muted: #8b95a9;
+    --wb-faint: #626d81;
+
+    /* 强调与语义色 */
+    --wb-accent: #5b8def;
+    --wb-accent-hover: #6f9bf2;
+    --wb-accent-fg: #ffffff;
+    --wb-accent-soft: rgba(91, 141, 239, .14);
+    --wb-accent-line: rgba(91, 141, 239, .42);
+    --wb-ok: #3ecf8e;
+    --wb-ok-soft: rgba(62, 207, 142, .13);
+    --wb-warn: #e5a84b;
+    --wb-warn-soft: rgba(229, 168, 75, .13);
+    --wb-danger: #ef5f6b;
+    --wb-danger-soft: rgba(239, 95, 107, .13);
+
+    /* 事件类型色：时间线上的图标与标签按事件种类着色。
+       亮色主题要更深 —— 暗色的那套在浅底上对比度不够。 */
+    --wb-ev-blue: #60a5fa;
+    --wb-ev-purple: #a78bfa;
+    --wb-ev-cyan: #22d3ee;
+    --wb-ev-green: #34d399;
+    --wb-ev-amber: #fbbf24;
+    --wb-ev-gray: #94a3b8;
+
+    /* 阴影 */
+    --wb-shadow-1: 0 1px 2px rgba(0, 0, 0, .35);
+    --wb-shadow-2: 0 4px 16px rgba(0, 0, 0, .30);
+    --wb-shadow-3: 0 12px 32px rgba(0, 0, 0, .45);
+
+    /* 圆角 */
+    --wb-r-xs: 4px;
+    --wb-r-sm: 6px;
+    --wb-r: 9px;
+    --wb-r-lg: 13px;
+    --wb-r-full: 999px;
+
+    /* 字号 */
+    --wb-fs-xs: 11px;
+    --wb-fs-sm: 12px;
+    --wb-fs: 13px;
+    --wb-fs-md: 14px;
+    --wb-fs-lg: 16px;
+    --wb-fs-xl: 21px;
+
+    /* 间距 */
+    --wb-gap-1: 4px;
+    --wb-gap-2: 8px;
+    --wb-gap-3: 12px;
+    --wb-gap-4: 16px;
+    --wb-gap-5: 20px;
+    --wb-gap-6: 24px;
+    --wb-gap-7: 32px;
+
+    --wb-ctl-h: 30px;
+    --wb-side-w: 236px;
+    --wb-top-h: 52px;
+}
+
+/* 亮色主题：顶栏的切换按钮把 data-theme 写到 <html> 上 */
+:root[data-theme="light"] {
+    color-scheme: light;
+
+    --wb-bg: #eef1f6;
+    --wb-side-bg: #ffffff;
+    --wb-surface: #ffffff;
+    --wb-surface-2: #f2f4f8;
+    --wb-surface-3: #e7eaf1;
+
+    --wb-border: #e1e5ed;
+    --wb-border-strong: #c9d0dd;
+
+    --wb-text: #171a21;
+    --wb-text-2: #3c4453;
+    --wb-muted: #6b7382;
+    --wb-faint: #8b93a2;
+
+    --wb-accent: #2f6fed;
+    --wb-accent-hover: #2560d8;
+    --wb-accent-fg: #ffffff;
+    --wb-accent-soft: rgba(47, 111, 237, .09);
+    --wb-accent-line: rgba(47, 111, 237, .38);
+    --wb-ok: #12905a;
+    --wb-ok-soft: rgba(18, 144, 90, .10);
+    --wb-warn: #b67612;
+    --wb-warn-soft: rgba(182, 118, 18, .11);
+    --wb-danger: #d23844;
+    --wb-danger-soft: rgba(210, 56, 68, .09);
+
+    --wb-ev-blue: #2563eb;
+    --wb-ev-purple: #7c3aed;
+    --wb-ev-cyan: #0e7490;
+    --wb-ev-green: #15803d;
+    --wb-ev-amber: #b45309;
+    --wb-ev-gray: #64748b;
+
+    --wb-shadow-1: 0 1px 2px rgba(16, 24, 40, .06);
+    --wb-shadow-2: 0 4px 14px rgba(16, 24, 40, .08);
+    --wb-shadow-3: 0 12px 32px rgba(16, 24, 40, .14);
+}
+
+/* ---------- 2. 基础重置 ---------- */
+
+* { box-sizing: border-box; }
+
+html, body { height: 100%; }
+
+body {
+    margin: 0;
+    background: var(--wb-bg);
+    color: var(--wb-text);
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei",
+                 "Segoe UI", Roboto, sans-serif;
+    font-size: var(--wb-fs);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, h4 { font-weight: 600; letter-spacing: -.01em; }
+
+/* 正文里的链接统一成强调色 —— 浏览器默认的 #0000EE 在暗底上刺眼且不统一 */
+a { color: var(--wb-accent); text-decoration: none; }
+a:hover { color: var(--wb-accent-hover); text-decoration: underline; }
+
+/* 对象标题链接：指向某个任务 / 项目 / 文档。
+   用正文色而不是链接蓝 —— 一屏里十几条蓝链接比内容还抢眼，
+   鼠标停上去变蓝，就知道能点。动作链接（「去处理」「详情」）才用蓝。 */
+.wb-link-title {
+    color: var(--wb-text);
+    font-weight: 500;
+}
+.wb-link-title:hover {
+    color: var(--wb-accent);
+    text-decoration: none;
+}
+
+code, pre, .wb-sql, .wb-mono {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+::selection { background: var(--wb-accent-soft); }
+
+/* 键盘焦点环：暗色背景下默认焦点几乎看不见 */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+summary:focus-visible {
+    outline: 2px solid var(--wb-accent);
+    outline-offset: 2px;
+}
+
+input[type="checkbox"], input[type="radio"] { accent-color: var(--wb-accent); }
+
+/* ---------- 3. 布局骨架 ---------- */
+
+.wb-shell {
+    display: grid;
+    grid-template-columns: var(--wb-side-w) minmax(0, 1fr);
+    min-height: 100vh;
+}
+
+/* 移动端抽屉开关：纯 CSS，不引 JS */
+.wb-nav-toggle-box { position: absolute; opacity: 0; pointer-events: none; }
+
+.wb-side {
+    position: sticky;
+    top: 0;
+    align-self: start;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    background: var(--wb-side-bg);
+    border-right: 1px solid var(--wb-border);
+    z-index: 40;
+}
+
+.wb-side-brand {
+    display: flex;
+    align-items: center;
+    gap: var(--wb-gap-2);
+    height: var(--wb-top-h);
+    padding: 0 var(--wb-gap-4);
+    border-bottom: 1px solid var(--wb-border);
+    flex: 0 0 auto;
+}
+
+.wb-brand {
+    font-weight: 700;
+    font-size: var(--wb-fs-md);
+    color: var(--wb-text);
+    text-decoration: none;
+    letter-spacing: -.01em;
+}
+
+.wb-brand:hover { color: var(--wb-text); text-decoration: none; }
+
+.wb-brand-mark {
+    width: 22px;
+    height: 22px;
+    border-radius: var(--wb-r-sm);
+    background: linear-gradient(140deg, var(--wb-accent), #8b5cf6);
+    box-shadow: 0 0 0 1px var(--wb-accent-line);
+    flex: 0 0 auto;
+}
+
+.wb-side-scroll {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    padding: var(--wb-gap-3) var(--wb-gap-3) var(--wb-gap-6);
+}
+
+.wb-side-group { margin-bottom: var(--wb-gap-5); }
+.wb-side-group:last-child { margin-bottom: 0; }
+
+/* 首屏入口（总览）：它是这个观复的门，字重比同组其他项重一点。 */
+.wb-side-link-lead { font-weight: 600; color: var(--wb-text); }
+.wb-side-link-lead.active { color: var(--wb-accent); }
+
+.wb-side-group-label {
+    font-size: var(--wb-fs-xs);
+    font-weight: 600;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--wb-faint);
+    padding: 0 var(--wb-gap-2);
+    margin-bottom: var(--wb-gap-2);
+}
+
+.wb-side-link {
+    display: flex;
+    align-items: center;
+    gap: var(--wb-gap-2);
+    padding: 6px var(--wb-gap-2);
+    margin-bottom: 1px;
+    border-radius: var(--wb-r-sm);
+    color: var(--wb-text-2);
+    font-size: var(--wb-fs);
+    text-decoration: none;
+    transition: background .12s ease, color .12s ease;
+}
+
+.wb-side-link:hover {
+    background: var(--wb-surface-2);
+    color: var(--wb-text);
+    text-decoration: none;
+}
+
+.wb-side-link.active {
+    background: var(--wb-accent-soft);
+    color: var(--wb-text);
+    font-weight: 600;
+    box-shadow: inset 2px 0 0 var(--wb-accent);
+}
+
+.wb-side-link .wb-badge { margin-left: auto; margin-right: 0; }
+
+/* 入口名 + 一行说明。名字太抽象时，光看「审批 / 审计」不知道该什么时候点开。 */
+.wb-side-text {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+.wb-side-link-name { line-height: 1.35; }
+.wb-side-link-sub {
+    font-size: var(--wb-fs-xs);
+    line-height: 1.3;
+    color: var(--wb-faint);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.wb-side-link:hover .wb-side-link-sub { color: var(--wb-muted); }
+.wb-side-link.active .wb-side-link-sub { color: var(--wb-text-2); }
+
+/* 新建项目的入口：虚线框，跟已有的项目区分开 —— 它是个动作，不是项目 */
+.wb-side-link-new {
+    margin-top: var(--wb-gap-1);
+    border: 1px dashed var(--wb-border-strong);
+    color: var(--wb-muted);
+}
+.wb-side-link-new:hover {
+    color: var(--wb-accent);
+    border-color: var(--wb-accent-line);
+    background: var(--wb-accent-soft);
+}
+
+.wb-side-empty {
+    padding: var(--wb-gap-1) var(--wb-gap-2);
+    font-size: var(--wb-fs-sm);
+    color: var(--wb-faint);
+}
+
+/* 主区 */
+.wb-main { min-width: 0; display: flex; flex-direction: column; }
+
+.wb-topbar {
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    display: flex;
+    align-items: center;
+    gap: var(--wb-gap-3);
+    height: var(--wb-top-h);
+    padding: 0 var(--wb-gap-6);
+    border-bottom: 1px solid var(--wb-border);
+    background: var(--wb-bg);
+}
+
+.wb-topbar-spacer { flex: 1 1 auto; }
+
+/* 顶栏的全局搜索入口：长得像输入框，点进去才是真的搜索页 */
+.wb-topsearch {
+    display: flex;
+    align-items: center;
+    gap: var(--wb-gap-2);
+    width: min(420px, 42vw);
+    height: var(--wb-ctl-h);
+    padding: 0 var(--wb-gap-2);
+    border-radius: var(--wb-r-sm);
+    border: 1px solid var(--wb-border);
+    background: var(--wb-surface);
+    color: var(--wb-faint);
+    font-size: var(--wb-fs);
+    text-decoration: none;
+    transition: border-color .12s ease, color .12s ease;
+}
+
+.wb-topsearch:hover {
+    border-color: var(--wb-border-strong);
+    color: var(--wb-muted);
+    text-decoration: none;
+}
+
+.wb-topsearch-icon { font-size: var(--wb-fs-md); line-height: 1; }
+
+/* 窄屏下框子就那么宽，文字别折行 —— 折成两行顶栏会变高 */
+.wb-topsearch-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+
+.wb-topsearch kbd {
+    margin-left: auto;
+    font-family: inherit;
+    font-size: var(--wb-fs-xs);
+    color: var(--wb-faint);
+    border: 1px solid var(--wb-border);
+    border-radius: var(--wb-r-xs);
+    padding: 0 5px;
+    line-height: 16px;
+}
+
+/* 表格里的链接多半是任务标题，比正文重一点才看得出能点 */
+.wb-table a:not(.wb-btn-link) { font-weight: 500; }
+
+.wb-content {
+    padding: var(--wb-gap-6);
+    max-width: 1440px;
+    width: 100%;
+    margin: 0 auto;
+    flex: 1 1 auto;
+}
+
+.wb-nav-burger {
+    display: none;
+    position: fixed;
+    top: 11px;
+    left: 14px;
+    z-index: 45;
+    width: 30px;
+    height: 30px;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--wb-r-sm);
+    border: 1px solid var(--wb-border);
+    background: var(--wb-surface-2);
+    color: var(--wb-text-2);
+    cursor: pointer;
+    font-size: 15px;
+    line-height: 1;
+}
+
+.wb-nav-backdrop { display: none; }
+
+/* ---------- 4. 页头 ---------- */
+
+.wb-page-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: var(--wb-gap-4);
+    margin-bottom: var(--wb-gap-5);
+}
+
+/* 标题块吃掉剩余宽度，页头右边的操作按钮就聚成一组 ——
+   否则 space-between 会把两个按钮分到两端去（审计页最明显）。 */
+.wb-page-head > :first-child { flex: 1 1 auto; min-width: 0; }
+
+.wb-page-head h1 {
+    margin: 0 0 var(--wb-gap-1);
+    font-size: var(--wb-fs-xl);
+    line-height: 1.3;
+}
+
+.wb-page-head .wb-muted { max-width: 76ch; }
+
+/* 页头右侧的操作按钮：别被左边那段长描述挤成竖排 */
+.wb-page-head > .wb-form-row,
+.wb-page-head > .wb-btn { flex: 0 0 auto; white-space: nowrap; }
+
+.wb-back {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--wb-muted);
+    font-size: var(--wb-fs-sm);
+    text-decoration: none;
+}
+.wb-back:hover { color: var(--wb-accent); text-decoration: none; }
+
+/* ---------- 5. 面板 / 区块 ---------- */
+
+.wb-panel {
+    background: var(--wb-surface);
+    border: 1px solid var(--wb-border);
+    border-radius: var(--wb-r-lg);
+    padding: var(--wb-gap-5);
+    margin-bottom: var(--wb-gap-4);
+    box-shadow: var(--wb-shadow-1);
+}
+
+.wb-panel:last-child { margin-bottom: 0; }
+
+/* 工具条面板：比普通面板更紧凑，读起来是一条操作带而不是一块内容 */
+.wb-toolbar {
+    background: var(--wb-surface-2);
+    padding: var(--wb-gap-3) var(--wb-gap-4);
+}
+
+/* 批量裁决理由是「一句话」级别的输入，拉成横贯整条工具条的大框
+   既不像输入框也不像按钮组。给它一个上限，剩下的空间留给操作按钮。 */
+.wb-toolbar .wb-input { flex: 0 1 360px; max-width: 360px; }
+
+/* 扁平容器：留结构不留外观（筛选条、提示区用） */
+.wb-panel-flat {
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    padding: 0;
+    margin-bottom: var(--wb-gap-3);
+}
+
+/* 空面板不该抢戏：虚线浅底，矮一截。
+   三块面板里两块是空的，铺成跟有内容的一样高，一屏全是空框。 */
+.wb-panel-quiet {
+    background: transparent;
+    border-style: dashed;
+    border-color: var(--wb-border);
+    box-shadow: none;
+    padding: var(--wb-gap-3) var(--wb-gap-4);
+}
+.wb-panel.wb-panel-quiet h3 {
+    margin: 0 0 var(--wb-gap-1);
+    font-size: var(--wb-fs-sm);
+    color: var(--wb-muted);
+}
+
+/* 有事要人处理的那块：左边一道 accent 边条，扫一眼就知道该先看它 */
+.wb-panel-focus { border-left: 3px solid var(--wb-accent); }
+
+.wb-panel h3 {
+    margin: 0 0 var(--wb-gap-3);
+    font-size: var(--wb-fs-md);
+    display: flex;
+    align-items: center;
+    gap: var(--wb-gap-2);
+}
+
+.wb-panel h4 {
+    margin: var(--wb-gap-4) 0 var(--wb-gap-2);
+    font-size: var(--wb-fs-sm);
+    color: var(--wb-muted);
+    font-weight: 600;
+}
+
+.wb-card-head {
+    display: flex;
+    align-items: center;
+    gap: var(--wb-gap-2);
+    flex-wrap: wrap;
+    margin-bottom: var(--wb-gap-3);
+}
+.wb-card-head h2 { margin: 0; font-size: var(--wb-fs-lg); }
+/* 标题行里的 h3 不带下边距：否则标题和同一行的按钮不在一条基线上 */
+.wb-card-head h3 { margin: 0; }
+.wb-card-head .wb-muted { margin: 0; }
+
+/* ---------- 6. 文本件 ---------- */
+
+.wb-muted { color: var(--wb-muted); font-size: var(--wb-fs); margin: var(--wb-gap-1) 0; }
+.wb-hint { font-size: var(--wb-fs-sm); color: var(--wb-faint); margin-top: var(--wb-gap-2); }
+.wb-error { color: var(--wb-danger); font-size: var(--wb-fs); margin: var(--wb-gap-2) 0 0; }
+.wb-faint { color: var(--wb-faint); }
+
+/* 成条罗列（上传失败清单之类）：不要浏览器默认的大缩进与粗体 */
+.wb-plain-list { margin: var(--wb-gap-1) 0 0; padding-left: 1.4em; color: var(--wb-muted); font-size: var(--wb-fs); }
+.wb-plain-list li { margin: var(--wb-gap-1) 0; }
+
+/* 间距助手：固定的间距走类，不写内联 style。
+   内联 style 只留给运行时算出来的值（进度条宽度、层级缩进）。 */
+.wb-mt-2 { margin-top: var(--wb-gap-2); }
+.wb-mt-3 { margin-top: var(--wb-gap-3); }
+.wb-mb-3 { margin-bottom: var(--wb-gap-3); }
+.wb-my-3 { margin: var(--wb-gap-3) 0; }
+
+.wb-empty {
+    padding: var(--wb-gap-6) var(--wb-gap-4);
+    text-align: center;
+    color: var(--wb-muted);
+    border: 1px dashed var(--wb-border-strong);
+    border-radius: var(--wb-r-lg);
+    background: var(--wb-surface);
+    font-size: var(--wb-fs);
+}
+
+/* 提示块：讲「怎么用」而不是「这里没有东西」——
+   不需要虚线大框，占一行就够。 */
+.wb-note {
+    padding: var(--wb-gap-4);
+    color: var(--wb-muted);
+    font-size: var(--wb-fs);
+    line-height: 1.7;
+    background: var(--wb-surface-2);
+    border: 1px solid var(--wb-border);
+    border-radius: var(--wb-r);
+}
+
+.wb-loading { padding: var(--wb-gap-7); text-align: center; color: var(--wb-muted); font-size: var(--wb-fs); }
+
+/* ---------- 7. 按钮 ---------- */
+
+.wb-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: var(--wb-ctl-h);
+    padding: 0 var(--wb-gap-3);
+    border-radius: var(--wb-r-sm);
+    border: 1px solid var(--wb-border-strong);
+    background: var(--wb-surface-2);
+    color: var(--wb-text);
+    font-family: inherit;
+    font-size: var(--wb-fs);
+    line-height: 1;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background .12s ease, border-color .12s ease, opacity .12s ease;
+}
+
+.wb-btn:hover:not(:disabled) { background: var(--wb-surface-3); border-color: var(--wb-faint); }
+.wb-btn:active:not(:disabled) { transform: translateY(.5px); }
+.wb-btn:disabled { opacity: .45; cursor: not-allowed; }
+
+/* 禁用的实心按钮要退回中性色 —— 半透明的蓝看着还是像能点 */
+.wb-btn-primary:disabled,
+.wb-btn-danger:disabled {
+    background: var(--wb-surface-2);
+    border-color: var(--wb-border);
+    color: var(--wb-faint);
+    opacity: 1;
+}
+
+.wb-btn-primary {
+    background: var(--wb-accent);
+    border-color: var(--wb-accent);
+    color: var(--wb-accent-fg);
+    font-weight: 500;
+}
+.wb-btn-primary:hover:not(:disabled) { background: var(--wb-accent-hover); border-color: var(--wb-accent-hover); }
+
+.wb-btn-danger {
+    background: transparent;
+    border-color: var(--wb-danger);
+    color: var(--wb-danger);
+}
+.wb-btn-danger:hover:not(:disabled) { background: var(--wb-danger-soft); border-color: var(--wb-danger); }
+
+.wb-btn-ghost {
+    background: transparent;
+    border-color: transparent;
+    color: var(--wb-text-2);
+}
+.wb-btn-ghost:hover:not(:disabled) { background: var(--wb-surface-2); color: var(--wb-text); border-color: transparent; }
+
+.wb-btn-sm { height: 26px; padding: 0 var(--wb-gap-2); font-size: var(--wb-fs-sm); }
+
+/* 文字按钮：跟普通按钮长得像，但只是一行文字 */
+.wb-btn-link {
+    border: none;
+    background: none;
+    color: var(--wb-accent);
+    padding: 0 4px;
+    font-size: var(--wb-fs-sm);
+    height: auto;
+    font-family: inherit;
+    cursor: pointer;
+}
+.wb-btn-link:hover:not(:disabled) { background: none; color: var(--wb-accent-hover); text-decoration: underline; }
+
+/* ---------- 8. 表单控件 ---------- */
+
+.wb-input {
+    height: var(--wb-ctl-h);
+    padding: 0 var(--wb-gap-2);
+    border-radius: var(--wb-r-sm);
+    border: 1px solid var(--wb-border-strong);
+    background: var(--wb-bg);
+    color: var(--wb-text);
+    font-family: inherit;
+    font-size: var(--wb-fs);
+    min-width: 200px;
+    flex: 1 1 220px;
+    transition: border-color .12s ease, box-shadow .12s ease;
+}
+
+.wb-input::placeholder { color: var(--wb-faint); }
+
+.wb-input:focus {
+    outline: none;
+    border-color: var(--wb-accent);
+    box-shadow: 0 0 0 3px var(--wb-accent-soft);
+}
+
+.wb-input:disabled { opacity: .5; }
+
+/* 下拉框不需要拉满宽度：项目筛选是一个名字，不是全文输入 */
+select.wb-input {
+    flex: 0 1 auto;
+    min-width: 150px;
+    max-width: 260px;
+    padding-right: var(--wb-gap-2);
+}
+
+textarea.wb-input {
+    height: auto;
+    min-height: 72px;
+    padding: var(--wb-gap-2);
+    line-height: 1.6;
+}
+
+.wb-textarea {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    resize: vertical;
+    width: 100%;
+}
+
+/* 原生文件选择框：浏览器默认那个灰按钮跟整套控件不是一个画风。
+   用 ::file-selector-button 单改按钮，不用隐藏 input（隐藏了就得自己维护状态）。 */
+input[type="file"] {
+    color: var(--wb-muted);
+    font-size: var(--wb-fs);
+}
+
+input[type="file"]::file-selector-button {
+    height: var(--wb-ctl-h);
+    padding: 0 var(--wb-gap-3);
+    margin-right: var(--wb-gap-3);
+    border-radius: var(--wb-r-sm);
+    border: 1px solid var(--wb-border-strong);
+    background: var(--wb-surface-2);
+    color: var(--wb-text);
+    font-family: inherit;
+    font-size: var(--wb-fs);
+    line-height: 1;
+    cursor: pointer;
+    transition: background .12s ease, border-color .12s ease;
+}
+
+input[type="file"]::file-selector-button:hover {
+    background: var(--wb-surface-3);
+    border-color: var(--wb-faint);
+}
+
+.wb-form-row {
+    display: flex;
+    gap: var(--wb-gap-2);
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.wb-label {
+    font-size: var(--wb-fs-sm);
+    color: var(--wb-muted);
+    min-width: 52px;
+    flex: 0 0 auto;
+}
+
+.wb-check { display: inline-flex; align-items: center; gap: 6px; }
+
+/* 「标签 + 控件」的字段行。
+   全局 .wb-input 里 input 是撑满的（flex-grow:1）、select 是内容宽
+   （flex-grow:0，上限 260px）—— 两者混在一组里，右边缘全是参差的口。
+   这里把控件统一钉到同一列：标签列固定宽（--wb-label-w），
+   各行控件的左边缘和右边缘都对齐。 */
+.wb-field-row,
+.wb-field-row-2 {
+    display: grid;
+    align-items: center;
+    gap: var(--wb-gap-2) var(--wb-gap-3);
+}
+/* 一行一组 */
+.wb-field-row { grid-template-columns: var(--wb-label-w, 64px) minmax(0, 1fr); }
+/* 一行两组：左半右半各自成列 —— 单独一行的字段（如密码）跟同列的字段对齐，
+   不会被拉成横跨整行的宽框。
+   注意：同一组里要么所有子元素都自动排布（.wb-field-row-2），
+   要么都写死列位（.wb-field-row）。混着来会让自动排布的标签掉到下一行去。 */
+.wb-field-row-2 {
+    grid-template-columns: var(--wb-label-w, 64px) minmax(0, 1fr) var(--wb-label-w, 64px) minmax(0, 1fr);
+}
+
+.wb-field-row > .wb-label { grid-column: 1; white-space: nowrap; }
+.wb-field-row > .wb-input { grid-column: 2; }
+.wb-field-row > .wb-field-ctl { grid-column: 2; }
+
+/* 控件撑满自己那一列 */
+.wb-field-row > .wb-input,
+.wb-field-row-2 > .wb-input { width: 100%; max-width: none; min-width: 0; }
+
+/* 控件后面跟着按钮的（绑定分支 + 绑定）：按钮跟在控件右边。
+   基准取 0：input 的固有宽度是 size=20 推出来的（~180px），
+   拿它当基准会把按钮挤到下一行去。 */
+.wb-field-ctl {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--wb-gap-2);
+    min-width: 0;
+}
+.wb-field-ctl > .wb-input { flex: 1 1 0; width: auto; max-width: none; min-width: 0; }
+
+/* 操作按钮行：跟上面的字段行拉开一点，
+   否则「保存分派 / 归档」看着像「截止日」这个字段的一部分。 */
+.wb-field-row-act { margin-top: var(--wb-gap-2); }
+
+/* ---------- 9. 表格 ---------- */
+
+.wb-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--wb-fs);
+}
+
+.wb-table th, .wb-table td {
+    text-align: left;
+    padding: 9px var(--wb-gap-3);
+    border-bottom: 1px solid var(--wb-border);
+    vertical-align: top;
+}
+
+.wb-table thead th {
+    color: var(--wb-muted);
+    font-weight: 600;
+    font-size: var(--wb-fs-sm);
+    letter-spacing: .02em;
+    white-space: nowrap;
+    background: var(--wb-surface);
+    border-bottom-color: var(--wb-border-strong);
+}
+
+.wb-table tbody tr:last-child td { border-bottom: none; }
+
+.wb-table tbody tr { transition: background .1s ease; }
+.wb-table tbody tr:hover { background: var(--wb-accent-soft); }
+
+/* 工具说明里有 dependsOnTaskId 这类长标识，不给断词的话
+   表格的最小宽度会被撑得比视口还宽，整页横向滚动。 */
+.wb-tool-desc { overflow-wrap: anywhere; }
+
+.wb-table-scroll { overflow-x: auto; }
+.wb-table-scroll > .wb-table { min-width: 640px; }
+
+/* 横向可滚的表：滚动条常驻。macOS 默认是「浮起来」的，一不动就看不见，
+   右边还压着几列的时候没人知道要去滑。 */
+.wb-table-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: var(--wb-border-strong) transparent;
+}
+.wb-table-scroll::-webkit-scrollbar { height: 8px; }
+.wb-table-scroll::-webkit-scrollbar-track { background: transparent; }
+.wb-table-scroll::-webkit-scrollbar-thumb {
+    background: var(--wb-border-strong);
+    border-radius: var(--wb-r-full);
+}
+.wb-table-scroll::-webkit-scrollbar-thumb:hover { background: var(--wb-faint); }
+
+/* 列多的表：给它更大的最小宽度，窄屏下横向滚动，
+   而不是把每个格子压成「一个字一行」的竖条。 */
+.wb-table-scroll.wb-table-wide > .wb-table { min-width: 900px; }
+
+/* 免审批写的规则行：整行染上警示底色 */
+.wb-rule-open td { background: var(--wb-danger-soft); }
+
+/* ---------- 10. 页签 ---------- */
+
+.wb-tabs {
+    display: flex;
+    gap: 2px;
+    flex-wrap: wrap;
+    border-bottom: 1px solid var(--wb-border);
+    margin: var(--wb-gap-3) 0 var(--wb-gap-4);
+}
+
+.wb-tab {
+    appearance: none;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--wb-muted);
+    padding: 7px var(--wb-gap-3);
+    margin-bottom: -1px;
+    font-family: inherit;
+    font-size: var(--wb-fs);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    transition: color .12s ease, border-color .12s ease;
+}
+
+.wb-tab:hover { color: var(--wb-text); }
+.wb-tab-active { color: var(--wb-text); font-weight: 600; border-bottom-color: var(--wb-accent); }
+
+.wb-tabs-sub { margin: 0 0 var(--wb-gap-3); }
+.wb-tabs-sub .wb-tab { font-size: var(--wb-fs-sm); padding: 5px var(--wb-gap-2); }
+
+.wb-count {
+    background: var(--wb-surface-3);
+    color: var(--wb-muted);
+    border-radius: var(--wb-r-full);
+    padding: 0 6px;
+    font-size: var(--wb-fs-xs);
+    font-weight: 600;
+}
+
+.wb-tab-active .wb-count { background: var(--wb-accent-soft); color: var(--wb-accent); }
+
+/* ---------- 11. 徽章 / 标签 ---------- */
+
+.wb-badge {
+    display: inline-block;
+    min-width: 18px;
+    padding: 0 6px;
+    border-radius: var(--wb-r-full);
+    background: var(--wb-danger);
+    color: #fff;
+    font-size: var(--wb-fs-xs);
+    font-weight: 600;
+    line-height: 17px;
+    text-align: center;
+}
+
+.wb-tag {
+    display: inline-block;
+    padding: 1px 7px;
+    border-radius: var(--wb-r-xs);
+    background: var(--wb-surface-2);
+    border: 1px solid var(--wb-border);
+    font-size: var(--wb-fs-xs);
+    color: var(--wb-muted);
+    white-space: nowrap;
+}
+
+.wb-tag-ok { color: var(--wb-ok); border-color: var(--wb-ok); background: var(--wb-ok-soft); }
+.wb-tag-warn { color: var(--wb-warn); border-color: var(--wb-warn); background: var(--wb-warn-soft); }
+.wb-tag-danger { color: var(--wb-danger); border-color: var(--wb-danger); background: var(--wb-danger-soft); }
+.wb-tag-info { color: var(--wb-accent); border-color: var(--wb-accent-line); background: var(--wb-accent-soft); }
+
+.wb-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 7px;
+    border-radius: var(--wb-r-full);
+    background: var(--wb-surface-2);
+    border: 1px solid var(--wb-border);
+    font-size: var(--wb-fs-xs);
+    color: var(--wb-text-2);
+    white-space: nowrap;
+    max-width: 100%;
+}
+
+a.wb-chip:hover { text-decoration: none; border-color: var(--wb-accent-line); background: var(--wb-accent-soft); }
+
+.wb-chip-agent { color: var(--wb-accent); border-color: var(--wb-accent-line); background: var(--wb-accent-soft); }
+.wb-chip-muted { color: var(--wb-muted); }
+.wb-chip-ok { color: var(--wb-ok); border-color: transparent; background: var(--wb-ok-soft); }
+.wb-chip-warn { color: var(--wb-warn); border-color: transparent; background: var(--wb-warn-soft); }
+.wb-chip-danger { color: var(--wb-danger); border-color: transparent; background: var(--wb-danger-soft); }
+
+/* 列宽：表头里写死宽度会让窄屏表格挤爆，交给 CSS */
+.wb-col-switch { width: 64px; }
+.wb-col-policy { width: 96px; }
+.wb-col-verdict { width: 88px; }
+.wb-col-writeback { width: 300px; }
+
+/* 工具名一列：中文说法 + 原始标识两行。给个下限，
+   否则窄屏时标识那行会被压成一条竖杠。 */
+.wb-col-tool { min-width: 170px; }
+.wb-tool-line { font-weight: 600; color: var(--wb-text); }
+.wb-tool-code { font-size: var(--wb-fs-xs); }
+
+/* 评审表：五列里有三列是长文本，auto 布局会按内容分宽度 ——
+   分不到就把「代码规范」压成「代/码/规/范」一竖条。
+   给这几列一个下限，宁可让表在容器里横着滚。 */
+.wb-col-dimension { min-width: 110px; }
+.wb-col-finding { min-width: 190px; }
+.wb-col-reviewer { min-width: 96px; }
+/* 工位列：文案短，但「要开 worktree」不折行 —— 折了就读不成一句话了 */
+.wb-col-station { min-width: 130px; }
+
+/* 搜索结果的任务表：首列是编号，短得很。
+   跟着 .wb-task-table 的 60% 走会把标题挤到天边。 */
+.wb-hit-table th:first-child, .wb-hit-table td:first-child { width: 120px; }
+
+/* 任务状态的展示色。映射在 UiText.StatusClass —— 各页面别各写一套。
+   放在 .wb-chip 之后：同特异度下后者才生效，放前面会被 .wb-chip 的颜色盖掉。 */
+.wb-status-neutral { color: var(--wb-muted); background: var(--wb-surface-2); border-color: var(--wb-border); }
+.wb-status-active { color: var(--wb-accent); background: var(--wb-accent-soft); border-color: var(--wb-accent-line); }
+.wb-status-review { color: var(--wb-warn); background: var(--wb-warn-soft); border-color: transparent; }
+.wb-status-ok { color: var(--wb-ok); background: var(--wb-ok-soft); border-color: transparent; }
+.wb-status-danger { color: var(--wb-danger); background: var(--wb-danger-soft); border-color: transparent; }
+.wb-status-muted { color: var(--wb-faint); background: transparent; border-color: var(--wb-border); }
+
+/* 事件类型色：时间线上的图标与事件标签按种类着色 */
+.wb-ev-blue { color: var(--wb-ev-blue); }
+.wb-ev-purple { color: var(--wb-ev-purple); }
+.wb-ev-cyan { color: var(--wb-ev-cyan); }
+.wb-ev-green { color: var(--wb-ev-green); }
+.wb-ev-amber { color: var(--wb-ev-amber); }
+.wb-ev-gray { color: var(--wb-ev-gray); }
+
+/* 事件标签是 chip：边框跟着事件色走 */
+.wb-chip[class*="wb-ev-"] { border-color: currentColor; }
+
+/* 一排小标签（审批卡头部：工具名、调用方、任务、项目） */
+.wb-chip-row {
+    display: flex;
+    align-items: center;
+    gap: var(--wb-gap-2);
+    flex-wrap: wrap;
+    min-width: 0;
+}
+
+.wb-chip-x {
+    background: none;
+    border: none;
+    color: inherit;
+    cursor: pointer;
+    font-size: var(--wb-fs-md);
+    line-height: 1;
+    padding: 0 0 0 2px;
+    opacity: .6;
+}
+.wb-chip-x:hover { opacity: 1; color: var(--wb-danger); }
+
+/* 任务类型徽章：需求 / 缺陷 / 优化 */
+.wb-type-req { color: var(--wb-accent); }
+.wb-type-bug { color: var(--wb-danger); }
+.wb-type-opt { color: var(--wb-ok); }
+
+/* ---------- 12. 任务表 ---------- */
+
+.wb-filters {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--wb-gap-2);
+    margin-bottom: var(--wb-gap-3);
+}
+
+.wb-filter-key { flex: 1 1 220px; min-width: 180px; max-width: 340px; }
+
+/* 筛选条里的下拉内容很短（「负责人：全部」），继承下来的 200px 最小宽
+   留着一堆空白，五个控件挤在一行像没对齐。 */
+.wb-filters select.wb-input { min-width: 132px; }
+
+.wb-task-table th:first-child, .wb-task-table td:first-child { width: 60%; }
+
+.wb-task-line { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; }
+.wb-task-title { font-weight: 600; color: var(--wb-text); text-decoration: none; }
+.wb-task-title:hover { color: var(--wb-accent); text-decoration: none; }
+.wb-task-key { color: var(--wb-muted); font-size: var(--wb-fs-sm); }
+
+.wb-task-meta {
+    margin-top: 3px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 3px var(--wb-gap-2);
+    color: var(--wb-muted);
+    font-size: var(--wb-fs-sm);
+}
+
+.wb-task-meta > * + *::before {
+    content: "·";
+    margin-right: var(--wb-gap-2);
+    color: var(--wb-border-strong);
+}
+
+/* 状态格：点一下弹出「现在能流转到哪几步」 */
+.wb-status-cell { position: relative; width: 1%; white-space: nowrap; }
+.wb-status-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: none;
+    border: none;
+    padding: 2px 6px;
+    border-radius: var(--wb-r-sm);
+    color: var(--wb-text-2);
+    font-family: inherit;
+    font-size: var(--wb-fs-sm);
+    cursor: pointer;
+}
+.wb-status-btn:hover { background: var(--wb-surface-3); color: var(--wb-text); }
+/* 三角太小会看着像句点，分不清是状态还是可点的箭头 */
+.wb-caret { color: var(--wb-faint); font-size: 11px; line-height: 1; }
+
+.wb-menu-backdrop { position: fixed; inset: 0; z-index: 50; }
+
+.wb-menu {
+    position: absolute;
+    z-index: 51;
+    top: 100%;
+    left: 0;
+    margin-top: 4px;
+    min-width: 140px;
+    padding: 4px;
+    background: var(--wb-surface-2);
+    border: 1px solid var(--wb-border-strong);
+    border-radius: var(--wb-r);
+    box-shadow: var(--wb-shadow-3);
+}
+
+/* 菜单摆到表格外面：滚动容器会裁掉单元格里绝对定位的菜单，
+   位置由 workbench.js 按触发按钮算。 */
+.wb-menu.wb-menu-fixed { position: fixed; top: 0; left: 0; margin-top: 0; }
+
+.wb-menu-item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 6px var(--wb-gap-2);
+    border: none;
+    background: none;
+    color: var(--wb-text);
+    font-family: inherit;
+    font-size: var(--wb-fs);
+    border-radius: var(--wb-r-xs);
+    cursor: pointer;
+}
+.wb-menu-item:hover:not(:disabled) { background: var(--wb-accent); color: var(--wb-accent-fg); }
+.wb-menu-item:disabled { opacity: .5; cursor: default; }
+.wb-menu-empty { padding: 6px var(--wb-gap-2); color: var(--wb-muted); font-size: var(--wb-fs-sm); }
+
+/* ---------- 13. 详情页 ---------- */
+
+/* 详情页：主栏 + 侧栏。窄屏堆成一列。 */
+.wb-detail-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 340px;
+    gap: var(--wb-gap-4);
+    align-items: start;
+}
+.wb-detail-side .wb-panel { position: sticky; top: calc(var(--wb-top-h) + var(--wb-gap-4)); }
+.wb-detail-main { min-width: 0; }
+
+@media (max-width: 1000px) {
+    .wb-detail-grid { grid-template-columns: 1fr; }
+    .wb-detail-side .wb-panel { position: static; }
+}
+
+/* ---------- 14. 时间线 / 修订 ---------- */
+
+.wb-timeline { list-style: none; margin: 0; padding: 0; }
+.wb-timeline li { border-left: 2px solid var(--wb-border); padding: 0 0 var(--wb-gap-4) var(--wb-gap-3); position: relative; }
+.wb-timeline li:last-child { padding-bottom: 0; }
+.wb-timeline li::before {
+    content: '';
+    position: absolute;
+    left: -5px;
+    top: 6px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--wb-accent);
+    box-shadow: 0 0 0 3px var(--wb-surface);
+}
+
+.wb-timeline-when { font-size: var(--wb-fs-xs); color: var(--wb-faint); }
+.wb-timeline-what { font-size: var(--wb-fs); display: flex; gap: 4px; align-items: center; flex-wrap: wrap; margin: 2px 0; }
+.wb-timeline-note { font-size: var(--wb-fs-sm); color: var(--wb-muted); white-space: pre-wrap; }
+
+.wb-revisions { list-style: none; margin: 0; padding: 0; }
+.wb-revisions li { border-left: 3px solid var(--wb-border); padding: var(--wb-gap-1) 0 var(--wb-gap-2) var(--wb-gap-3); margin-bottom: var(--wb-gap-2); }
+.wb-rev-insert { border-left-color: var(--wb-ok); }
+.wb-rev-delete { border-left-color: var(--wb-danger); }
+.wb-rev-moveFrom, .wb-rev-moveTo { border-left-color: var(--wb-warn); }
+.wb-rev-head { display: flex; gap: 6px; align-items: center; font-size: var(--wb-fs-sm); color: var(--wb-muted); }
+.wb-rev-text { font-size: var(--wb-fs-sm); white-space: pre-wrap; word-break: break-word; margin-top: 3px; }
+
+.wb-struck { list-style: none; margin: 0; padding: 0; font-size: var(--wb-fs); }
+.wb-struck li { padding: 3px 0; color: var(--wb-muted); }
+
+.wb-outline { list-style: none; margin: 0; padding: 0; font-size: var(--wb-fs); }
+.wb-outline li { padding: 3px 0; color: var(--wb-muted); }
+
+.wb-artifact { border-top: 1px solid var(--wb-border); padding: var(--wb-gap-3) 0; }
+.wb-artifact:first-of-type { border-top: none; }
+
+/* ---------- 15. 代码块 / SQL ---------- */
+
+.wb-pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: var(--wb-fs);
+    line-height: 1.65;
+    margin: var(--wb-gap-1) 0 var(--wb-gap-3);
+    color: var(--wb-text);
+}
+
+.wb-sql {
+    background: var(--wb-bg);
+    border: 1px solid var(--wb-border);
+    border-radius: var(--wb-r);
+    padding: var(--wb-gap-3);
+    font-size: var(--wb-fs-sm);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 320px;
+    overflow: auto;
+    /* 长 SQL 别把表格撑成一屏宽 —— 折行比横向滚动好读 */
+    max-width: 100%;
+    color: var(--wb-text-2);
+}
+
+/* ---------- 16. 审批 ---------- */
+
+.wb-approval-list .wb-panel { margin-bottom: var(--wb-gap-3); }
+
+/* 从别处跳过来要定位的那条审批：描一圈边，让人一眼看见 */
+.wb-approval-focus {
+    border-color: var(--wb-accent);
+    box-shadow: 0 0 0 3px var(--wb-accent-soft);
+}
+
+/* ---------- 17. 项目仪表盘 ---------- */
+
+/* 全观复汇总：一条数字带，扫一眼就知道整体什么状态。
+   每格自己带边框 —— 靠 1px 间隙拼成整条的话，最后一行没填满会露出底色。 */
+.wb-dash-summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+    gap: var(--wb-gap-2);
+    margin-bottom: var(--wb-gap-4);
+}
+.wb-dash-summary-item {
+    background: var(--wb-surface);
+    border: 1px solid var(--wb-border);
+    border-radius: var(--wb-r-sm);
+    padding: var(--wb-gap-3) var(--wb-gap-4);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+.wb-dash-summary-label {
+    font-size: var(--wb-fs-xs);
+    color: var(--wb-muted);
+    white-space: nowrap;
+}
+.wb-dash-summary-value {
+    font-size: var(--wb-fs-xl);
+    font-weight: 600;
+    line-height: 1.15;
+    font-variant-numeric: tabular-nums;
+}
+/* 有数才染色 —— 待审 / 阻塞 / 停滞是零的时候不值得多看一眼 */
+.wb-dash-summary-warn .wb-dash-summary-value { color: var(--wb-warn); }
+.wb-dash-summary-danger .wb-dash-summary-value { color: var(--wb-danger); }
+
+/* 一个项目一块 */
+.wb-dash-project { margin-bottom: var(--wb-gap-4); }
+
+.wb-dash-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--wb-gap-3);
+    flex-wrap: wrap;
+}
+.wb-dash-name {
+    display: flex;
+    align-items: center;
+    gap: var(--wb-gap-2);
+    flex-wrap: wrap;
+    min-width: 0;
+}
+.wb-dash-name .wb-task-title { font-size: var(--wb-fs-lg); }
+.wb-dash-percent {
+    font-size: 26px;
+    font-weight: 600;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    color: var(--wb-text);
+}
+
+/* 细进度条：数字给准确度，条给趋势 */
+.wb-dash-bar {
+    height: 6px;
+    margin: var(--wb-gap-3) 0;
+    background: var(--wb-surface-3);
+    border-radius: var(--wb-r-full);
+    overflow: hidden;
+}
+.wb-dash-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--wb-accent), var(--wb-ok));
+    border-radius: var(--wb-r-full);
+    transition: width .3s ease;
+}
+
+/* 指标格 */
+.wb-dash-metrics {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: var(--wb-gap-2);
+}
+.wb-dash-metric {
+    background: var(--wb-surface-2);
+    border: 1px solid var(--wb-border);
+    border-radius: var(--wb-r-sm);
+    padding: var(--wb-gap-2) var(--wb-gap-3);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+.wb-dash-metric-label {
+    font-size: var(--wb-fs-xs);
+    color: var(--wb-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.wb-dash-metric-value {
+    font-size: var(--wb-fs-lg);
+    font-weight: 600;
+    line-height: 1.25;
+    font-variant-numeric: tabular-nums;
+}
+
+/* 小节标题（状态分布 / 流速） */
+.wb-dash-sub {
+    font-size: var(--wb-fs-xs);
+    color: var(--wb-faint);
+    letter-spacing: .05em;
+    margin: var(--wb-gap-4) 0 var(--wb-gap-2);
+}
+
+.wb-bars {
+    display: flex;
+    align-items: flex-end;
+    gap: var(--wb-gap-3);
+    height: 140px;
+    padding: var(--wb-gap-2) 0 0;
+}
+/* 仪表盘里的流速图矮一截：它是一眼扫的，不是拿来量高度的 */
+.wb-bars-compact { height: 96px; gap: var(--wb-gap-2); }
+.wb-bar-col { display: flex; flex-direction: column; align-items: center; gap: var(--wb-gap-1); flex: 1; }
+.wb-bar {
+    width: 100%;
+    max-width: 44px;
+    background: linear-gradient(180deg, var(--wb-accent), var(--wb-accent-line));
+    border-radius: var(--wb-r-xs) var(--wb-r-xs) 0 0;
+}
+/* 这一周是 0：画一条灰底条，别拿蓝色渐变假装有数据 */
+.wb-bar-zero { background: var(--wb-border-strong); border-radius: var(--wb-r-xs); }
+.wb-bar-label { font-size: var(--wb-fs-xs); color: var(--wb-text); }
+.wb-bar-week { font-size: 10px; color: var(--wb-faint); }
+
+/* ---------- 18. 提示条 ---------- */
+
+/* 状态条：背景信息 + 动作，一行装下，不占一整块面板 */
+.wb-statusbar {
+    display: flex;
+    align-items: center;
+    gap: var(--wb-gap-3);
+    flex-wrap: wrap;
+    padding: var(--wb-gap-3) var(--wb-gap-4);
+    background: var(--wb-surface-2);
+    border: 1px solid var(--wb-border);
+    border-radius: var(--wb-r);
+    margin-bottom: var(--wb-gap-4);
+}
+.wb-statusbar-text {
+    flex: 1 1 320px;
+    min-width: 0;
+    color: var(--wb-text-2);
+}
+.wb-statusbar-text > * { margin-right: var(--wb-gap-2); }
+.wb-statusbar-text > *:last-child { margin-right: 0; }
+
+.wb-alert {
+    border: 1px solid var(--wb-danger);
+    background: var(--wb-danger-soft);
+    border-radius: var(--wb-r);
+    padding: var(--wb-gap-3);
+    font-size: var(--wb-fs);
+    line-height: 1.7;
+    margin: var(--wb-gap-3) 0;
+}
+
+.wb-alert strong { color: var(--wb-danger); }
+.wb-alert code { background: var(--wb-bg); padding: 1px 4px; border-radius: var(--wb-r-xs); }
+
+.wb-alert-warn { border-color: var(--wb-warn); background: var(--wb-warn-soft); }
+.wb-alert-warn strong { color: var(--wb-warn); }
+
+/* 首次上手的路标 */
+.wb-onboard { border-color: var(--wb-accent-line); }
+.wb-onboard ol { margin: 0; padding-left: 22px; }
+.wb-onboard li { margin-bottom: var(--wb-gap-3); line-height: 1.8; }
+.wb-onboard li:last-child { margin-bottom: 0; }
+
+/* 搜索结果里的文档内容摘要 */
+.wb-search-snippet {
+    margin-top: var(--wb-gap-2);
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--wb-text-2);
+}
+
+/* 分页条 */
+.wb-pager {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--wb-gap-2);
+    margin-top: var(--wb-gap-3);
+}
+
+/* 过滤条：一行放下拉 / 输入，窄屏自动换行 */
+.wb-filter-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--wb-gap-2);
+    margin-bottom: var(--wb-gap-4);
+}
+
+.wb-filter-bar .wb-input { flex: 0 1 auto; min-width: 150px; }
+
+/* 日期区间：两个日期框加「至」算一个整体，
+   免得换行时「至」自己占一行。 */
+.wb-date-range {
+    display: flex;
+    align-items: center;
+    gap: var(--wb-gap-2);
+    flex: 0 1 auto;
+}
+
+.wb-date-range .wb-input { min-width: 140px; max-width: 170px; }
+
+/* 进度条 */
+.wb-progress { height: 6px; background: var(--wb-surface-3); border-radius: 3px; overflow: hidden; margin-top: var(--wb-gap-2); }
+.wb-progress-bar { height: 100%; background: var(--wb-accent); border-radius: 3px; }
+.wb-progress-label { font-size: var(--wb-fs-sm); color: var(--wb-muted); margin-top: var(--wb-gap-1); }
+
+/* 待办勾选 */
+.wb-todo { margin-right: 6px; }
+.wb-todo-done { color: var(--wb-ok); }
+
+/* Blazor 的错误提示条。
+   模板的 app.css 里本来带「display:none」，本项目的 app.css 换掉了 —— 不补这条，
+   它就会在每个页面底部常驻，看着像出错了，其实没事。
+   真出错时 SDK 用内联 style 把它弹出来，内联样式优先级高于这里的 display:none。 */
+#blazor-error-ui {
+    display: none;
+    position: fixed;
+    left: 0;
+    bottom: 0;
+    width: 100%;
+    z-index: 1000;
+    padding: 0.7rem 1.25rem;
+    background: #3b1d1d;
+    color: #ffbcbc;
+    box-shadow: 0 -1px 2px rgba(0, 0, 0, .45);
+    font-size: var(--wb-fs);
+}
+#blazor-error-ui a { color: #ffbcbc; margin: 0 0.4rem; }
+#blazor-error-ui .dismiss {
+    cursor: pointer;
+    position: absolute;
+    right: 0.9rem;
+    top: 0.5rem;
+    color: inherit;
+}
+
+/* Error 页沿用的模板类，这里给它暗色主题下的定义 */
+.text-danger { color: var(--wb-danger); }
+
+/* ---------- 19. 页内文档渲染 ---------- */
+
+.wb-doc {
+    margin-top: var(--wb-gap-2);
+    padding: var(--wb-gap-3) var(--wb-gap-4);
+    border: 1px solid var(--wb-border);
+    border-radius: var(--wb-r);
+    background: var(--wb-surface-2);
+    max-height: 60vh;
+    overflow: auto;
+}
+
+.wb-doc-outline {
+    font-size: var(--wb-fs-sm);
+    color: var(--wb-muted);
+    margin-bottom: var(--wb-gap-2);
+    padding-bottom: var(--wb-gap-2);
+    border-bottom: 1px solid var(--wb-border);
+}
+
+.wb-doc h1, .wb-doc h2, .wb-doc h3, .wb-doc h4 { margin: var(--wb-gap-3) 0 var(--wb-gap-1); font-size: var(--wb-fs-md); }
+.wb-doc p { margin: var(--wb-gap-2) 0; }
+.wb-doc ul, .wb-doc ol { margin: var(--wb-gap-2) 0; padding-left: 20px; }
+.wb-doc pre { background: var(--wb-bg); padding: var(--wb-gap-3); border-radius: var(--wb-r-sm); overflow: auto; }
+.wb-doc code { background: var(--wb-bg); padding: 1px 4px; border-radius: var(--wb-r-xs); }
+.wb-doc table { border-collapse: collapse; }
+.wb-doc th, .wb-doc td { border: 1px solid var(--wb-border); padding: 4px 8px; }
+
+.wb-doc-h { font-size: var(--wb-fs-md); margin: var(--wb-gap-4) 0 var(--wb-gap-2); }
+.wb-doc-p { font-size: var(--wb-fs); line-height: 1.75; margin: var(--wb-gap-2) 0; }
+.wb-doc-list { font-size: var(--wb-fs); line-height: 1.75; }
+.wb-doc-table { width: 100%; border-collapse: collapse; font-size: var(--wb-fs-sm); margin: var(--wb-gap-2) 0; }
+.wb-doc-table th, .wb-doc-table td { border: 1px solid var(--wb-border); padding: 5px 8px; text-align: left; }
+.wb-doc-code { background: var(--wb-bg); border: 1px solid var(--wb-border); border-radius: var(--wb-r); padding: var(--wb-gap-3); font-size: var(--wb-fs-sm); overflow: auto; }
+.wb-doc-diff { background: var(--wb-bg); border: 1px solid var(--wb-border); border-radius: var(--wb-r); padding: var(--wb-gap-3); font-size: var(--wb-fs-sm); overflow: auto; }
+
+/* 代码块不折行（折了复制出来的配置就带换行），靠横向滚动看全 ——
+   滚动条得看得见，否则那段内容看着像被切了。 */
+.wb-doc-code, .wb-doc-diff {
+    scrollbar-width: thin;
+    scrollbar-color: var(--wb-border-strong) transparent;
+}
+.wb-doc-code::-webkit-scrollbar,
+.wb-doc-diff::-webkit-scrollbar { height: 8px; }
+.wb-doc-code::-webkit-scrollbar-track,
+.wb-doc-diff::-webkit-scrollbar-track { background: transparent; }
+.wb-doc-code::-webkit-scrollbar-thumb,
+.wb-doc-diff::-webkit-scrollbar-thumb {
+    background: var(--wb-border-strong);
+    border-radius: var(--wb-r-full);
+}
+.wb-doc-code::-webkit-scrollbar-thumb:hover,
+.wb-doc-diff::-webkit-scrollbar-thumb:hover { background: var(--wb-faint); }
+.wb-diff-added { color: var(--wb-ok); display: block; }
+.wb-diff-removed { color: var(--wb-danger); display: block; }
+.wb-diff-context { color: var(--wb-muted); display: block; }
+.wb-diff-header { color: var(--wb-accent); display: block; }
+.wb-doc-quote { border-left: 3px solid var(--wb-border-strong); margin: var(--wb-gap-2) 0; padding-left: var(--wb-gap-3); color: var(--wb-muted); }
+
+/* ---------- 20. 响应式 ---------- */
+
+@media (max-width: 900px) {
+    .wb-shell { grid-template-columns: minmax(0, 1fr); }
+
+    .wb-nav-burger { display: inline-flex; }
+
+    .wb-side {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: var(--wb-side-w);
+        transform: translateX(-100%);
+        transition: transform .18s ease;
+        box-shadow: var(--wb-shadow-3);
+    }
+
+    .wb-nav-toggle-box:checked ~ .wb-side { transform: translateX(0); }
+
+    /* 抽屉开了，汉堡要让位：挪到抽屉外侧并变成关闭键。
+       不挪的话它正好压住侧边栏左上角的品牌标识。 */
+    .wb-nav-toggle-box:checked ~ .wb-nav-burger {
+        left: calc(var(--wb-side-w) + 8px);
+        font-size: 0;
+        z-index: 46;
+    }
+
+    .wb-shell:has(.wb-nav-toggle-box:checked) .wb-nav-burger {
+        left: calc(var(--wb-side-w) + 8px);
+        font-size: 0;
+        z-index: 46;
+    }
+
+    .wb-nav-toggle-box:checked ~ .wb-nav-burger::after {
+        content: "✕";
+        font-size: 14px;
+        line-height: 1;
+    }
+
+    .wb-nav-toggle-box:checked ~ .wb-nav-backdrop {
+        display: block;
+        position: fixed;
+        inset: 0;
+        z-index: 35;
+        background: rgba(0, 0, 0, .45);
+    }
+
+    .wb-topbar { padding: 0 var(--wb-gap-4) 0 54px; }
+    .wb-content { padding: var(--wb-gap-4); }
+}
+
+@media (max-width: 640px) {
+    .wb-content { padding: var(--wb-gap-4); }
+    .wb-page-head { flex-direction: column; align-items: stretch; }
+
+    /* 页头里的操作按钮别跟着拉满整行 —— align-items: stretch 会把它撑成一条大横杠 */
+    .wb-page-head > .wb-form-row,
+    .wb-page-head > .wb-btn { align-self: flex-start; }
+
+    /* 筛选条：控件按可用宽度排布。
+       别用 grid —— 「标签 + 控件」这种配对会被拆到两格里，
+       控件多的页面还会把主按钮拉成半屏宽。 */
+    .wb-filter-bar .wb-input { flex: 1 1 160px; min-width: 0; width: auto; }
+
+    /* 工具条里的输入框在宽屏封了顶，窄屏反过来让它占满整行 */
+    .wb-toolbar .wb-input { flex: 1 1 100%; max-width: none; }
+
+    /* 项目页的筛选行：下拉框保底 150px 宽，窄屏一行放不下两个就换行 */
+    .wb-filters .wb-filter-key { flex: 1 1 100%; }
+    .wb-filters select.wb-input { flex: 1 1 140px; min-width: 0; max-width: none; }
+
+    /* 日期区间独占一行，两个框平分它 */
+    .wb-date-range { flex: 1 1 100%; }
+    .wb-date-range .wb-input { flex: 1 1 0; width: auto; min-width: 0; max-width: none; }
+
+    .wb-input { min-width: 0; }
+    .wb-empty { padding: var(--wb-gap-6) var(--wb-gap-3); }
+    .wb-panel { padding: var(--wb-gap-4); }
+    .wb-table th, .wb-table td { padding: 8px var(--wb-gap-2); }
+
+    /* 顶栏搜索：42vw 在手机上只有 150px 出头，文字直接折行。
+       让它吃掉剩余宽度，快捷键提示先让位。 */
+    .wb-topsearch { flex: 1 1 auto; width: auto; min-width: 0; }
+    .wb-topsearch kbd { display: none; }
+
+    /* 任务表首列别占 60% —— 窄屏上标题列吃满宽，
+       状态/负责人/最后动静就被挤到滚动区外了。 */
+    .wb-task-table th:first-child, .wb-task-table td:first-child { width: 45%; }
+}

@@ -1,0 +1,847 @@
+@page "/projects/{ProjectId:guid}/settings"
+@rendermode InteractiveServer
+@using Microsoft.AspNetCore.Http
+@inject IProjectService Projects
+@inject IProjectSpecService Specs
+@inject IMilestoneService Milestones
+@inject HumanTokenAccessor Tokens
+@inject IJSRuntime JS
+@inject NavigationManager Nav
+
+<PageTitle>项目设置 · 观复</PageTitle>
+
+@if (Loading && Config is null)
+{
+    <div class="wb-empty">加载中…</div>
+}
+else if (Config is null)
+{
+    <ErrorNotice Error="LoadError" />
+    <div class="wb-empty">@(NotFound ? "项目不存在。" : "项目配置加载失败。")<a href="/">返回</a></div>
+}
+else
+{
+    <div class="wb-page-head">
+        <div>
+            <a class="wb-back" href="/projects/@Config.Id">← @Config.Name</a>
+            <h1>项目设置</h1>
+            <p class="wb-muted">仓库路径、agent 启动命令、命令白名单、审批通知。</p>
+        </div>
+        <button class="wb-btn wb-btn-primary" disabled="@(Saving || !Gate.Authorized)" @onclick="SaveAsync">
+            @(Saving ? "保存中…" : "保存")
+        </button>
+    </div>
+
+    <ErrorNotice Error="ActionError" />
+    <ErrorNotice Error="LoadError" />
+
+    @if (!Gate.Authorized)
+    {
+        <div class="wb-panel">
+            <p class="wb-error">修改项目配置需要人工凭证 —— 这里能改 agent 启动命令与命令白名单。</p>
+            <p class="wb-muted">
+                在本机打开观复时会自动获取；远程访问请从启动观复的控制台复制人工 token，粘贴到下面。
+            </p>
+            <div class="wb-form-row">
+                <input class="wb-input" type="password" placeholder="人工 token（控制台里那串）"
+                       @oninput="OnTokenInputChanged" />
+                <button class="wb-btn wb-btn-primary"
+                        disabled="@string.IsNullOrWhiteSpace(TokenInput)"
+                        @onclick="VerifyToken">验证</button>
+            </div>
+            @if (!string.IsNullOrWhiteSpace(Gate.Hint))
+            {
+                <p class="wb-hint">@Gate.Hint</p>
+            }
+        </div>
+    }
+
+    <div class="wb-detail-grid">
+        <div class="wb-detail-main">
+            @* 七块面板铺开谁也看不过来 —— 按用途分页签，一屏只留要改的那几块。
+               页签跟着 URL 走，链接能直接发人。 *@
+            <div class="wb-tabs" role="tablist">
+                <button class="wb-tab @(ActiveTab == "project" ? "wb-tab-active" : "")" role="tab"
+                        aria-selected="@(ActiveTab == "project")" @onclick='() => GoTab("project")'>
+                    项目
+                </button>
+                <button class="wb-tab @(ActiveTab == "agent" ? "wb-tab-active" : "")" role="tab"
+                        aria-selected="@(ActiveTab == "agent")" @onclick='() => GoTab("agent")'>
+                    agent
+                </button>
+                <button class="wb-tab @(ActiveTab == "spec" ? "wb-tab-active" : "")" role="tab"
+                        aria-selected="@(ActiveTab == "spec")" @onclick='() => GoTab("spec")'>
+                    规约
+                </button>
+                <button class="wb-tab @(ActiveTab == "notify" ? "wb-tab-active" : "")" role="tab"
+                        aria-selected="@(ActiveTab == "notify")" @onclick='() => GoTab("notify")'>
+                    通知
+                </button>
+                <button class="wb-tab @(ActiveTab == "milestone" ? "wb-tab-active" : "")" role="tab"
+                        aria-selected="@(ActiveTab == "milestone")" @onclick='() => GoTab("milestone")'>
+                    迭代版本 <span class="wb-count">@MilestoneItems.Count</span>
+                </button>
+            </div>
+
+            @if (ActiveTab == "project")
+            {
+            <section class="wb-panel">
+                <h3>基本信息</h3>
+                <div class="wb-form-row">
+                    <label class="wb-label">名称</label>
+                    <input class="wb-input" @bind="Name" @bind:event="oninput" />
+                </div>
+                <div class="wb-form-row">
+                    <label class="wb-label">描述</label>
+                    <input class="wb-input" @bind="Description" @bind:event="oninput" />
+                </div>
+            </section>
+
+            <section class="wb-panel">
+                <h3>Git 托管</h3>
+                <div class="wb-form-row">
+                    <label class="wb-label">仓库路径</label>
+                    <input class="wb-input" placeholder="/Users/you/code/your-repo" @bind="RepoPath" @bind:event="oninput" />
+                </div>
+                <div class="wb-form-row">
+                    <label class="wb-label">远端</label>
+                    <input class="wb-input" placeholder="git@github.com:you/repo.git" @bind="RepoRemote" @bind:event="oninput" />
+                </div>
+                <div class="wb-form-row">
+                    <label class="wb-label">默认分支</label>
+                    <input class="wb-input" @bind="DefaultBranch" @bind:event="oninput" />
+                </div>
+                <p class="wb-hint">
+                    仓库路径是「看目录、读文件、跑命令、提交代码」这些操作的作用范围，留空则它们不可用。
+                </p>
+                @* 同一个仓库被两个项目绑上时，agent 按目录认项目会分不出来 ——
+                   这条提醒要在绑定的那一刻就摆出来，别等 agent 撞墙才发现。 *@
+                @if (!string.IsNullOrWhiteSpace(Config.RepoWarning))
+                {
+                    <p class="wb-alert wb-alert-warn">@Config.RepoWarning</p>
+                }
+            </section>
+            }
+            else if (ActiveTab == "agent")
+            {
+            <section class="wb-panel">
+                <h3>启动 agent</h3>
+                <div class="wb-form-row">
+                    <label class="wb-label">启动命令</label>
+                    <input class="wb-input" placeholder="claude -p &quot;实现 {title}&quot;" @bind="AgentCommand" @bind:event="oninput" />
+                </div>
+                <p class="wb-hint">
+                    观复<strong>不提供 AI 服务</strong>，这里只是执行你写好的外部命令。
+                    可用占位符：<code>{taskId}</code> <code>{title}</code> <code>{project}</code> <code>{repoPath}</code> <code>{description}</code>。
+                </p>
+            </section>
+
+            <section class="wb-panel">
+                <h3>命令白名单</h3>
+                <div class="wb-form-row">
+                    <label class="wb-label">允许的命令</label>
+                    <textarea class="wb-input wb-textarea" rows="5"
+                              placeholder="一行一条，例如&#10;dotnet test&#10;npm run build"
+                              @bind="AllowedCommandsText" @bind:event="oninput"></textarea>
+                </div>
+                <p class="wb-hint">
+                    跑命令只能执行命中白名单的命令，且每次都要人工审批。
+                    命令不走 shell 解析，不支持管道与重定向。
+                </p>
+            </section>
+
+            <section class="wb-panel">
+                <h3>agent 并发</h3>
+                <div class="wb-form-row">
+                    <label class="wb-label">同时领活的 agent 上限</label>
+                    <input class="wb-input" type="number" min="0" placeholder="0 = 不限"
+                           @bind="MaxConcurrentAgentsText" @bind:event="oninput" />
+                </div>
+                <div class="wb-form-row">
+                    <label class="wb-label">每任务工具调用上限</label>
+                    <input class="wb-input" type="number" min="0" placeholder="0 = 不限"
+                           @bind="MaxToolCallsPerTaskText" @bind:event="oninput" />
+                </div>
+                <p class="wb-hint">
+                    一个 agent 跑飞时会把观复当自己的工具箱刷。上限是节流阀：
+                    超过就不再执行，agent 会看到明确的上限自己去收敛。填 0 表示不限。
+                </p>
+                <p class="wb-hint">
+                    agent 是并发生产者 —— 不设上限，几个 agent 一起抢同一个仓库就会踩文件。
+                    上限是节流阀：超过就领不到，等一个做完再来。填 0 表示不限。
+                </p>
+                <p class="wb-hint">
+                    另外，<strong>主工作区同一时刻只允许一个 agent 占着</strong>。
+                    要多个 agent 并行，各开各的 git worktree，领任务时带上 worktree 参数。
+                </p>
+            </section>
+            }
+            else if (ActiveTab == "spec")
+            {
+            <section class="wb-panel">
+                <h3>项目级规约</h3>
+                <p class="wb-hint">
+                    这是<strong>人定的规矩</strong>，agent 开工前会读到它，评审时也拿它当尺子。
+                    写下来的目的不是留档，是让「什么算做完」不再各说各话 ——
+                    agent 只填了就写不出来的部分，你把 DoD 逐条写清楚。
+                </p>
+
+                <div class="wb-form-row">
+                    <label class="wb-label">项目目标</label>
+                    <textarea class="wb-input wb-textarea" rows="3"
+                              placeholder="这个项目要解决什么问题？agent 开工前先读它。"
+                              @bind="SpecPurpose" @bind:event="oninput"></textarea>
+                </div>
+
+                <div class="wb-form-row">
+                    <label class="wb-label">完成定义（DoD）</label>
+                    <textarea class="wb-input wb-textarea" rows="6"
+                              placeholder="一行一条，例如&#10;有单测覆盖新增逻辑&#10;文档里的用法同步更新&#10;接口错误码与文档一致"
+                              @bind="SpecDefinitionOfDone" @bind:event="oninput"></textarea>
+                </div>
+                <p class="wb-hint">一行一条 —— agent 逐条对着做，评审时逐条对着判。</p>
+
+                <div class="wb-form-row">
+                    <label class="wb-label">提交信息约定</label>
+                    <input class="wb-input" placeholder="例如：feat(登录): 补上会话续期；带 REQ-001 编号"
+                           @bind="SpecCommitConvention" @bind:event="oninput" />
+                </div>
+
+                <div class="wb-form-row">
+                    <label class="wb-label">测试命令</label>
+                    <input class="wb-input" placeholder="例如：dotnet test Guanfu.sln"
+                           @bind="SpecTestCommand" @bind:event="oninput" />
+                </div>
+
+                <div class="wb-form-row">
+                    <label class="wb-label">分支命名约定</label>
+                    <input class="wb-input" placeholder="例如：feature/REQ-001-登录续期"
+                           @bind="SpecBranchConvention" @bind:event="oninput" />
+                </div>
+
+                <div class="wb-form-row">
+                    <label class="wb-label">红线与禁忌</label>
+                    <textarea class="wb-input wb-textarea" rows="3"
+                              placeholder="不许碰的东西、要人工确认的动作 —— 一行一条"
+                              @bind="SpecGuardrails" @bind:event="oninput"></textarea>
+                </div>
+
+                <div class="wb-form-row">
+                    <button class="wb-btn wb-btn-primary" disabled="@(SavingSpec || Saving || !Gate.Authorized)"
+                            @onclick="SaveSpecAsync">保存规约</button>
+                    @if (SpecUpdatedAt is not null)
+                    {
+                        <span class="wb-muted">
+                            上次更新 @SpecUpdatedAt.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm")
+                            @if (!string.IsNullOrWhiteSpace(SpecUpdatedBy))
+                            {
+                                <text> · @SpecUpdatedBy</text>
+                            }
+                        </span>
+                    }
+                </div>
+            </section>
+            }
+            else if (ActiveTab == "notify")
+            {
+            <section class="wb-panel">
+                <h3>审批通知</h3>
+                <div class="wb-form-row">
+                    <label class="wb-label">Webhook</label>
+                    <input class="wb-input" placeholder="https://oapi.dingtalk.com/robot/send?access_token=..."
+                           @bind="NotificationWebhookUrl" @bind:event="oninput" />
+                </div>
+                <div class="wb-form-row">
+                    <label class="wb-label">格式</label>
+                    <select class="wb-input" @bind="NotificationFormat">
+                        <option value="generic">generic（通用 JSON）</option>
+                        <option value="dingtalk">dingtalk（钉钉）</option>
+                        <option value="feishu">feishu（飞书）</option>
+                    </select>
+                </div>
+                <p class="wb-hint">有人请求审批时推一条消息过去。人不在电脑前时，审批不会静静躺到过期。</p>
+            </section>
+            }
+            else
+            {
+            <section class="wb-panel">
+                <h3>迭代版本 / 里程碑</h3>
+                @if (MilestoneItems.Count == 0)
+                {
+                    <p class="wb-muted">还没有迭代版本，去项目页的「迭代版本」页签添加。</p>
+                }
+                else
+                {
+                    <div class="wb-form-row">
+                        <label class="wb-label">选择要编辑的</label>
+                        <select class="wb-input" @bind="EditMilestoneId" @bind:after="LoadMilestoneInputs">
+                            <option value="">（选择）</option>
+                            @foreach (var m in MilestoneItems)
+                            {
+                                <option value="@m.Id">@m.Name（@m.DoneTasks/@m.TotalTasks）</option>
+                            }
+                        </select>
+                    </div>
+
+                    @if (EditingMilestone is { } editing)
+                    {
+                        <div class="wb-form-row">
+                            <label class="wb-label">名称</label>
+                            <input class="wb-input" @bind="EditName" @bind:event="oninput" />
+                        </div>
+                        <div class="wb-form-row">
+                            <label class="wb-label">截止日</label>
+                            <input class="wb-input" type="datetime-local" value="@EditDue"
+                                   @onchange="e => EditDue = e.Value?.ToString() ?? string.Empty" />
+                        </div>
+                        <div class="wb-form-row">
+                            <label class="wb-label">上级</label>
+                            <select class="wb-input" @bind="EditParentId">
+                                <option value="">无（顶层）</option>
+                                @foreach (var m in MilestoneItems.Where(m => m.Id != editing.Id))
+                                {
+                                    <option value="@m.Id">@m.Name</option>
+                                }
+                            </select>
+                        </div>
+                        @if (ProjectDoD.Count > 0)
+                        {
+                            <div class="wb-form-row">
+                                <label class="wb-label">项目级的完成定义</label>
+                                <ul class="wb-plain-list">
+                                    @foreach (var item in ProjectDoD)
+                                    {
+                                        <li>@item</li>
+                                    }
+                                </ul>
+                            </div>
+                            <p class="wb-hint">
+                                上面这些是<strong>项目级</strong>的：这个项目里所有活都要满足，已经自动继承 ——
+                                下面只填这个版本<strong>额外</strong>要的，不用把上面再抄一遍。
+                            </p>
+                        }
+                        <div class="wb-form-row">
+                            <label class="wb-label">这个版本额外的完成定义</label>
+                            <textarea class="wb-input wb-textarea" rows="4"
+                                      placeholder="一行一条，只对这个版本生效（会叠加在项目级规约之上）"
+                                      @bind="EditMilestoneDoD" @bind:event="oninput"></textarea>
+                        </div>
+                        <p class="wb-hint">
+                            这个版本<strong>额外</strong>要满足的条件。评审时它和项目级的完成定义一起判 ——
+                            项目级的规矩全局适用，这一层只对这个版本里的活生效。
+                        </p>
+                        <div class="wb-form-row">
+                            <button class="wb-btn" disabled="@(Busy || !Gate.Authorized)"
+                                    @onclick="SaveMilestoneSpecAsync">保存这个版本的完成定义</button>
+                        </div>
+                        <div class="wb-form-row">
+                            <button class="wb-btn wb-btn-primary" disabled="@(Busy || !Gate.Authorized)"
+                                    @onclick="() => SaveMilestoneAsync(false, false)">保存修改</button>
+                            <button class="wb-btn" disabled="@(Busy || !Gate.Authorized || editing.ParentId is null)"
+                                    @onclick="() => SaveMilestoneAsync(true, false)">清除上级</button>
+                            <button class="wb-btn" disabled="@(Busy || !Gate.Authorized || editing.DueAt is null)"
+                                    @onclick="() => SaveMilestoneAsync(false, true)">清除截止日</button>
+                        </div>
+                        <p class="wb-hint">
+                            「清除」是显式操作：留空保存只表示「不改」，要把上级 / 截止日真的去掉，点对应按钮。
+                        </p>
+                    }
+                }
+            </section>
+            }
+        </div>
+
+        <aside class="wb-detail-side">
+            <section class="wb-panel">
+                <h3>当前配置</h3>
+                <ul class="wb-timeline">
+                    <li>
+                        <div class="wb-timeline-what"><span>白名单 @Config.AllowedCommands.Count 条</span></div>
+                        @foreach (var cmd in Config.AllowedCommands)
+                        {
+                            <div class="wb-timeline-note">@cmd</div>
+                        }
+                    </li>
+                    <li>
+                        <div class="wb-timeline-what">
+                            <span>通知 @(string.IsNullOrWhiteSpace(Config.NotificationWebhookUrl) ? "未配置" : Config.NotificationFormat)</span>
+                        </div>
+                    </li>
+                </ul>
+            </section>
+        </aside>
+    </div>
+}
+
+@code {
+    /// <summary>
+    /// 页签跟着 URL 走 —— 「/projects/{id}/settings?tab=agent」能直接落到 agent 那一页。
+    /// </summary>
+    [SupplyParameterFromQuery(Name = "tab")]
+    public string? Tab { get; set; }
+
+    [Parameter] public Guid ProjectId { get; set; }
+
+    private string ActiveTab => Tab switch
+    {
+        "agent" => "agent",
+        "spec" => "spec",
+        "notify" => "notify",
+        "milestone" => "milestone",
+        _ => "project"
+    };
+
+    /// <summary>已经加载过的项目。切页签也是参数变化，别顺手重载。</summary>
+    private Guid? _loadedProjectId;
+
+    private ProjectConfigDto? Config { get; set; }
+    private IReadOnlyList<MilestoneDto> MilestoneItems { get; set; } = [];
+
+    private string Name { get; set; } = string.Empty;
+    private string Description { get; set; } = string.Empty;
+    private string RepoPath { get; set; } = string.Empty;
+    private string RepoRemote { get; set; } = string.Empty;
+    private string DefaultBranch { get; set; } = string.Empty;
+    private string AgentCommand { get; set; } = string.Empty;
+    private string AllowedCommandsText { get; set; } = string.Empty;
+    private string NotificationWebhookUrl { get; set; } = string.Empty;
+    private string NotificationFormat { get; set; } = "generic";
+    private string MaxConcurrentAgentsText { get; set; } = "0";
+    private string MaxToolCallsPerTaskText { get; set; } = "0";
+
+    // ---- 项目级规约（人定的规矩，agent 读）----
+    private string SpecPurpose { get; set; } = string.Empty;
+    private string SpecDefinitionOfDone { get; set; } = string.Empty;
+    private string SpecCommitConvention { get; set; } = string.Empty;
+    private string SpecTestCommand { get; set; } = string.Empty;
+    private string SpecBranchConvention { get; set; } = string.Empty;
+    private string SpecGuardrails { get; set; } = string.Empty;
+    private DateTimeOffset? SpecUpdatedAt { get; set; }
+    private string? SpecUpdatedBy { get; set; }
+    private bool SavingSpec { get; set; }
+
+    // ---- 里程碑编辑 ----
+    private string EditMilestoneId { get; set; } = string.Empty;
+    private string EditName { get; set; } = string.Empty;
+    private string EditDue { get; set; } = string.Empty;
+    private string EditParentId { get; set; } = string.Empty;
+
+    /// <summary>正在编辑的里程碑的完成定义（这个版本额外的那层）。</summary>
+    private string EditMilestoneDoD { get; set; } = string.Empty;
+
+    /// <summary>项目级的完成定义（只读展示 —— 里程碑那层是叠加，不是重抄）。</summary>
+    private List<string> ProjectDoD { get; set; } = [];
+
+    private MilestoneDto? EditingMilestone =>
+        Guid.TryParse(EditMilestoneId, out var id)
+            ? MilestoneItems.FirstOrDefault(m => m.Id == id)
+            : null;
+
+    /// <summary>把规约读进表单。</summary>
+    private async Task LoadSpecAsync()
+    {
+        try
+        {
+            var spec = await Specs.GetAsync(ProjectId);
+
+            SpecPurpose = spec.Purpose ?? string.Empty;
+            SpecDefinitionOfDone = string.Join(Environment.NewLine, spec.DefinitionOfDone);
+            SpecCommitConvention = spec.CommitConvention ?? string.Empty;
+            SpecTestCommand = spec.TestCommand ?? string.Empty;
+            SpecBranchConvention = spec.BranchConvention ?? string.Empty;
+            SpecGuardrails = spec.Guardrails ?? string.Empty;
+            SpecUpdatedAt = spec.UpdatedAt;
+            SpecUpdatedBy = spec.UpdatedBy;
+        }
+        catch (Exception ex)
+        {
+            // 规约读不到不影响其它页签 —— 别让一个附属功能把整页搞挂。
+            ActionError = PageError.From(ex, "读取项目规约");
+        }
+    }
+
+    /// <summary>保存规约。改规矩是人的决定，所以要人工凭证（界面上已校验过）。</summary>
+    private async Task SaveSpecAsync()
+    {
+        if (SavingSpec || Saving || !Gate.Authorized)
+        {
+            return;
+        }
+
+        SavingSpec = true;
+        ActionError = null;
+        StateHasChanged();
+
+        try
+        {
+            var input = new ProjectSpecInput(
+                SpecPurpose,
+                SpecDefinitionOfDone.Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).ToList(),
+                SpecCommitConvention,
+                SpecTestCommand,
+                SpecBranchConvention,
+                SpecGuardrails);
+
+            var saved = await Specs.UpdateAsync(ProjectId, input, "human");
+
+            SpecUpdatedAt = saved.UpdatedAt;
+            SpecUpdatedBy = saved.UpdatedBy;
+            ActionError = PageError.Notice("规约已保存 —— agent 下次开工就能读到。");
+        }
+        catch (Exception ex)
+        {
+            ActionError = PageError.From(ex, "保存项目规约");
+        }
+        finally
+        {
+            SavingSpec = false;
+        }
+    }
+
+    /// <summary>
+    /// 并行上限的输入值。填不出来的（空、不是数字）当作 0 = 不限 ——
+    /// 宁可宽松点，也不要因为一个手滑的值把人挡在门外。
+    /// </summary>
+    private int ParseMaxConcurrentAgents() =>
+        int.TryParse(MaxConcurrentAgentsText?.Trim(), out var value) && value > 0
+            ? value
+            : 0;
+
+    /// <summary>每任务工具调用上限（0 = 不限）。</summary>
+    private int ParseMaxToolCallsPerTask() =>
+        int.TryParse(MaxToolCallsPerTaskText?.Trim(), out var value) && value > 0
+            ? value
+            : 0;
+
+    private bool Saving { get; set; }
+    private bool Busy { get; set; }
+    private bool Loading { get; set; }
+    private bool NotFound { get; set; }
+    private PageError? ActionError { get; set; }
+    private PageError? LoadError { get; set; }
+
+    // ---- 人工凭证（改配置 = 改 agent 的能力面，必须有人在场）----
+    private UiTokenGate Gate { get; set; } = default!;
+    private string TokenInput { get; set; } = string.Empty;
+
+    [CascadingParameter] public HttpContext? RequestContext { get; set; }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        Gate ??= new UiTokenGate(Tokens.Token);
+        Gate.AuthorizeFromRequest(RequestContext?.Request);
+
+        // 只在项目换了才重载：切页签也是参数变化，
+        // 重载会把人正在填的草稿冲掉。
+        if (_loadedProjectId != ProjectId)
+        {
+            _loadedProjectId = ProjectId;
+            await ReloadAsync();
+        }
+    }
+
+    /// <summary>切页签。URL 是唯一真相 —— 深链能直接落到某一页。</summary>
+    private void GoTab(string tab)
+    {
+        if (tab == ActiveTab)
+        {
+            return;
+        }
+
+        Nav.NavigateTo($"/projects/{ProjectId}/settings?tab={tab}", replace: true);
+    }
+
+    protected override Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _ = AcquireTokenAsync();
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private async Task AcquireTokenAsync()
+    {
+        if (Gate.Authorized)
+        {
+            return;
+        }
+
+        string? payload = null;
+
+        try
+        {
+            payload = await JS.InvokeAsync<string>("eval", ApprovalUiGuard.FetchTokenScript);
+        }
+        catch (JSException)
+        {
+            // 取不到就走粘贴流程
+        }
+        catch (InvalidOperationException)
+        {
+            // 预渲染阶段没有 JS 运行时
+        }
+
+        Gate.ApplyFetchResult(payload);
+        StateHasChanged();
+    }
+
+    private void OnTokenInputChanged(ChangeEventArgs args) =>
+        TokenInput = args.Value?.ToString() ?? string.Empty;
+
+    private void VerifyToken()
+    {
+        if (Gate.TryVerify(TokenInput))
+        {
+            TokenInput = string.Empty;
+            ActionError = null;
+        }
+    }
+
+    private async Task ReloadAsync()
+    {
+        Loading = true;
+
+        try
+        {
+            Config = await Projects.GetConfigAsync(ProjectId);
+
+            Name = Config.Name;
+            Description = Config.Description ?? string.Empty;
+            RepoPath = Config.RepoPath ?? string.Empty;
+            RepoRemote = Config.RepoRemote ?? string.Empty;
+            DefaultBranch = Config.DefaultBranch ?? "main";
+            AgentCommand = Config.AgentCommand ?? string.Empty;
+            AllowedCommandsText = string.Join(Environment.NewLine, Config.AllowedCommands);
+            NotificationWebhookUrl = Config.NotificationWebhookUrl ?? string.Empty;
+            NotificationFormat = Config.NotificationFormat ?? "generic";
+            MaxConcurrentAgentsText = Config.MaxConcurrentAgents.ToString();
+            MaxToolCallsPerTaskText = Config.MaxToolCallsPerTask.ToString();
+
+            await LoadSpecAsync();
+
+            MilestoneItems = await Milestones.ListAsync(ProjectId);
+            NotFound = false;
+            LoadError = null;
+        }
+        catch (NotFoundException)
+        {
+            Config = null;
+            NotFound = true;
+        }
+        catch (Exception ex)
+        {
+            // 别让异常从初始化方法冒出去 —— 冒出去就是整页白屏
+            Config = null;
+            LoadError = PageError.From(ex, "加载项目配置");
+        }
+        finally
+        {
+            Loading = false;
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        // 连点两次：第二个事件到达时第一个可能还没跑完
+        if (Saving)
+        {
+            return;
+        }
+
+        // 改配置是敏感操作：没有人工凭证不放行（REST 那道门管不到直调服务的 UI）
+        if (!Gate.Authorized)
+        {
+            ActionError = PageError.Simple(ApprovalUiGuard.MissingTokenMessage);
+            return;
+        }
+
+        Saving = true;
+
+        // 立刻把按钮置灰：Blazor 在 await 期间不重绘
+        StateHasChanged();
+
+        try
+        {
+            var allowed = AllowedCommandsText
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(l => l.Length > 0)
+                .ToList();
+
+            Config = await Projects.UpdateConfigAsync(
+                ProjectId,
+                Name,
+                Description,
+                RepoPath,
+                RepoRemote,
+                DefaultBranch,
+                allowed,
+                AgentCommand,
+                NotificationWebhookUrl,
+                NotificationFormat,
+                default,
+                ParseMaxConcurrentAgents(),
+                ParseMaxToolCallsPerTask());
+
+            AllowedCommandsText = string.Join(Environment.NewLine, Config.AllowedCommands);
+            MaxConcurrentAgentsText = Config.MaxConcurrentAgents.ToString();
+            MaxToolCallsPerTaskText = Config.MaxToolCallsPerTask.ToString();
+
+            await LoadSpecAsync();
+            ActionError = PageError.Notice("已保存。");
+        }
+        catch (Exception ex)
+        {
+            // 业务异常原文展示（PageError.From 区分业务 / 未知），不再甩裸 ex.Message
+            ActionError = PageError.From(ex, "保存项目配置");
+        }
+        finally
+        {
+            Saving = false;
+        }
+    }
+
+    // ---- 里程碑编辑 ----
+
+    private void LoadMilestoneInputs()
+    {
+        if (EditingMilestone is { } m)
+        {
+            EditName = m.Name;
+            EditDue = m.DueAt?.ToLocalTime().ToString("yyyy-MM-ddTHH:mm") ?? string.Empty;
+            EditParentId = m.ParentId?.ToString() ?? string.Empty;
+            EditMilestoneDoD = string.Empty;
+            _ = LoadMilestoneDoDAsync(m.Id);
+        }
+        else
+        {
+            EditName = string.Empty;
+            EditDue = string.Empty;
+            EditParentId = string.Empty;
+            EditMilestoneDoD = string.Empty;
+        }
+    }
+
+    /// <summary>读这个里程碑自己的完成定义。</summary>
+    private async Task LoadMilestoneDoDAsync(Guid milestoneId)
+    {
+        try
+        {
+            var spec = await Specs.GetForMilestoneAsync(ProjectId, milestoneId);
+
+            EditMilestoneDoD = string.Join(Environment.NewLine, spec.DefinitionOfDone);
+
+            // 项目级那几条是继承来的 —— 得让人看得见，才不会重抄一遍
+            var projectSpec = await Specs.GetAsync(ProjectId);
+            ProjectDoD = projectSpec.DefinitionOfDone.ToList();
+
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            ActionError = PageError.From(ex, "读取里程碑规约");
+        }
+    }
+
+    /// <summary>保存这个里程碑的完成定义。</summary>
+    private async Task SaveMilestoneSpecAsync()
+    {
+        if (Busy || EditingMilestone is not { } m)
+        {
+            return;
+        }
+
+        if (!Gate.Authorized)
+        {
+            ActionError = PageError.Simple(ApprovalUiGuard.MissingTokenMessage);
+            return;
+        }
+
+        Busy = true;
+        ActionError = null;
+        StateHasChanged();
+
+        try
+        {
+            var input = new ProjectSpecInput(
+                DefinitionOfDone: EditMilestoneDoD
+                    .Split('\n')
+                    .Select(l => l.Trim())
+                    .Where(l => l.Length > 0)
+                    .ToList());
+
+            await Specs.UpdateForMilestoneAsync(ProjectId, m.Id, input, "human");
+
+            ActionError = PageError.Notice("这个版本的完成定义已保存。");
+        }
+        catch (Exception ex)
+        {
+            ActionError = PageError.From(ex, "保存里程碑规约");
+        }
+        finally
+        {
+            Busy = false;
+        }
+    }
+
+    private async Task SaveMilestoneAsync(bool clearParent, bool clearDue)
+    {
+        if (Busy || EditingMilestone is not { } m)
+        {
+            return;
+        }
+
+        if (!Gate.Authorized)
+        {
+            ActionError = PageError.Simple(ApprovalUiGuard.MissingTokenMessage);
+            return;
+        }
+
+        DateTimeOffset? dueAt = null;
+        if (!clearDue && !string.IsNullOrWhiteSpace(EditDue))
+        {
+            if (!DateTimeOffset.TryParse(EditDue, out var parsedDue))
+            {
+                ActionError = PageError.Simple($"截止日格式不对: {EditDue}");
+                return;
+            }
+
+            dueAt = parsedDue;
+        }
+
+        Guid? parentId = null;
+        if (!clearParent && Guid.TryParse(EditParentId, out var parsedParent))
+        {
+            parentId = parsedParent;
+        }
+
+        Busy = true;
+        StateHasChanged();
+
+        try
+        {
+            await Milestones.UpdateAsync(
+                m.Id,
+                string.IsNullOrWhiteSpace(EditName) ? null : EditName.Trim(),
+                dueAt: dueAt,
+                parentId: parentId,
+                clearParent: clearParent,
+                clearDue: clearDue);
+
+            MilestoneItems = await Milestones.ListAsync(ProjectId);
+            LoadMilestoneInputs();
+            ActionError = PageError.Notice(clearParent
+                ? "已清除上级。"
+                : clearDue ? "已清除截止日。" : "里程碑已保存。");
+        }
+        catch (Exception ex)
+        {
+            ActionError = PageError.From(ex, "保存里程碑");
+        }
+        finally
+        {
+            Busy = false;
+        }
+    }
+}

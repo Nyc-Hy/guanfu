@@ -1,0 +1,40 @@
+﻿@inject StaticAssetsVersion Assets
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <base href="/" />
+    @* 静态资源带版本号：浏览器拿到的是本地缓存副本时，
+       改完 CSS 刷新页面看不到变化，人会以为没生效。
+       开发环境每次启动版本号都变（见 Program.cs），必然重新拉。 *@
+    <link rel="stylesheet" href="app.css?v=@Assets.Value" />
+    <link rel="stylesheet" href="guanfu.css?v=@Assets.Value" />
+    @* 没有作用域样式文件了（MainLayout.razor.css 已删，规则并进了 guanfu.css），
+       这个链接留着就会每个页面都发一个 404。 *@
+    <HeadOutlet />
+    @* 主题在样式之后、Blazor 之前落定：等交互式电路起来再切的话，
+       用户上次选的浅色会先闪一下默认的深色。 *@
+    <script>
+        try {
+            if (localStorage.getItem('wb-theme') === 'light') {
+                document.documentElement.setAttribute('data-theme', 'light');
+            }
+        } catch (e) { }
+    </script>
+</head>
+
+<body>
+    @* 整个路由树（含 MainLayout）都做成交互式：
+       布局里带着「待审」徽章和定时刷新，静态 SSR 下它永远不动。
+       注意：@rendermode 不能加在 MainLayout 自己身上 ——
+       布局的 Body 是 RenderFragment，跨渲染模式边界时框架直接拒绝
+       （"Cannot pass the parameter 'Body' ... arbitrary code and cannot be serialized"）。
+       正确做法是在这里给 Routes 标模式，布局与页面一并继承。 *@
+    <Routes @rendermode="InteractiveServer" />
+    <script src="guanfu.js?v=@Assets.Value"></script>
+    <script src="_framework/blazor.web.js"></script>
+</body>
+
+</html>

@@ -1,0 +1,17 @@
+﻿@using System.Net.Http
+@using System.Net.Http.Json
+@using Microsoft.AspNetCore.Components.Forms
+@using Microsoft.AspNetCore.Components.Routing
+@using Microsoft.AspNetCore.Components.Web
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@using Microsoft.AspNetCore.Components.Web.Virtualization
+@using Microsoft.JSInterop
+@using Guanfu.Domain
+@using Guanfu.Application.Contracts
+@using Guanfu.Application.Services
+@using Guanfu.Documents
+@using Guanfu.Web
+@using Guanfu.Web.Components
+
+@* TaskStatus 与 System.Threading.Tasks.TaskStatus 同名，用别名消除歧义 *@
+@using TaskStatus = Guanfu.Domain.TaskStatus

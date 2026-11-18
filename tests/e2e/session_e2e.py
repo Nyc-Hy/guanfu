@@ -9,7 +9,7 @@
   F3 跨项目要拒：会话在 A 项目，显式传 B 项目 → 必须被拒
   F4 按编号认领：claim(taskKey) 就能领，不用先查 GUID
   F5 认领之后审计自动带任务：agent 不用自己填 taskId
-  F6 提交之后产出文件自动落库：工作台自己数出来的，不是 agent 自报的
+  F6 提交之后产出文件自动落库：观复自己数出来的，不是 agent 自报的
 
 用法:
     python3 tests/e2e/session_e2e.py --url http://127.0.0.1:5199
@@ -33,7 +33,7 @@ def decide(rest: str, approval_id: str, approve: bool = True) -> tuple[int, str]
     token = os.environ.get("WB_HUMAN_TOKEN", "")
     headers = {"Content-Type": "application/json"}
     if token:
-        headers["X-Workbench-Human-Token"] = token
+        headers["X-Guanfu-Human-Token"] = token
 
     request = urllib.request.Request(
         rest.rstrip("/") + f"/api/approvals/{approval_id}/decide",
@@ -80,8 +80,8 @@ def main() -> int:
     other = rest_json(rest, "POST", "/api/projects", {"name": f"别的项目 {suffix}"})
     other_id = other["id"]
 
-    # 带工作目录的客户端 —— 这就是桥接做的事：告诉工作台「我在这个目录干活」
-    bound = Mcp(args.url, headers={"X-Workbench-Repo": repo, "X-Workbench-Agent": "e2e-agent"})
+    # 带工作目录的客户端 —— 这就是桥接做的事：告诉观复「我在这个目录干活」
+    bound = Mcp(args.url, headers={"X-Guanfu-Repo": repo, "X-Guanfu-Agent": "e2e-agent"})
     bound.initialize()
 
     # ── F2 不传 projectId 也能干活 ─────────────────────────────────
@@ -93,7 +93,7 @@ def main() -> int:
         f"fs_list 的根应是项目绑定的仓库（实际：{listing.get('root')}）",
     )
 
-    session = bound.call("workbench_get_session", {})
+    session = bound.call("guanfu_get_session", {})
     expect(session.get("ok") is True, "应有活跃会话")
     expect(
         (session.get("session") or {}).get("projectId") == project_id,
@@ -115,7 +115,7 @@ def main() -> int:
 
     # ── F4 按编号认领 ─────────────────────────────────────────────
     print("\n-- F4 按编号认领（不用先查 GUID）--")
-    created = bound.call("workbench_create_task", {
+    created = bound.call("guanfu_create_task", {
         "title": f"会话绑定 e2e 任务 {suffix}",
         "type": "requirement",
     })
@@ -123,7 +123,7 @@ def main() -> int:
     task_key = created.get("key")
     expect(bool(task_key), f"任务应有编号（实际：{task_key}）")
 
-    claimed = bound.call("workbench_claim_task", {"taskKey": task_key, "agentId": "e2e-agent"})
+    claimed = bound.call("guanfu_claim_task", {"taskKey": task_key, "agentId": "e2e-agent"})
     expect(claimed.get("ok") is True, f"按编号认领应成功（实际：{claimed.get('error')}）")
     expect(
         (claimed.get("task") or {}).get("id") == task_id,
@@ -134,17 +134,17 @@ def main() -> int:
     print("\n-- F4.1 主工作区同一时刻只允许一个 agent 占 --")
     # 另一个 agent（也绑同一个仓库）想在主工作区干活 → 必须被拒。
     # 两个人共用一个目录会互相踩文件，这是 agent 时代最常见的事故。
-    second = bound.call("workbench_create_task", {
+    second = bound.call("guanfu_create_task", {
         "title": f"第二个活 {suffix}",
         "type": "requirement",
     })
     second_key = second.get("key")
 
-    other_agent = Mcp(args.url, headers={"X-Workbench-Repo": repo, "X-Workbench-Agent": "e2e-agent-2"})
+    other_agent = Mcp(args.url, headers={"X-Guanfu-Repo": repo, "X-Guanfu-Agent": "e2e-agent-2"})
     other_agent.initialize()
 
     blocked = other_agent.call(
-        "workbench_claim_task", {"taskKey": second_key, "agentId": "e2e-agent-2"}
+        "guanfu_claim_task", {"taskKey": second_key, "agentId": "e2e-agent-2"}
     )
     expect(blocked.get("ok") is not True, "另一个 agent 不该能占用同一个主工作区")
     expect(
@@ -164,7 +164,7 @@ def main() -> int:
     )
     if os.path.isdir(worktree):
         parallel = other_agent.call(
-            "workbench_claim_task",
+            "guanfu_claim_task",
             {"taskKey": second_key, "agentId": "e2e-agent-2", "worktree": worktree},
         )
         expect(
@@ -194,7 +194,7 @@ def main() -> int:
     else:
         print("  ⚠ git worktree 不可用，跳过并行领活场景")
 
-    context = bound.call("workbench_get_context", {"taskKey": task_key})
+    context = bound.call("guanfu_get_context", {"taskKey": task_key})
     expect(
         (context.get("task") or {}).get("id") == task_id,
         f"按编号取上下文应拿到那个任务（实际：{context.get('error') or context.get('task')}）",
@@ -227,18 +227,18 @@ def main() -> int:
     # ── F4.3 交接：放掉活 + 下一个接手的人看得见为什么 ────────────────
     print("\n-- F4.3 交接（放掉活 + 接手的人看得见上下文）--")
     released = other_agent.call(
-        "workbench_release_task", {"taskId": second["id"], "reason": "环境不对，接不了"}
+        "guanfu_release_task", {"taskId": second["id"], "reason": "环境不对，接不了"}
     )
     expect(released.get("ok"), f"放掉活应成功（实际：{released.get('error')}）")
 
     # 另一个 agent 接手 → 结果里要带「上一个是谁、为什么」。
     # 用**独立的客户端**：bound 这个会话已经挂在第一个任务上，
     # 拿它去领别的任务会把会话的任务改掉，后面的断言就全乱了。
-    third = Mcp(args.url, headers={"X-Workbench-Repo": repo, "X-Workbench-Agent": "e2e-agent-3"})
+    third = Mcp(args.url, headers={"X-Guanfu-Repo": repo, "X-Guanfu-Agent": "e2e-agent-3"})
     third.initialize()
     # 主工作区被别的 agent 占着（工位独占）→ 接手方得声明自己的 worktree
     takeover = third.call(
-        "workbench_claim_task",
+        "guanfu_claim_task",
         {"taskId": second["id"], "agentId": "e2e-agent-3", "worktree": worktree},
     )
     expect(takeover.get("ok"), f"接手应成功（实际：{takeover.get('error')}）")

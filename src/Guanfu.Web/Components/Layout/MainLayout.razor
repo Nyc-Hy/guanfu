@@ -1,0 +1,297 @@
+﻿@inherits LayoutComponentBase
+@implements IAsyncDisposable
+@inject IServiceScopeFactory ScopeFactory
+@inject IJSRuntime JS
+@inject NavigationManager Nav
+
+<div class="wb-shell">
+    @* 移动端抽屉开关：纯 CSS，不引 JS。放在 shell 的第一个子元素，
+       :checked ~ 只能选它后面的兄弟，侧边栏和遮罩都在其后。 *@
+    <input type="checkbox" id="wb-nav-toggle" class="wb-nav-toggle-box" />
+    <label for="wb-nav-toggle" class="wb-nav-burger" title="菜单">☰</label>
+    <label for="wb-nav-toggle" class="wb-nav-backdrop"></label>
+
+    <aside class="wb-side">
+        <div class="wb-side-brand">
+            <span class="wb-brand-mark"></span>
+            <a class="wb-brand" href="/">观复</a>
+        </div>
+
+        <nav class="wb-side-scroll">
+            @* 每个入口都带一行说明 —— 「审批 / 审计 / 数据库调用」这种抽象名词，
+               光看名字不知道该什么时候点开看。 *@
+            <div class="wb-side-group">
+                <div class="wb-side-group-label">工作</div>
+                <a class="wb-side-link wb-side-link-lead @(IsCurrent("/") ? "active" : "")" href="/">
+                    <span class="wb-side-text">
+                        <span class="wb-side-link-name">总览</span>
+                        <span class="wb-side-link-sub">此刻的局面与项目体检</span>
+                    </span>
+                </a>
+            </div>
+
+            <div class="wb-side-group">
+                <div class="wb-side-group-label">治理</div>
+                <a class="wb-side-link @(IsCurrent("/approvals") ? "active" : "")" href="/approvals">
+                    <span class="wb-side-text">
+                        <span class="wb-side-link-name">待批操作</span>
+                        <span class="wb-side-link-sub">agent 的写操作等你点头</span>
+                    </span>
+                    @if (PendingCount > 0)
+                    {
+                        <span class="wb-badge">@PendingCount</span>
+                    }
+                </a>
+                <a class="wb-side-link @(IsCurrent("/audit") ? "active" : "")" href="/audit">
+                    <span class="wb-side-text">
+                        <span class="wb-side-link-name">工具调用记录</span>
+                        <span class="wb-side-link-sub">agent 每次调工具都留一笔</span>
+                    </span>
+                </a>
+                <a class="wb-side-link @(IsCurrent("/db-calls") ? "active" : "")" href="/db-calls">
+                    <span class="wb-side-text">
+                        <span class="wb-side-link-name">SQL 执行记录</span>
+                        <span class="wb-side-link-sub">跑过的 SQL 与影响行数</span>
+                    </span>
+                </a>
+            </div>
+
+            <div class="wb-side-group">
+                <div class="wb-side-group-label">项目</div>
+                @if (ProjectItems.Count == 0)
+                {
+                    <div class="wb-side-empty">还没有项目</div>
+                }
+                else
+                {
+                    @foreach (var project in ProjectItems)
+                    {
+                        <a class="wb-side-link @(IsCurrent("/projects/" + project.Id) ? "active" : "")"
+                           href="/projects/@project.Id"
+                           title="@project.Name">@project.Name</a>
+                    }
+                }
+                @* 建项目的入口挨着项目列表 —— 总览页现在是仪表盘，不摆表单了。 *@
+                <a class="wb-side-link wb-side-link-new" href="/?tab=projects&amp;new=1"
+                   @onclick="GoNewProject" @onclick:preventDefault="true">＋ 新建项目</a>
+            </div>
+
+            <div class="wb-side-group">
+                <div class="wb-side-group-label">接入</div>
+                <a class="wb-side-link @(IsCurrent("/mcp-tools") ? "active" : "")" href="/mcp-tools">
+                    <span class="wb-side-text">
+                        <span class="wb-side-link-name">MCP 工具</span>
+                        <span class="wb-side-link-sub">开关 agent 能用哪些工具</span>
+                    </span>
+                </a>
+                <a class="wb-side-link @(IsCurrent("/connect") ? "active" : "")" href="/connect">
+                    <span class="wb-side-text">
+                        <span class="wb-side-link-name">接入 agent</span>
+                        <span class="wb-side-link-sub">把 agent 接进观复</span>
+                    </span>
+                </a>
+                <a class="wb-side-link @(IsCurrent("/db-connections") ? "active" : "")" href="/db-connections">
+                    <span class="wb-side-text">
+                        <span class="wb-side-link-name">数据库连接</span>
+                        <span class="wb-side-link-sub">配库与免审批规则</span>
+                    </span>
+                </a>
+            </div>
+
+            <div class="wb-side-group">
+                <div class="wb-side-group-label">运维</div>
+                <a class="wb-side-link @(IsCurrent("/workspace") ? "active" : "")" href="/workspace">
+                    <span class="wb-side-text">
+                        <span class="wb-side-link-name">工作区</span>
+                        <span class="wb-side-link-sub">导出导入，换机用</span>
+                    </span>
+                </a>
+                <a class="wb-side-link @(IsCurrent("/search") ? "active" : "")" href="/search">
+                    <span class="wb-side-text">
+                        <span class="wb-side-link-name">搜索</span>
+                        <span class="wb-side-link-sub">任务文档调用一起搜</span>
+                    </span>
+                </a>
+            </div>
+        </nav>
+    </aside>
+
+    <div class="wb-main">
+        <header class="wb-topbar">
+            <a class="wb-topsearch" href="/search">
+                <span class="wb-topsearch-icon">⌕</span>
+                <span class="wb-topsearch-text">搜索任务、文档、调用记录</span>
+                <kbd>/</kbd>
+            </a>
+            <span class="wb-topbar-spacer"></span>
+            <button class="wb-btn wb-btn-ghost wb-btn-sm" @onclick="ToggleThemeAsync"
+                    title="@(Theme == "light" ? "切换到深色" : "切换到浅色")">
+                @(Theme == "light" ? "☾" : "☀")
+            </button>
+        </header>
+
+        <main class="wb-content">
+            <ErrorNotice Error="LoadError" />
+            @Body
+        </main>
+    </div>
+</div>
+
+<div id="blazor-error-ui">
+    页面出错了，刷新一下试试。
+    <a href="" class="reload">重新加载</a>
+    <a class="dismiss">关闭</a>
+</div>
+
+@code {
+    // 待审徽章自己会刷：审批多半是 agent 发起的，只在 OnInitializedAsync 读一次
+    // 的话，徽章永远停在上一次打开页面时的数字。
+    private static readonly TimeSpan BadgeRefreshInterval = TimeSpan.FromSeconds(30);
+
+    private int PendingCount { get; set; }
+    private IReadOnlyList<ProjectSummaryDto> ProjectItems { get; set; } = [];
+    private string Theme { get; set; } = "dark";
+    private PageError? LoadError { get; set; }
+    private CancellationTokenSource? _timerCts;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // 路由变了要重画侧边栏的高亮项
+        Nav.LocationChanged += OnLocationChanged;
+
+        await RefreshAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // 只在交互阶段起定时器：预渲染出来的实例用完就扔，
+        // 在那儿起定时器等于漏一个永远在跑的后台任务。
+        if (!firstRender)
+        {
+            return;
+        }
+
+        // 主题以 localStorage 为准：用户上次选的是浅色，打开就该是浅色。
+        // 预渲染阶段拿不到 JS，失败就按默认的深色走。
+        try
+        {
+            Theme = await JS.InvokeAsync<string>("wbTheme.get");
+            StateHasChanged();
+        }
+        catch (Exception)
+        {
+            // JS 还没就绪（或被禁用了）：不影响页面本身
+        }
+
+        _timerCts = new CancellationTokenSource();
+        _ = RunBadgeTimerAsync(_timerCts.Token);
+    }
+
+    private async Task RunBadgeTimerAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(BadgeRefreshInterval);
+
+            while (await timer.WaitForNextTickAsync(cancellationToken))
+            {
+                await InvokeAsync(async () =>
+                {
+                    await RefreshAsync();
+                    StateHasChanged();
+                });
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // 组件被销毁，正常收尾
+        }
+        catch (ObjectDisposedException)
+        {
+            // 电路已经断了
+        }
+    }
+
+    private async Task RefreshAsync()
+    {
+        try
+        {
+            // 每次刷新独立 scope：布局的定时器与页面共用电路级 DbContext 的话，
+            // 页面正在查库时徽章也来查，就是 "A second operation was started"。
+            using var scope = ScopeFactory.CreateScope();
+
+            var approvals = scope.ServiceProvider.GetRequiredService<IApprovalService>();
+            var pending = await approvals.ListAsync(ApprovalStatus.Pending);
+            PendingCount = pending.Count;
+
+            var projects = scope.ServiceProvider.GetRequiredService<IProjectService>();
+            ProjectItems = await projects.ListAsync();
+
+            LoadError = null;
+        }
+        catch (Exception ex)
+        {
+            // 布局包住每一个页面：这里抛出去就是整页白屏
+            LoadError = PageError.From(ex, "加载待审数量");
+        }
+    }
+
+    private void OnLocationChanged(object? sender, LocationChangedEventArgs e)
+    {
+        InvokeAsync(StateHasChanged);
+    }
+
+    /// <summary>
+    /// 跳到总览页的「项目」页签并打开新建表单。
+    /// preventDefault 挡掉了 href 的整页跳转 —— 走应用内导航，不用重连电路。
+    /// </summary>
+    private void GoNewProject() => Nav.NavigateTo("/?tab=projects&new=1");
+
+    /// <summary>
+    /// 当前路由是不是这一项（用于侧边栏高亮）。
+    /// 项目页是 /projects/{id}，按前缀匹配；根路径要精确匹配。
+    /// </summary>
+    private bool IsCurrent(string path)
+    {
+        var relative = Nav.ToBaseRelativePath(Nav.Uri);
+
+        // 查询串不算路径 —— 「/?tab=projects」还是总览页，不能因为带参数就不高亮。
+        var mark = relative.IndexOf('?');
+        if (mark >= 0)
+        {
+            relative = relative[..mark];
+        }
+
+        if (path == "/")
+        {
+            return relative.Length == 0;
+        }
+
+        return relative.StartsWith(path.TrimStart('/'), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task ToggleThemeAsync()
+    {
+        try
+        {
+            var theme = await JS.InvokeAsync<string>("wbTheme.toggle");
+            Theme = theme;
+        }
+        catch (Exception)
+        {
+            // 主题切换失败：留在当前主题，别把按钮弄成半吊子状态
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        Nav.LocationChanged -= OnLocationChanged;
+
+        if (_timerCts is not null)
+        {
+            await _timerCts.CancelAsync();
+            _timerCts.Dispose();
+            _timerCts = null;
+        }
+    }
+}

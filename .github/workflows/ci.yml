@@ -23,13 +23,13 @@ jobs:
           dotnet-version: '8.0.x'
 
       - name: 还原
-        run: dotnet restore Workbench.sln
+        run: dotnet restore Guanfu.sln
 
       - name: 编译
-        run: dotnet build Workbench.sln --configuration Release --no-restore
+        run: dotnet build Guanfu.sln --configuration Release --no-restore
 
       - name: 测试
-        run: dotnet test Workbench.sln --configuration Release --no-build --logger "trx;LogFileName=results.trx"
+        run: dotnet test Guanfu.sln --configuration Release --no-build --logger "trx;LogFileName=results.trx"
 
       - name: 上传测试报告
         if: always()

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""工作台 MCP 端到端验证。
+"""观复 MCP 端到端验证。
 
 模拟 agent 走完这句话对应的完整链路：
-    「你看下 工作台中的当前项目 12月版本的 req001，做一下开发」
+    「你看下 观复中的当前项目 12月版本的 req001，做一下开发」
 
 两条链路：
   A  正向：按编号找任务 → claim → 取上下文 → 回写计划 → 推进到 Review →
@@ -46,7 +46,7 @@ class Mcp:
     def __init__(self, base_url: str, headers: dict | None = None):
         self.base = base_url.rstrip("/") + "/mcp"
         self._id = 0
-        # 额外请求头。链路 F 用它模拟「桥接把 agent 的工作目录告诉工作台」。
+        # 额外请求头。链路 F 用它模拟「桥接把 agent 的工作目录告诉观复」。
         self.headers = headers or {}
         # MCP 协议会话 id：initialize 时服务端会发，之后每次请求都要带上，
         # 否则服务端按「新建会话」处理并拒掉（400）。
@@ -93,7 +93,7 @@ class Mcp:
             {
                 "protocolVersion": "2025-06-18",
                 "capabilities": {},
-                "clientInfo": {"name": "workbench-e2e", "version": "1"},
+                "clientInfo": {"name": "guanfu-e2e", "version": "1"},
             },
         )
         self._rpc("notifications/initialized", {}, notify=True)
@@ -153,15 +153,15 @@ def make_temp_repo(branch: str) -> str | None:
 
 
 def rest_json(rest: str, method: str, path: str, body: dict | None = None):
-    """建项目 / 建里程碑这类「改变工作台结构」的动作只走 REST —— MCP 刻意不暴露它们。"""
+    """建项目 / 建里程碑这类「改变观复结构」的动作只走 REST —— MCP 刻意不暴露它们。"""
     data = json.dumps(body).encode() if body is not None else None
     headers = {"Content-Type": "application/json"}
 
     # 敏感端点（改项目配置等）要人工凭证 —— 这里扮演的是「人工操作员」，
-    # 所以带上工作台启动时生成的 token。agent 那条路（MCP）本来就没有这个权限。
+    # 所以带上观复启动时生成的 token。agent 那条路（MCP）本来就没有这个权限。
     token = os.environ.get("WB_HUMAN_TOKEN", "")
     if token:
-        headers["X-Workbench-Human-Token"] = token
+        headers["X-Guanfu-Human-Token"] = token
 
     request = urllib.request.Request(
         rest.rstrip("/") + path,
@@ -197,7 +197,7 @@ def main() -> int:
     def move_to_review(task_id: str):
         for status in ["DocsReady", "Planned", "InDev", "Testing", "Review"]:
             result = mcp.call(
-                "workbench_update_status",
+                "guanfu_update_status",
                 {"taskId": task_id, "status": status, "actor": "e2e-agent"},
             )
             if not result.get("ok"):
@@ -208,7 +208,7 @@ def main() -> int:
 
     def new_task(key: str) -> str:
         task = mcp.call(
-            "workbench_create_task",
+            "guanfu_create_task",
             {
                 "projectId": project_id,
                 "title": f"e2e 任务 {key}",
@@ -223,32 +223,32 @@ def main() -> int:
     print("\n-- 按编号找任务（人说的是 req001） --")
     task_id = new_task("REQ-001")
     for spoken in ["req001", "REQ-001", "Req-001"]:
-        found = mcp.call("workbench_get_task_by_key", {"projectId": project_id, "key": spoken})
+        found = mcp.call("guanfu_get_task_by_key", {"projectId": project_id, "key": spoken})
         tasks = found.get("tasks") or []
         expect(found.get("ok") and len(tasks) == 1, f"'{spoken}' 应命中唯一任务")
         if tasks:
             expect(tasks[0]["id"] == task_id, f"'{spoken}' 应命中同一个任务")
 
-    missing = mcp.call("workbench_get_task_by_key", {"projectId": project_id, "key": "REQ-999"})
+    missing = mcp.call("guanfu_get_task_by_key", {"projectId": project_id, "key": "REQ-999"})
     expect(not missing.get("ok") and missing.get("availableKeys") is not None,
            "查不到编号时应返回现有编号清单")
 
     print("\n-- claim / 上下文 / 计划 --")
-    claim = mcp.call("workbench_claim_task", {"taskId": task_id, "agentId": "e2e-agent", "leaseMinutes": 60})
+    claim = mcp.call("guanfu_claim_task", {"taskId": task_id, "agentId": "e2e-agent", "leaseMinutes": 60})
     expect(claim.get("ok"), "claim 应成功")
 
-    context = mcp.call("workbench_get_context", {"taskId": task_id})
+    context = mcp.call("guanfu_get_context", {"taskId": task_id})
     expect("allowedTransitions" in context, "上下文应带出允许的状态迁移")
 
     print("\n-- 调度建议（先干哪个）--")
     # 再建一个没被领的活 —— 领掉的那个不算候选
     mcp.call(
-        "workbench_create_task",
+        "guanfu_create_task",
         {"projectId": project_id, "title": f"另一个待办 e2e {suffix}", "type": "bug"},
     )
 
-    suggestions = mcp.call("workbench_get_dispatch_board", {"projectId": project_id})
-    board = mcp.call("workbench_suggest_tasks", {"projectId": project_id})
+    suggestions = mcp.call("guanfu_get_dispatch_board", {"projectId": project_id})
+    board = mcp.call("guanfu_suggest_tasks", {"projectId": project_id})
     expect(
         isinstance(board, dict) and "suggestions" in board,
         f"调度建议应返回带理由的列表（实际：{board}）",
@@ -261,7 +261,7 @@ def main() -> int:
     )
 
     print("\n-- 调度板（现在什么能干）--")
-    board = mcp.call("workbench_get_dispatch_board", {"projectId": project_id})
+    board = mcp.call("guanfu_get_dispatch_board", {"projectId": project_id})
     expect(
         isinstance(board, dict) and "ready" in board and "blocked" in board,
         f"调度板应返回三个桶（实际：{board}）",
@@ -279,9 +279,9 @@ def main() -> int:
     rest_json(rest, "PUT", f"/api/projects/{project_id}/spec", {
         "purpose": "12月版本要支持账号密码登录",
         "definitionOfDone": "有单测覆盖新增逻辑\n文档里的用法同步更新",
-        "testCommand": "dotnet test Workbench.sln",
+        "testCommand": "dotnet test Guanfu.sln",
     })
-    spec = mcp.call("workbench_get_project_spec", {"projectId": project_id})
+    spec = mcp.call("guanfu_get_project_spec", {"projectId": project_id})
     expect(
         isinstance(spec, dict) and spec.get("projectId") == project_id,
         f"agent 应能读到项目规约（实际：{spec}）",
@@ -291,14 +291,14 @@ def main() -> int:
         "有单测覆盖新增逻辑" in (spec.get("definitionOfDone") or []),
         f"DoD 应逐条带给 agent（实际：{spec.get('definitionOfDone')}）",
     )
-    ctx_with_spec = mcp.call("workbench_get_context", {"taskId": task_id})
+    ctx_with_spec = mcp.call("guanfu_get_context", {"taskId": task_id})
     expect(
-        (ctx_with_spec.get("spec") or {}).get("testCommand") == "dotnet test Workbench.sln",
+        (ctx_with_spec.get("spec") or {}).get("testCommand") == "dotnet test Guanfu.sln",
         "上下文包里也应带着规约（agent 一次拿全，不用再调一次工具）",
     )
 
     plan = mcp.call(
-        "workbench_set_plan",
+        "guanfu_set_plan",
         {
             "taskId": task_id,
             "background": "12月版本要支持账号密码登录",
@@ -313,7 +313,7 @@ def main() -> int:
     print("\n-- 离线补报（活是过去干的，报上来时给实际发生时间）--")
     happened_at = "2026-11-16T06:30:00Z"
     backfilled = mcp.call(
-        "workbench_post_event",
+        "guanfu_post_event",
         {
             "taskId": task_id,
             "message": "网络不通时把登录接口写完了",
@@ -331,7 +331,7 @@ def main() -> int:
         f"记录时间应是「现在」，不能拿发生时间冒充（实际：{backfilled.get('createdAt')}）",
     )
     future = mcp.call(
-        "workbench_post_event",
+        "guanfu_post_event",
         {
             "taskId": task_id,
             "message": "还没发生的事",
@@ -345,12 +345,12 @@ def main() -> int:
 
     print("\n-- 交回活 + 交接链 --")
     released = mcp.call(
-        "workbench_release_task",
+        "guanfu_release_task",
         {"taskId": task_id, "agentId": "e2e-agent", "reason": "先让另一位熟悉这块的接"},
     )
     expect(released.get("ok"), f"放掉认领应成功（实际：{released}）")
 
-    chain = mcp.call("workbench_get_handoff_pack", {"taskId": task_id}).get("pack") or {}
+    chain = mcp.call("guanfu_get_handoff_pack", {"taskId": task_id}).get("pack") or {}
     steps = chain.get("handoffChain") or []
     expect(len(steps) >= 1, f"交接链应看得到转手记录（实际：{steps}）")
     expect(
@@ -359,12 +359,12 @@ def main() -> int:
     )
 
     # 放掉之后得能再领回来
-    reclaimed = mcp.call("workbench_claim_task", {"taskId": task_id, "agentId": "e2e-agent-2"})
+    reclaimed = mcp.call("guanfu_claim_task", {"taskId": task_id, "agentId": "e2e-agent-2"})
     expect(reclaimed.get("ok"), f"放掉之后应能再领（实际：{reclaimed}）")
-    mcp.call("workbench_release_task", {"taskId": task_id, "agentId": "e2e-agent-2", "reason": "e2e 收尾"})
+    mcp.call("guanfu_release_task", {"taskId": task_id, "agentId": "e2e-agent-2", "reason": "e2e 收尾"})
 
     print("\n-- 工位：agent 该去哪儿干活 --")
-    station = mcp.call("workbench_get_workstation", {"taskId": task_id})
+    station = mcp.call("guanfu_get_workstation", {"taskId": task_id})
     expect(station.get("ok"), "应能问到工位现状")
     station_dto = station.get("station") or {}
     expect(
@@ -377,7 +377,7 @@ def main() -> int:
     )
 
     print("\n-- 交接包：接手的人一次拿全 --")
-    pack_result = mcp.call("workbench_get_handoff_pack", {"taskId": task_id})
+    pack_result = mcp.call("guanfu_get_handoff_pack", {"taskId": task_id})
     expect(pack_result.get("ok"), "应能取到交接包")
     handoff_pack = pack_result.get("pack") or {}
     expect(
@@ -398,7 +398,7 @@ def main() -> int:
     )
 
     print("\n-- 工位清单：worktree 建了没人收 --")
-    stations = mcp.call("workbench_list_workstations", {})
+    stations = mcp.call("guanfu_list_workstations", {})
     expect(stations.get("ok"), f"应能列工位（实际：{stations}）")
     expect(isinstance(stations.get("workstations"), list), "工位清单要是个列表")
 
@@ -427,7 +427,7 @@ def main() -> int:
         batch.get("error") and "坏文件.exe" in batch.get("error"),
         "失败原因要摆在明面上（agent 才知道该改哪个）",
     )
-    docs = mcp.call("workbench_get_context", {"taskId": task_id})
+    docs = mcp.call("guanfu_get_context", {"taskId": task_id})
     uploaded = docs.get("documents") or []
     expect(
         any(d.get("fileName") == "PRD-需求.md" for d in uploaded),
@@ -442,11 +442,11 @@ def main() -> int:
     move_to_review(task_id)
 
     print("\n-- 开评审轮 + 取评审包 --")
-    started = mcp.call("workbench_start_review", {"taskId": task_id, "reviewer": "e2e-agent"})
+    started = mcp.call("guanfu_start_review", {"taskId": task_id, "reviewer": "e2e-agent"})
     round_dto = started.get("round") or {}
     expect(started.get("ok") and len(round_dto.get("items") or []) == 7, "应开出 7 个维度的待办")
 
-    pack = (mcp.call("workbench_get_review_pack", {"taskId": task_id}).get("pack")) or {}
+    pack = (mcp.call("guanfu_get_review_pack", {"taskId": task_id}).get("pack")) or {}
     dimensions = pack.get("dimensions") or []
     expect(len(dimensions) == 7, "评审包应有 7 个维度")
     expect(all(d.get("checklist") for d in dimensions), "每个维度都该有检查清单")
@@ -456,7 +456,7 @@ def main() -> int:
 
     print("\n-- 评审分工：维度可以被认领 --")
     claimed = mcp.call(
-        "workbench_claim_review_dimension",
+        "guanfu_claim_review_dimension",
         {"taskId": task_id, "dimension": "security", "agentId": "e2e-reviewer-1"},
     )
     expect(claimed.get("ok"), f"认领维度应成功（实际：{claimed}）")
@@ -466,7 +466,7 @@ def main() -> int:
     )
 
     second = mcp.call(
-        "workbench_claim_review_dimension",
+        "guanfu_claim_review_dimension",
         {"taskId": task_id, "dimension": "security", "agentId": "e2e-reviewer-2"},
     )
     expect(
@@ -476,7 +476,7 @@ def main() -> int:
 
     # 持有者之外的 agent 不能替他交结论
     stolen = mcp.call(
-        "workbench_submit_review",
+        "guanfu_submit_review",
         {
             "taskId": task_id,
             "dimension": "security",
@@ -494,7 +494,7 @@ def main() -> int:
         # 被认领的维度由持有者自己交 —— 分工就是各交各的
         reviewer = "e2e-reviewer-1" if dimension["key"] == "security" else "e2e-agent"
         result = mcp.call(
-            "workbench_submit_review",
+            "guanfu_submit_review",
             {
                 "taskId": task_id,
                 "dimension": dimension["key"],
@@ -507,7 +507,7 @@ def main() -> int:
         expect(result.get("ok"), f"{dimension['key']} 回写应成功（实际：{result}）")
 
     # 分工的收尾：收尾的人（协调者）要一眼看出谁评了哪条、还差几条
-    current = (mcp.call("workbench_get_review", {"taskId": task_id}).get("round")) or {}
+    current = (mcp.call("guanfu_get_review", {"taskId": task_id}).get("round")) or {}
     judgements = current.get("judgements") or []
     expect(len(judgements) == 7, f"评审轮应带着 7 条分工（实际：{judgements}）")
     expect(
@@ -521,7 +521,7 @@ def main() -> int:
     print("\n-- 逐条判定完成定义 --")
     for item in spec_items:
         verdict = mcp.call(
-            "workbench_submit_spec_verdict",
+            "guanfu_submit_spec_verdict",
             {
                 "taskId": task_id,
                 "item": item["text"],
@@ -532,7 +532,7 @@ def main() -> int:
         )
         expect(verdict.get("ok"), f"完成定义「{item['text']}」判定应成功（实际：{verdict.get('error')}）")
 
-    current = (mcp.call("workbench_get_review", {"taskId": task_id}).get("round")) or {}
+    current = (mcp.call("guanfu_get_review", {"taskId": task_id}).get("round")) or {}
     expect(current.get("verdict") == "Passed", "当前轮判定应为 Passed")
 
     # 规约的 DoD 也要一条一条判 —— 没判完不许结项
@@ -540,18 +540,18 @@ def main() -> int:
     expect(len(spec_items) > 0, "评审包应带上项目的完成定义")
     for item in spec_items:
         verdict = mcp.call(
-            "workbench_submit_spec_verdict",
+            "guanfu_submit_spec_verdict",
             {"taskId": task_id, "item": item["text"], "satisfied": True,
              "note": "已核对", "reviewer": "e2e-agent"},
         )
         expect(verdict.get("ok"), f"规约条目「{item['text']}」判定应成功（实际：{verdict.get('error')}）")
 
-    done = mcp.call("workbench_update_status", {"taskId": task_id, "status": "Done", "actor": "e2e-agent"})
+    done = mcp.call("guanfu_update_status", {"taskId": task_id, "status": "Done", "actor": "e2e-agent"})
     expect(done.get("ok"), "评审全过（含规约逐条判定）后应能结项")
 
     print("\n-- 里程碑验收 × 完成定义 --")
     ms = mcp.call(
-        "workbench_create_milestone",
+        "guanfu_create_milestone",
         {"projectId": project_id, "name": f"e2e 版本 {suffix}"},
     )
     # 另起一个名字：主线那个 milestone_id 还被 new_task 用着
@@ -561,20 +561,20 @@ def main() -> int:
     # 用**独立的活**做这个场景：验收后里程碑里的活状态会被冻住，
     # 拿主线那个任务来验收会连累后面 B 链的用例。
     milestone_task = mcp.call(
-        "workbench_create_task",
+        "guanfu_create_task",
         {"projectId": project_id, "title": f"版本里的活 {suffix}", "type": "requirement"},
     )
     milestone_task_id = milestone_task.get("id")
     mcp.call(
-        "workbench_assign_milestone",
+        "guanfu_assign_milestone",
         {"taskId": milestone_task_id, "milestoneId": accept_milestone_id},
     )
 
     move_to_review(milestone_task_id)
-    mcp.call("workbench_start_review", {"taskId": milestone_task_id, "reviewer": "e2e-agent"})
+    mcp.call("guanfu_start_review", {"taskId": milestone_task_id, "reviewer": "e2e-agent"})
     for dimension in dimensions:
         mcp.call(
-            "workbench_submit_review",
+            "guanfu_submit_review",
             {
                 "taskId": milestone_task_id,
                 "dimension": dimension["key"],
@@ -586,7 +586,7 @@ def main() -> int:
         )
     for item in spec_items:
         mcp.call(
-            "workbench_submit_spec_verdict",
+            "guanfu_submit_spec_verdict",
             {
                 "taskId": milestone_task_id,
                 "item": item["text"],
@@ -596,7 +596,7 @@ def main() -> int:
             },
         )
     mcp.call(
-        "workbench_update_status",
+        "guanfu_update_status",
         {"taskId": milestone_task_id, "status": "Done", "actor": "e2e-agent"},
     )
 
@@ -607,7 +607,7 @@ def main() -> int:
         f"里程碑验收应通过（实际：{accepted}）",
     )
 
-    history = mcp.call("workbench_list_reviews", {"taskId": task_id}).get("rounds") or []
+    history = mcp.call("guanfu_list_reviews", {"taskId": task_id}).get("rounds") or []
     expect(len(history) == 1 and len(history[0].get("items") or []) == 7, "历史应留一轮 7 条")
 
     # ── B 拦截链路 ────────────────────────────────────────────────────
@@ -616,29 +616,29 @@ def main() -> int:
     print("\n-- 只评 6 个维度就结项 --")
     partial_id = new_task(f"B-{suffix}")
     move_to_review(partial_id)
-    mcp.call("workbench_start_review", {"taskId": partial_id, "reviewer": "e2e-agent"})
+    mcp.call("guanfu_start_review", {"taskId": partial_id, "reviewer": "e2e-agent"})
 
     for dimension in DIMENSIONS[:6]:
         mcp.call(
-            "workbench_submit_review",
+            "guanfu_submit_review",
             {"taskId": partial_id, "dimension": dimension, "passed": True, "reviewer": "e2e-agent"},
         )
 
-    blocked = mcp.call("workbench_update_status", {"taskId": partial_id, "status": "Done", "actor": "e2e-agent"})
+    blocked = mcp.call("guanfu_update_status", {"taskId": partial_id, "status": "Done", "actor": "e2e-agent"})
     expect(not blocked.get("ok"), "只评 6 个维度不该能结项")
     expect("待评审" in (blocked.get("error") or ""), "错误信息应指出还有哪个维度没评")
 
-    after = mcp.call("workbench_get_task", {"taskId": partial_id})
+    after = mcp.call("guanfu_get_task", {"taskId": partial_id})
     expect(after.get("status") == "Review", "状态应仍停在 Review")
 
     print("\n-- 有一个维度不通过就结项 --")
     failed_id = new_task(f"C-{suffix}")
     move_to_review(failed_id)
-    mcp.call("workbench_start_review", {"taskId": failed_id, "reviewer": "e2e-agent"})
+    mcp.call("guanfu_start_review", {"taskId": failed_id, "reviewer": "e2e-agent"})
 
     for dimension in DIMENSIONS:
         mcp.call(
-            "workbench_submit_review",
+            "guanfu_submit_review",
             {
                 "taskId": failed_id,
                 "dimension": dimension,
@@ -648,7 +648,7 @@ def main() -> int:
             },
         )
 
-    blocked2 = mcp.call("workbench_update_status", {"taskId": failed_id, "status": "Done", "actor": "e2e-agent"})
+    blocked2 = mcp.call("guanfu_update_status", {"taskId": failed_id, "status": "Done", "actor": "e2e-agent"})
     expect(not blocked2.get("ok"), "有不通过维度不该能结项")
     expect("不通过" in (blocked2.get("error") or ""), "错误信息应指出有不通过的维度")
 
@@ -659,7 +659,7 @@ def main() -> int:
     keys = {}
     for type_name, title in [("requirement", "需求"), ("bug", "缺陷"), ("optimization", "优化")]:
         created = mcp.call(
-            "workbench_create_task",
+            "guanfu_create_task",
             {"projectId": project_id, "title": f"e2e {title}", "type": type_name},
         )
         keys[type_name] = created.get("key")
@@ -669,7 +669,7 @@ def main() -> int:
     expect(keys.get("bug", "").startswith("BUG-"), "缺陷编号应是 BUG- 前缀")
     expect(keys.get("optimization", "").startswith("OPT-"), "优化编号应是 OPT- 前缀")
 
-    bugs = mcp.call("workbench_list_tasks", {"projectId": project_id, "type": "bug"})
+    bugs = mcp.call("guanfu_list_tasks", {"projectId": project_id, "type": "bug"})
     expect(all(t.get("type") == "Bug" for t in (bugs or [])), "按类型过滤应只出缺陷")
 
     print("\n-- 绑了分支，当前分支不对就不许领 --")
@@ -681,7 +681,7 @@ def main() -> int:
             rest_json(rest, "PUT", f"/api/projects/{project_id}/config", {"repoPath": repo})
 
             bound = mcp.call(
-                "workbench_create_task",
+                "guanfu_create_task",
                 {
                     "projectId": project_id,
                     "title": "e2e 绑分支",
@@ -691,14 +691,14 @@ def main() -> int:
             )
 
             claimed = mcp.call(
-                "workbench_claim_task", {"taskId": bound["id"], "agentId": "e2e-agent"}
+                "guanfu_claim_task", {"taskId": bound["id"], "agentId": "e2e-agent"}
             )
             print(f"  ok={claimed.get('ok')} error={claimed.get('error')}")
             expect(not claimed.get("ok"), "当前分支不对时不该能领任务")
             expect("feature/login" in (claimed.get("error") or ""), "错误信息应点名绑定的分支")
             expect("main" in (claimed.get("error") or ""), "错误信息应说明当前在哪个分支")
 
-            context = mcp.call("workbench_get_context", {"taskId": bound["id"]})
+            context = mcp.call("guanfu_get_context", {"taskId": bound["id"]})
             expect(context.get("branchReady") is False, "上下文应标出分支未就绪")
         finally:
             shutil.rmtree(repo, ignore_errors=True)

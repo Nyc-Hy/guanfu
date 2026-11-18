@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 端到端验证：起一个临时工作台，跑 MCP 全链路，退出时收摊。
+# 端到端验证：起一个临时观复，跑 MCP 全链路，退出时收摊。
 #
 #   ./tests/e2e/run.sh
 #
@@ -34,7 +34,7 @@ cleanup() {
 trap cleanup EXIT
 
 echo "起服务: http://127.0.0.1:$PORT  (WORKBENCH_HOME=$HOME_DIR)"
-WORKBENCH_HOME="$HOME_DIR" "$DOTNET" run --project "$ROOT/src/Workbench.Web" \
+WORKBENCH_HOME="$HOME_DIR" "$DOTNET" run --project "$ROOT/src/Guanfu.Web" \
   --no-launch-profile --urls "http://127.0.0.1:$PORT" > "$LOG" 2>&1 &
 SERVER_PID=$!
 
@@ -52,18 +52,18 @@ if ! curl -fsS -o /dev/null "http://127.0.0.1:$PORT/" 2>/dev/null; then
 fi
 
 # 人工凭证：敏感端点（改项目配置等）要它。e2e 扮演的是「人工操作员」，
-# 所以把工作台生成的 token 带上 —— agent 那条路（MCP）本来就没有这个权限。
+# 所以把观复生成的 token 带上 —— agent 那条路（MCP）本来就没有这个权限。
 WB_HUMAN_TOKEN="$(cat "$HOME_DIR/.human-token" 2>/dev/null || true)"
 export WB_HUMAN_TOKEN
 # CLI 认这个环境变量（--token > WORKBENCH_HUMAN_TOKEN > WORKBENCH_HOME/.human-token）。
 export WORKBENCH_HUMAN_TOKEN="$WB_HUMAN_TOKEN"
 
-# CLI 要单独跑一遍：它是次要入口，但 `wb mcp` 的 stdio 桥接不可替代，
+# CLI 要单独跑一遍：它是次要入口，但 `guanfu mcp` 的 stdio 桥接不可替代，
 # 而且敏感命令在 CLI 上也得守同一条人工凭证门槛。
-"$DOTNET" build "$ROOT/src/Workbench.Cli/Workbench.Cli.csproj" -v quiet --nologo >/dev/null
-CLI_DLL="$(find "$ROOT/src/Workbench.Cli/bin" -name 'Workbench.Cli.dll' -path '*net8.0*' -print -quit)"
+"$DOTNET" build "$ROOT/src/Guanfu.Cli/Guanfu.Cli.csproj" -v quiet --nologo >/dev/null
+CLI_DLL="$(find "$ROOT/src/Guanfu.Cli/bin" -name 'Guanfu.Cli.dll' -path '*net8.0*' -print -quit)"
 if [[ -z "$CLI_DLL" ]]; then
-  echo "找不到 Workbench.Cli.dll —— CLI 冒烟跳过" >&2
+  echo "找不到 Guanfu.Cli.dll —— CLI 冒烟跳过" >&2
 else
   export CLI_DLL
 fi
@@ -89,7 +89,7 @@ python3 "$ROOT/tests/e2e/restart_e2e.py" --dotnet "$DOTNET" --root "$ROOT" || st
 
 if [[ -n "${CLI_DLL:-}" ]]; then
   echo
-  echo "### 链路 E：CLI（wb）冒烟"
+  echo "### 链路 E：CLI（guanfu）冒烟"
   python3 "$ROOT/tests/e2e/cli_smoke.py" \
     --url "http://127.0.0.1:$PORT" \
     --dotnet "$DOTNET" \

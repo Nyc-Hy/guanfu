@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """写操作的人工审批门禁 —— 企业落地最关键的一条链路。
 
-工作台的卖点不是「记录状态」，是「写操作不会在没人点头的情况下发生」。
+观复的卖点不是「记录状态」，是「写操作不会在没人点头的情况下发生」。
 这条链路端到端验：
 
   D1 白名单外的命令直接拒 —— 连审批单都不建
@@ -49,7 +49,7 @@ def rest_status(rest: str, method: str, path: str, body: dict | None = None) -> 
 
     token = os.environ.get("WB_HUMAN_TOKEN", "")
     if token:
-        headers["X-Workbench-Human-Token"] = token
+        headers["X-Guanfu-Human-Token"] = token
 
     request = urllib.request.Request(
         rest.rstrip("/") + path, data=data, headers=headers, method=method
@@ -70,7 +70,7 @@ def main() -> int:
     rest = args.rest or args.url
     # 客户端在连接头上表明自己是谁 —— 真实客户端（Claude Code 等）不会给
     # 工具显式传 callerId，审计要能从连接头认出「谁调的」。
-    mcp = Mcp(args.url, headers={"X-Workbench-Agent": "e2e-agent"})
+    mcp = Mcp(args.url, headers={"X-Guanfu-Agent": "e2e-agent"})
     mcp.initialize()
 
     suffix = str(int(time.time()))[-6:]
@@ -122,7 +122,7 @@ def main() -> int:
         )
 
         task_id = mcp.call(
-            "workbench_create_task",
+            "guanfu_create_task",
             {"projectId": project_id, "title": "审批门禁 e2e 任务", "type": "requirement"},
         )["id"]
 
@@ -336,7 +336,7 @@ def main() -> int:
         # ── D10 审计留痕 ───────────────────────────────────────────────
         print("\n-- D10 全程有审计留痕 --")
         audit = mcp.call(
-            "workbench_list_audit", {"projectId": project_id, "limit": 200}
+            "guanfu_list_audit", {"projectId": project_id, "limit": 200}
         )
         shell_audit = [a for a in (audit or []) if a.get("toolName") == "shell_run"]
         expect(len(shell_audit) > 0, "shell_run 的调用应有审计记录")
@@ -361,12 +361,12 @@ def main() -> int:
 
         # ── D11 只读调用也留痕 ───────────────────────────────────────────
         print("\n-- D11 只读调用也留痕 --")
-        mcp.call("workbench_list_tasks", {"projectId": project_id})
+        mcp.call("guanfu_list_tasks", {"projectId": project_id})
         audit = mcp.call(
-            "workbench_list_audit", {"projectId": project_id, "limit": 200}
+            "guanfu_list_audit", {"projectId": project_id, "limit": 200}
         )
         read_audit = [
-            a for a in (audit or []) if a.get("toolName") == "workbench_list_tasks"
+            a for a in (audit or []) if a.get("toolName") == "guanfu_list_tasks"
         ]
         expect(
             len(read_audit) > 0,

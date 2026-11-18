@@ -1,0 +1,895 @@
+@page "/approvals"
+@rendermode InteractiveServer
+@using Microsoft.AspNetCore.Http
+@using Microsoft.Extensions.DependencyInjection
+@inject IProjectService Projects
+@inject HumanTokenAccessor Tokens
+@inject IServiceScopeFactory ScopeFactory
+@inject IJSRuntime JS
+@implements IAsyncDisposable
+
+<PageTitle>待批操作 · 观复</PageTitle>
+
+<div class="wb-page-head">
+    <div>
+        <h1>待批操作</h1>
+        <p class="wb-muted">
+            agent 要写数据库、提交代码、推送或执行命令时，得在这里点头才放行。
+            每一条都在下面写着它要做什么、动哪个项目、等人多久了。
+        </p>
+    </div>
+    <div class="wb-form-row">
+        <span class="wb-muted">每 15 秒自动刷新</span>
+        <button class="wb-btn wb-btn-sm" @onclick="() => RefreshAsync()">刷新</button>
+    </div>
+</div>
+
+<div class="wb-tabs">
+    <button class="wb-tab @(ShowHistory ? "" : "wb-tab-active")" @onclick="() => SwitchTabAsync(false)">待处理</button>
+    <button class="wb-tab @(ShowHistory ? "wb-tab-active" : "")" @onclick="() => SwitchTabAsync(true)">历史</button>
+</div>
+
+@* 数据没加载出来时也要有话说，不能白屏 *@
+<ErrorNotice Error="LoadError" />
+
+@* 裁决的错误放在列表外面：裁决成功后列表会重画，
+   错误提示写在每张卡片里的话，一刷新就没了。 *@
+<ErrorNotice Error="ActionError" />
+
+@if (!Gate.Authorized)
+{
+    <div class="wb-panel">
+        <p class="wb-error">@ApprovalUiGuard.MissingTokenMessage</p>
+        <p class="wb-muted">
+            在本机打开观复时会自动获取；远程访问请从启动观复的控制台复制人工 token，粘贴到下面。
+        </p>
+        <div class="wb-form-row">
+            @* 不用 @bind：绑定的值会被 Blazor 写回 DOM 的 value 属性，
+               那是把钥匙摊在页面上。这里只在事件里收值。 *@
+            <input class="wb-input" type="password" placeholder="人工 token（控制台里那串）"
+                   @oninput="OnTokenInputChanged" />
+            <button class="wb-btn wb-btn-primary"
+                    disabled="@string.IsNullOrWhiteSpace(TokenInput)"
+                    @onclick="VerifyToken">验证</button>
+        </div>
+        @if (!string.IsNullOrWhiteSpace(Gate.Hint))
+        {
+            <p class="wb-hint">@Gate.Hint</p>
+        }
+    </div>
+}
+
+<div class="wb-filter-bar">
+    <label class="wb-label">项目</label>
+    <select class="wb-input" @bind="SelectedProjectId" @bind:after="() => RefreshAsync(resetPage: true)">
+        <option value="">全部项目</option>
+        @foreach (var project in ProjectItems)
+        {
+            <option value="@project.Id">@project.Name</option>
+        }
+    </select>
+    @if (ShowHistory)
+    {
+        <label class="wb-label">状态</label>
+        <select class="wb-input" @bind="HistoryStatusFilter" @bind:after="() => RefreshAsync(resetPage: true)">
+            <option value="">全部</option>
+            <option value="@nameof(ApprovalStatus.Pending)">待审批</option>
+            <option value="@nameof(ApprovalStatus.Approved)">已批准</option>
+            <option value="@nameof(ApprovalStatus.Rejected)">已驳回</option>
+            <option value="@nameof(ApprovalStatus.Expired)">已过期</option>
+            <option value="@nameof(ApprovalStatus.Executing)">执行中</option>
+            <option value="@nameof(ApprovalStatus.Executed)">已执行</option>
+        </select>
+    }
+</div>
+
+@if (!ShowHistory && Items.Count > 0)
+{
+    @* 批量裁决工具条：人工审核通常是「这批都同意」。
+       一条待批都没有时别摆它 —— 那时全是禁用按钮，白占一整行。 *@
+    <div class="wb-panel wb-toolbar">
+        <div class="wb-form-row">
+            <label class="wb-check">
+                <input type="checkbox" checked="@AllSelected" @onchange="ToggleSelectAll" />
+                全选
+            </label>
+            <span class="wb-chip">已选 @_selected.Count 条</span>
+            <input class="wb-input" placeholder="批量裁决理由（驳回必填）"
+                   @bind="BatchReason" @bind:event="oninput" />
+            <button class="wb-btn wb-btn-primary" disabled="@(!CanDecideNow || _selected.Count == 0)"
+                    @onclick="ConfirmBatchApprove">批量批准</button>
+            <button class="wb-btn wb-btn-danger" disabled="@(!CanDecideNow || _selected.Count == 0)"
+                    @onclick="() => BatchDecideAsync(false)">批量驳回</button>
+        </div>
+
+        @if (_confirmBatchApprove)
+        {
+            @* 批准前确认：这是执行 shell / db 写的最后人工关口，把要执行的东西摊开 *@
+            <div class="wb-alert">
+                <p class="wb-error">确认批准以下 @_selected.Count 条审批？批准后将允许执行对应操作。</p>
+                @foreach (var item in Items.Where(i => _selected.Contains(i.Id)).Take(10))
+                {
+                    <div class="wb-timeline-note"><strong>@UiText.Tool(item.ToolName)</strong> · @item.Summary</div>
+                }
+                @if (_selected.Count > 10)
+                {
+                    <p class="wb-muted">…还有 @(_selected.Count - 10) 条。</p>
+                }
+                <div class="wb-form-row wb-mt-2">
+                    <button class="wb-btn wb-btn-danger" disabled="@Submitting"
+                            @onclick="() => BatchDecideAsync(true)">确认批准</button>
+                    <button class="wb-btn" @onclick="() => _confirmBatchApprove = false">取消</button>
+                </div>
+            </div>
+        }
+    </div>
+}
+
+@if (Items.Count == 0)
+{
+    <div class="wb-empty">@(ShowHistory ? "没有符合条件的审批记录。" : "没有待处理的审批。")</div>
+}
+else
+{
+    <div class="wb-approval-list">
+        @foreach (var approval in VisibleItems)
+        {
+            var status = approval.Status;
+            var actionable = status == nameof(ApprovalStatus.Pending);
+            var revocable = status is nameof(ApprovalStatus.Pending) or nameof(ApprovalStatus.Approved);
+
+            <div class="wb-panel @(approval.Id == _focusId ? "wb-approval-focus" : "")" id="approval-@approval.Id">
+                <div class="wb-card-head">
+                    <div class="wb-chip-row">
+                        @if (!ShowHistory)
+                        {
+                            <input type="checkbox" checked="@_selected.Contains(approval.Id)"
+                                   @onchange="e => ToggleSelected(approval.Id, (bool)(e.Value ?? false))" />
+                        }
+                        <strong>@UiText.Tool(approval.ToolName)</strong>
+                        <span class="wb-chip">@approval.Kind</span>
+                        @if (!string.IsNullOrWhiteSpace(approval.RequestedBy))
+                        {
+                            <span class="wb-chip wb-chip-agent">@approval.RequestedBy</span>
+                        }
+                        @* 关联任务与项目：判断该不该批的依据是「这是哪个需求的活」。
+                           DTO 里带的是编号和名字，界面上一律不露 GUID。 *@
+                        @if (approval.TaskId is not null)
+                        {
+                            <a class="wb-chip" href="/tasks/@approval.TaskId">@UiText.TaskRef(approval.TaskKey, approval.TaskTitle)</a>
+                        }
+                        @if (!string.IsNullOrWhiteSpace(approval.ProjectName))
+                        {
+                            <a class="wb-chip wb-chip-muted" href="/projects/@approval.ProjectId">@approval.ProjectName</a>
+                        }
+                        @* 结果未知：服务重启把执行打断了，那次写操作可能已经生效。
+                           跟「执行失败」不是一回事，得让人先确认再让 agent 重来。 *@
+                        @if (approval.OutcomeUnknown)
+                        {
+                            <span class="wb-chip wb-chip-warn"
+                                  title="服务重启时这次执行被中断，写操作可能已经生效。请人工确认后再让 agent 重新申请。">结果未知</span>
+                        }
+                        @if (ShowHistory)
+                        {
+                            <span class="wb-tag @StatusTagClass(status)">@StatusLabel(status)</span>
+                        }
+                    </div>
+                    @if (actionable)
+                    {
+                        var wait = WaitInfoOf(approval);
+                        <span class="wb-chip @wait.Css" title="@wait.Title">@wait.Text</span>
+                    }
+                    else if (!ShowHistory)
+                    {
+                        // 历史页签的状态标签在上面那个 wb-tag 里，这里再画一遍就成了重复
+                        <span class="wb-chip wb-chip-muted">@StatusLabel(status)</span>
+                    }
+                </div>
+
+                <p class="wb-muted">@approval.Summary</p>
+
+                <pre class="wb-sql">@approval.Payload</pre>
+
+                @if (ShowHistory)
+                {
+                    <div class="wb-timeline-note">
+                        @if (!string.IsNullOrWhiteSpace(approval.DecidedBy))
+                        {
+                            <span>裁决人 @approval.DecidedBy · </span>
+                        }
+                        @if (approval.DecidedAt is not null)
+                        {
+                            <span>@approval.DecidedAt.Value.ToLocalTime().ToString("MM-dd HH:mm:ss") · </span>
+                        }
+                        @if (!string.IsNullOrWhiteSpace(approval.DecisionReason))
+                        {
+                            <span>理由：@approval.DecisionReason</span>
+                        }
+                    </div>
+                    @if (!string.IsNullOrWhiteSpace(approval.ResultSummary))
+                    {
+                        <div class="wb-timeline-note">执行结果：@approval.ResultSummary</div>
+                    }
+                }
+
+                @if (actionable || revocable)
+                {
+                    <div class="wb-form-row">
+                        <input class="wb-input" placeholder="理由（驳回必填；撤销建议填写）"
+                               @bind:get="GetReason(approval.Id)"
+                               @bind:set="v => SetReason(approval.Id, v)"
+                               @bind:event="oninput" />
+                        @if (actionable)
+                        {
+                            <button class="wb-btn wb-btn-primary" disabled="@(!CanDecideNow)"
+                                    @onclick="() => ConfirmApprove(approval.Id)">批准</button>
+                            <button class="wb-btn wb-btn-danger" disabled="@(!CanDecideNow)"
+                                    @onclick="() => DecideAsync(approval.Id, false)">驳回</button>
+                        }
+                        @if (revocable)
+                        {
+                            <button class="wb-btn" disabled="@(!CanDecideNow)"
+                                    @onclick="() => RevokeAsync(approval.Id)">撤销</button>
+                        }
+                    </div>
+                }
+
+                @if (_confirmApproveId == approval.Id)
+                {
+                    @* 单条批准确认：payload 摘要摊开，看清要执行什么再点确认 *@
+                    <div class="wb-alert">
+                        <p class="wb-error">确认批准「@UiText.Tool(approval.ToolName)」？批准后将允许执行：</p>
+                        <p class="wb-muted">@approval.Summary</p>
+                        <pre class="wb-sql">@approval.Payload</pre>
+                        <div class="wb-form-row">
+                            <button class="wb-btn wb-btn-danger" disabled="@Submitting"
+                                    @onclick="() => DecideAsync(approval.Id, true)">确认批准</button>
+                            <button class="wb-btn" @onclick="() => _confirmApproveId = null">取消</button>
+                        </div>
+                    </div>
+                }
+            </div>
+        }
+    </div>
+
+    @if (Items.Count > PageSize || Truncated)
+    {
+        <div class="wb-pager">
+            <button class="wb-btn" disabled="@(PageIndex == 0)" @onclick="() => PageIndex = Math.Max(0, PageIndex - 1)">上一页</button>
+            <span class="wb-muted">第 @(PageIndex + 1) 页 · 共 @Items.Count 条</span>
+            <button class="wb-btn" disabled="@(!HasNextPage)" @onclick="() => PageIndex = PageIndex + 1">下一页</button>
+            @if (Truncated)
+            {
+                <span class="wb-muted">只显示最近 @MaxWindow 条；更早的用状态与项目筛选缩小范围。</span>
+            }
+        </div>
+    }
+}
+
+@code {
+    private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(15);
+
+    /// <summary>每页多少条审批。历史模式下一次可能几百条，不分页就一屏糊。</summary>
+    private const int PageSize = 20;
+
+    /// <summary>服务端一次最多给多少条（与 ApprovalService.ListAsync 的默认一致）。</summary>
+    private const int MaxWindow = 500;
+
+    private IReadOnlyList<ApprovalDto> Items { get; set; } = [];
+    private IReadOnlyList<ProjectSummaryDto> ProjectItems { get; set; } = [];
+
+    private int PageIndex { get; set; }
+
+    /// <summary>当前页的审批。</summary>
+    private IReadOnlyList<ApprovalDto> VisibleItems =>
+        Items.Skip(PageIndex * PageSize).Take(PageSize).ToList();
+
+    private bool HasNextPage => (PageIndex + 1) * PageSize < Items.Count;
+
+    private bool Truncated => Items.Count >= MaxWindow;
+
+    // 理由每卡独立：全列表共享一个输入框时，给 A 写的理由会被批到 B 头上
+    private readonly Dictionary<Guid, string> _reasons = new();
+    private string BatchReason { get; set; } = string.Empty;
+
+    private bool ShowHistory { get; set; }
+    private string HistoryStatusFilter { get; set; } = string.Empty;
+    private string SelectedProjectId { get; set; } = string.Empty;
+
+    private PageError? LoadError { get; set; }
+    private PageError? ActionError { get; set; }
+
+    // ---- 人工凭证 ----
+    private UiTokenGate Gate { get; set; } = default!;
+    private string TokenInput { get; set; } = string.Empty;
+
+    // 连点保护：第二个点击到达时第一个可能还卡在 await 里
+    private bool Submitting { get; set; }
+
+    // 批准前确认：单条记 id，批量记开关
+    private Guid? _confirmApproveId;
+    private bool _confirmBatchApprove;
+
+    // 从别处点「去处理」跳过来时要定位的那一条（?id=）
+    private Guid? _focusId;
+    private bool _needScroll;
+
+    /// <summary>
+    /// 深链参数：/approvals?id=xxx
+    ///
+    /// 总览的「去处理」、数据库调用与审计里的「已审批」都带这个 id ——
+    /// 不带的话，点过去是一整页待审，人得自己找是哪一条。
+    /// </summary>
+    [SupplyParameterFromQuery(Name = "id")]
+    public string? FocusId { get; set; }
+
+    // 批量选择
+    private readonly HashSet<Guid> _selected = new();
+
+    // 一条审批只裁决一次：Blazor 的事件是排队串行处理的，
+    // 光靠「正在提交」标志挡不住已经排进队的第二次点击
+    private readonly SubmitLatch _decisions = new();
+
+    private CancellationTokenSource? _timerCts;
+
+    private bool CanDecideNow => Gate.Authorized && !Submitting;
+
+    private bool AllSelected => VisibleItems.Count > 0 && VisibleItems.All(i => _selected.Contains(i.Id));
+
+    /// <summary>
+    /// 服务端渲染阶段能看到请求本身（浏览器之前已经种过 Cookie 的情况）。
+    /// 交互阶段拿不到（电路里没有 HttpContext），那时靠电路里记下的 token 判断。
+    /// </summary>
+    [CascadingParameter] public HttpContext? RequestContext { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        Gate = new UiTokenGate(Tokens.Token);
+        Gate.AuthorizeFromRequest(RequestContext?.Request);
+
+        try
+        {
+            ProjectItems = await Projects.ListAsync();
+        }
+        catch (Exception ex)
+        {
+            LoadError = PageError.From(ex, "加载项目列表");
+        }
+
+        await RefreshAsync();
+
+        // 带 id 跳过来的：定位到那一条
+        if (Guid.TryParse(FocusId, out var focus))
+        {
+            await FocusAsync(focus);
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // 预渲染阶段没有 JS 运行时，自动取 token 与定时器只能放在交互阶段
+        if (firstRender)
+        {
+            _ = AcquireTokenAsync();
+            _timerCts = new CancellationTokenSource();
+            _ = RunRefreshTimerAsync(_timerCts.Token);
+        }
+
+        if (_needScroll && _focusId is { } focusId)
+        {
+            _needScroll = false;
+            await ScrollToAsync(focusId);
+        }
+    }
+
+    /// <summary>
+    /// 把页码拨到目标审批那一页并高亮。
+    ///
+    /// 目标不在当前筛选里（它已经被批过了，在历史页签下）就先切页签 ——
+    /// 不然人点「去处理」却看到一片空白，反而以为坏了。
+    /// </summary>
+    private async Task FocusAsync(Guid id)
+    {
+        _focusId = id;
+
+        ApprovalDto? target;
+
+        using (var scope = ScopeFactory.CreateScope())
+        {
+            var approvals = scope.ServiceProvider.GetRequiredService<IApprovalService>();
+            target = await approvals.GetAsync(id);
+        }
+
+        if (target is null)
+        {
+            ActionError = PageError.Simple("没找到这条审批 —— 它可能已经被清理掉了。");
+            return;
+        }
+
+        if (target.Status != nameof(ApprovalStatus.Pending))
+        {
+            ShowHistory = true;
+            HistoryStatusFilter = target.Status;
+        }
+
+        await RefreshAsync();
+
+        var index = Items.ToList().FindIndex(i => i.Id == id);
+
+        if (index < 0)
+        {
+            ActionError = PageError.Simple("这条审批不在当前筛选范围内（可能太旧），试试在「历史」里放宽状态筛选。");
+            return;
+        }
+
+        PageIndex = index / PageSize;
+        _needScroll = true;
+    }
+
+    /// <summary>把目标审批滚进视野。</summary>
+    private async Task ScrollToAsync(Guid id)
+    {
+        try
+        {
+            var elementId = "approval-" + id;
+            await JS.InvokeVoidAsync(
+                "eval",
+                $"var e=document.getElementById('{elementId}');if(e){{e.scrollIntoView({{block:'center'}});}};");
+        }
+        catch (Exception)
+        {
+            // 滚不过去不影响别的功能
+        }
+    }
+
+    /// <summary>
+    /// 自动刷新。每 tick 独立 scope —— 与页面事件共用电路级 DbContext 的话，
+    /// 用户正在裁决时定时器也来查库，就是 "A second operation was started"。
+    /// </summary>
+    private async Task RunRefreshTimerAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(RefreshInterval);
+
+            while (await timer.WaitForNextTickAsync(cancellationToken))
+            {
+                await InvokeAsync(async () =>
+                {
+                    await RefreshAsync();
+                    StateHasChanged();
+                });
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // 组件被销毁，正常收尾
+        }
+        catch (ObjectDisposedException)
+        {
+            // 电路已经断了
+        }
+    }
+
+    private ApprovalStatus? CurrentStatusFilter =>
+        ShowHistory
+            ? (Enum.TryParse<ApprovalStatus>(HistoryStatusFilter, out var parsed) ? parsed : null)
+            : ApprovalStatus.Pending;
+
+    private Guid? CurrentProjectId =>
+        Guid.TryParse(SelectedProjectId, out var parsed) ? parsed : null;
+
+    private async Task SwitchTabAsync(bool history)
+    {
+        ShowHistory = history;
+        _confirmApproveId = null;
+        _confirmBatchApprove = false;
+        _selected.Clear();
+        ActionError = null;
+        await RefreshAsync();
+    }
+
+    /// <summary>
+    /// 裁决/撤销走独立 scope。
+    ///
+    /// 注入进来的服务是**电路级**的 —— InteractiveServer 的电路一直活到连接断开，
+    /// 那个 DbContext 会被「15 秒自动刷新」「批量裁决」「撤销」共用。
+    /// 两个操作撞在一起就是 "A second operation was started on this context instance"，
+    /// 人工点两下就可能撞上。每次写操作单开一个 scope，语义跟一次 HTTP 请求一致。
+    /// </summary>
+    private async Task<T> InScopeAsync<T>(Func<IApprovalService, Task<T>> action)
+    {
+        using var scope = ScopeFactory.CreateScope();
+        var approvals = scope.ServiceProvider.GetRequiredService<IApprovalService>();
+        return await action(approvals);
+    }
+
+    /// <summary>
+    /// 重新拉审批列表。
+    ///
+    /// <paramref name="resetPage"/> 只在**换筛选条件**时为 true ——
+    /// 自动刷新不能把页码拨回第一页，不然人翻到第 2 页、15 秒后又被弹回去。
+    /// </summary>
+    private async Task RefreshAsync(bool resetPage = false)
+    {
+        try
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var approvals = scope.ServiceProvider.GetRequiredService<IApprovalService>();
+            Items = await approvals.ListAsync(CurrentStatusFilter, CurrentProjectId);
+
+            if (resetPage)
+            {
+                // 换筛选条件后回到第一页 —— 留着旧页码会落到空页上。
+                PageIndex = 0;
+            }
+
+            // 刷新后只保留还在列表里的选中项
+            _selected.IntersectWith(Items.Select(i => i.Id));
+            LoadError = null;
+        }
+        catch (Exception ex)
+        {
+            // 别让异常从初始化方法冒出去 —— 冒出去就是整页白屏
+            LoadError = PageError.From(ex, "加载审批列表");
+        }
+    }
+
+    /// <summary>自动取凭证：拿到就放行，拿不到就让人粘贴。</summary>
+    private async Task AcquireTokenAsync()
+    {
+        if (Gate.Authorized)
+        {
+            return;
+        }
+
+        string? payload = null;
+
+        try
+        {
+            payload = await JS.InvokeAsync<string>("eval", ApprovalUiGuard.FetchTokenScript);
+        }
+        catch (JSException)
+        {
+            // 取不到就走粘贴流程，不影响页面其它功能
+        }
+        catch (InvalidOperationException)
+        {
+            // 预渲染阶段没有 JS 运行时
+        }
+
+        Gate.ApplyFetchResult(payload);
+        StateHasChanged();
+    }
+
+    private void OnTokenInputChanged(ChangeEventArgs args) =>
+        TokenInput = args.Value?.ToString() ?? string.Empty;
+
+    private void VerifyToken()
+    {
+        if (Gate.TryVerify(TokenInput))
+        {
+            ActionError = null;
+
+            // token 是观复唯一的门禁钥匙：验证完就从输入框里抹掉
+            TokenInput = string.Empty;
+        }
+    }
+
+    private string GetReason(Guid id) => _reasons.TryGetValue(id, out var reason) ? reason : string.Empty;
+
+    private void SetReason(Guid id, string? value) => _reasons[id] = value ?? string.Empty;
+
+    private void ToggleSelected(Guid id, bool selected)
+    {
+        if (selected)
+        {
+            _selected.Add(id);
+        }
+        else
+        {
+            _selected.Remove(id);
+        }
+    }
+
+    private void ToggleSelectAll(ChangeEventArgs args)
+    {
+        if ((bool)(args.Value ?? false))
+        {
+            // 只选当前页 —— 分页之后「全选」再选 500 条会让人以为漏了。
+            // 想跨页选就翻页再勾。
+            foreach (var item in VisibleItems)
+            {
+                _selected.Add(item.Id);
+            }
+        }
+        else
+        {
+            foreach (var item in VisibleItems)
+            {
+                _selected.Remove(item.Id);
+            }
+        }
+    }
+
+    private void ConfirmApprove(Guid approvalId)
+    {
+        if (!CanDecideNow)
+        {
+            return;
+        }
+
+        _confirmApproveId = approvalId;
+    }
+
+    private void ConfirmBatchApprove()
+    {
+        if (!CanDecideNow || _selected.Count == 0)
+        {
+            return;
+        }
+
+        _confirmBatchApprove = true;
+    }
+
+    private async Task DecideAsync(Guid approvalId, bool approve)
+    {
+        // 连点两次：第二个事件到达时第一个可能还没跑完
+        if (Submitting)
+        {
+            return;
+        }
+
+        if (!Gate.Authorized)
+        {
+            ActionError = PageError.Simple(ApprovalUiGuard.MissingTokenMessage);
+            return;
+        }
+
+        var reason = GetReason(approvalId);
+        if (!approve && string.IsNullOrWhiteSpace(reason))
+        {
+            ActionError = PageError.Simple("驳回必须填写理由 —— 发起方要靠它知道哪里不行。");
+            return;
+        }
+
+        // 这条审批已经裁决过（或者正在裁决）就直接忽略：
+        // Blazor 的事件排队处理，已经排进队的第二次点击会在第一次之后才被处理，
+        // 那时「正在提交」标志早已复位 —— 只有记住「这条批过了」才挡得住
+        var key = approvalId.ToString();
+        if (_decisions.IsLatched(key))
+        {
+            return;
+        }
+
+        _decisions.TryLatch(key);
+        Submitting = true;
+        _confirmApproveId = null;
+
+        // 关键：Blazor 在 await 期间不重绘，不主动 StateHasChanged 的话
+        // 按钮要等 handler 返回才置灰 —— 这中间用户再点一下就批两次
+        StateHasChanged();
+
+        try
+        {
+            // 凭证指纹跟 REST 那条路同一个算法 —— 不然界面上批的和脚本里批的对不上，
+            // 审计就分不出是谁在操作。
+            var fingerprint = HumanTokenPolicy.Fingerprint(Tokens.Token);
+
+            await InScopeAsync(a => a.DecideAsync(
+                approvalId, approve, "human",
+                string.IsNullOrWhiteSpace(reason) ? null : reason,
+                decidedByCredential: fingerprint));
+            _reasons.Remove(approvalId);
+            _selected.Remove(approvalId);
+            ActionError = null;
+            await RefreshAsync();
+        }
+        catch (Exception ex)
+        {
+            // 失败就把闩锁放掉，好让人改了再试
+            _decisions.Release(key);
+            ActionError = PageError.From(ex, "裁决审批");
+        }
+        finally
+        {
+            Submitting = false;
+        }
+    }
+
+    /// <summary>批量裁决。部分失败不吞掉：哪些批了、哪些没批，逐条说清。</summary>
+    private async Task BatchDecideAsync(bool approve)
+    {
+        if (Submitting)
+        {
+            return;
+        }
+
+        if (!Gate.Authorized)
+        {
+            ActionError = PageError.Simple(ApprovalUiGuard.MissingTokenMessage);
+            return;
+        }
+
+        var ids = _selected.ToList();
+        if (ids.Count == 0)
+        {
+            return;
+        }
+
+        if (!approve && string.IsNullOrWhiteSpace(BatchReason))
+        {
+            ActionError = PageError.Simple("批量驳回必须填写理由。");
+            return;
+        }
+
+        Submitting = true;
+        _confirmBatchApprove = false;
+        StateHasChanged();
+
+        var ok = 0;
+        var failures = new List<string>();
+
+        try
+        {
+            foreach (var id in ids)
+            {
+                var key = id.ToString();
+                if (_decisions.IsLatched(key))
+                {
+                    continue;
+                }
+
+                _decisions.TryLatch(key);
+
+                try
+                {
+                    await InScopeAsync(a => a.DecideAsync(
+                        id, approve, "human", string.IsNullOrWhiteSpace(BatchReason) ? null : BatchReason,
+                        decidedByCredential: HumanTokenPolicy.Fingerprint(Tokens.Token)));
+                    ok++;
+                    _reasons.Remove(id);
+                }
+                catch (Exception ex)
+                {
+                    _decisions.Release(key);
+                    var tool = Items.FirstOrDefault(i => i.Id == id)?.ToolName;
+                    failures.Add($"{(tool is null ? "审批" : UiText.Tool(tool))}: {ex.Message}");
+                }
+            }
+
+            _selected.Clear();
+            BatchReason = string.Empty;
+            ActionError = failures.Count > 0
+                ? PageError.Simple($"批量裁决：成功 {ok} 条，失败 {failures.Count} 条。{string.Join("；", failures)}")
+                : PageError.Notice($"已{(approve ? "批准" : "驳回")} {ok} 条审批。");
+            await RefreshAsync();
+        }
+        finally
+        {
+            Submitting = false;
+        }
+    }
+
+    /// <summary>撤销（Pending / Approved → Rejected）。「批错了但还没执行」的后悔药。</summary>
+    private async Task RevokeAsync(Guid approvalId)
+    {
+        if (Submitting)
+        {
+            return;
+        }
+
+        if (!Gate.Authorized)
+        {
+            ActionError = PageError.Simple(ApprovalUiGuard.MissingTokenMessage);
+            return;
+        }
+
+        var key = "revoke:" + approvalId;
+        if (_decisions.IsLatched(key))
+        {
+            return;
+        }
+
+        _decisions.TryLatch(key);
+        Submitting = true;
+        StateHasChanged();
+
+        try
+        {
+            var reason = GetReason(approvalId);
+            await InScopeAsync(a => a.RevokeAsync(approvalId, string.IsNullOrWhiteSpace(reason) ? null : reason));
+            _reasons.Remove(approvalId);
+            _selected.Remove(approvalId);
+            ActionError = PageError.Notice("已撤销。对应的写操作不会再被执行。");
+            await RefreshAsync();
+        }
+        catch (Exception ex)
+        {
+            _decisions.Release(key);
+            ActionError = PageError.From(ex, "撤销审批");
+        }
+        finally
+        {
+            Submitting = false;
+        }
+    }
+
+    private static string StatusLabel(string status) => status switch
+    {
+        nameof(ApprovalStatus.Pending) => "待审批",
+        nameof(ApprovalStatus.Approved) => "已批准",
+        nameof(ApprovalStatus.Rejected) => "已驳回",
+        nameof(ApprovalStatus.Expired) => "已过期",
+        nameof(ApprovalStatus.Executing) => "执行中",
+        nameof(ApprovalStatus.Executed) => "已执行",
+        _ => status
+    };
+
+    private static string StatusTagClass(string status) => status switch
+    {
+        nameof(ApprovalStatus.Approved) => "wb-tag-ok",
+        nameof(ApprovalStatus.Executed) => "wb-tag-ok",
+        nameof(ApprovalStatus.Rejected) => "wb-tag-danger",
+        nameof(ApprovalStatus.Expired) => "wb-tag-danger",
+        _ => "wb-tag-warn"
+    };
+
+    /// <summary>等待信息：已等多久、还剩多久过期、要不要标红。</summary>
+    private sealed record WaitInfo(string Text, string Css, string Title);
+
+    /// <summary>
+    /// 待审卡片上的等待文案。
+    ///
+    /// 两个数都得说清：「已等」说的是过去了多久，「剩余」说的是还能等多久。
+    /// 以前这里只写「等待 N 分钟」，而算的是 ExpiresAt - now（剩余有效期）——
+    /// 刚发起的显示「等待 30 分钟」，快过期的显示「等待 0 分钟」，跟字面意思正好相反。
+    /// </summary>
+    private static WaitInfo WaitInfoOf(ApprovalDto approval)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var elapsed = now - approval.CreatedAt;
+        var remaining = approval.ExpiresAt - now;
+
+        // 快过期的标出来：过期了人就得重新走一遍审批流程。
+        var css = remaining <= TimeSpan.FromMinutes(5) ? "wb-chip-warn" : "wb-chip-muted";
+        var title = $"发起于 {approval.CreatedAt.ToLocalTime():yyyy-MM-dd HH:mm} · {approval.ExpiresAt.ToLocalTime():yyyy-MM-dd HH:mm} 过期";
+
+        return new WaitInfo($"已等 {FormatSpan(elapsed)} · 剩余 {FormatSpan(remaining)}", css, title);
+    }
+
+    private static string FormatSpan(TimeSpan span)
+    {
+        if (span < TimeSpan.Zero)
+        {
+            span = TimeSpan.Zero;
+        }
+
+        if (span < TimeSpan.FromMinutes(1))
+        {
+            return "不到 1 分钟";
+        }
+
+        if (span < TimeSpan.FromHours(1))
+        {
+            return $"{(int)span.TotalMinutes} 分钟";
+        }
+
+        if (span < TimeSpan.FromDays(1))
+        {
+            return $"{(int)span.TotalHours} 小时";
+        }
+
+        return $"{(int)span.TotalDays} 天";
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_timerCts is not null)
+        {
+            await _timerCts.CancelAsync();
+            _timerCts.Dispose();
+            _timerCts = null;
+        }
+    }
+}

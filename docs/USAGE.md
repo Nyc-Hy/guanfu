@@ -1,4 +1,4 @@
-# 开发工作台 · 使用说明
+# 观复 · 使用说明
 
 > 一键验收：`./tests/verify.sh`（编译 → 单测 → 七条端到端链路）。
 > 企业验收逐条证据见 [ENTERPRISE.md](ENTERPRISE.md)，本文只讲「怎么用」。
@@ -13,33 +13,33 @@
 审计与审批是让人**敢信这个看板**的底座 —— 看板上的状态是 agent 写的。落到具体：
 
 - **追踪任务进度**：任务从草稿到结项的每一步都过状态机，非法迁移被拒并带回「当前允许的迁移列表」。
-- **记录开发产出**：代码改动由工作台自己从 git 数出来（提交后、进评审时各采集一次），不靠 agent 自报。
+- **记录开发产出**：代码改动由观复自己从 git 数出来（提交后、进评审时各采集一次），不靠 agent 自报。
 - **留下调用记录**：agent 的**每次** MCP 工具调用都进审计表，串成哈希链；写操作另记审批号、SQL 原文、影响行数。
 
 一句话：**MCP 与审计不是为了另立一个治理产品，而是为了让「agent 主导的项目管理」
 不沦为 agent 的自说自话。**
 
 **它不提供 AI 服务**：不调模型、不跑 agent、不生成需求理解与开发计划。智能在你自己的外部 agent 进程里
-（Claude Code / Codex / 自研脚本都行），它们通过 MCP 工具或 CLI 驱动工作台。
-评审同理：工作台给阶段、7 个维度的定义与检查清单、结项门禁；**判断由 agent 做**，再逐维度回写结论。
+（Claude Code / Codex / 自研脚本都行），它们通过 MCP 工具或 CLI 驱动观复。
+评审同理：观复给阶段、7 个维度的定义与检查清单、结项门禁；**判断由 agent 做**，再逐维度回写结论。
 
 **项目级规约（人定规矩，agent 读得到）**：项目设置 →「规约」页签填
 项目目标、完成定义（DoD，一行一条）、提交信息约定、测试命令、分支命名、红线与禁忌。
-填完 agent 开工前就能读到（`workbench_get_project_spec`，也在上下文包与评审包里），
+填完 agent 开工前就能读到（`guanfu_get_project_spec`，也在上下文包与评审包里），
 评审时它就是尺子 —— 七个维度是通用的，规约是这个项目特有的。
 **改规约要人工凭证**：规矩是人的决定，agent 不该自己改「什么算做完」。
 
 **用量与上限**：任务详情页「任务属性 → 用量」看这个任务调了多少次工具、事件多少条；
 项目设置 →「agent 并发」里可以设**每任务工具调用上限**（0 = 不限）——
-超了工作台就不再执行这次调用，agent 会看到明确的上限。
-用量**只记工作台自己数得出来的**（工具调用次数、事件数、租约时长）；
-token 与费用不记 —— 工作台不调模型，不知道用的是哪个模型、什么套餐、什么套餐价，
+超了观复就不再执行这次调用，agent 会看到明确的上限。
+用量**只记观复自己数得出来的**（工具调用次数、事件数、租约时长）；
+token 与费用不记 —— 观复不调模型，不知道用的是哪个模型、什么套餐、什么套餐价，
 那些数字只能靠 agent 自报，而自报的数字在审计上站不住。
 
 **里程碑的完成定义**：项目设置 →「迭代版本 / 里程碑」里选一个版本，
 可以给它**额外**的一套完成定义 —— 叠加在项目级规约之上，评审时一起判。
 
-**交接**：agent 卡住了可以 `workbench_release_task` 把活交回去（带原因）；
+**交接**：agent 卡住了可以 `guanfu_release_task` 把活交回去（带原因）；
 下一个接手的人在领活结果里能看到「上一个是谁、为什么交」。
 
 **里程碑验收**：项目页「迭代版本」页签里可以**验收**一个版本 ——
@@ -49,9 +49,9 @@ token 与费用不记 —— 工作台不调模型，不知道用的是哪个模
 
 **先干哪个**：项目页「现在能干」页签顶部就是**建议先做** ——
 按优先级、权重、等了多久（防饥饿）、做完能解锁几个任务排序，每条都写清理由。
-agent 侧走 `workbench_suggest_tasks`，跟人看的是同一份。
+agent 侧走 `guanfu_suggest_tasks`，跟人看的是同一份。
 
-**现在什么能干**：项目页「现在能干」页签（agent 用 `workbench_get_dispatch_board`）：
+**现在什么能干**：项目页「现在能干」页签（agent 用 `guanfu_get_dispatch_board`）：
 - **能干的活** —— 前置全清、没人占着，可以直接领；
 - **有人在干的活** —— 谁领着、在哪个工位；
 - **卡着的活** —— 卡在谁那儿、阻塞链多深。
@@ -65,10 +65,10 @@ git worktree add ../myrepo-wt-feature -b feature/REQ-001
 ```
 
 ```python
-mcp.call("workbench_claim_task", {"taskKey": "REQ-001", "worktree": "/abs/path/to/wt"})
+mcp.call("guanfu_claim_task", {"taskKey": "REQ-001", "worktree": "/abs/path/to/wt"})
 ```
 
-工作台会校验这个目录确实是**本仓库**的 worktree（读 `.git` 文件）——
+观复会校验这个目录确实是**本仓库**的 worktree（读 `.git` 文件）——
 声明别的仓库或普通目录都不认。项目的并行上限在「项目设置 → agent 并发」里配
 （0 = 不限）。
 
@@ -78,7 +78,7 @@ mcp.call("workbench_claim_task", {"taskKey": "REQ-001", "worktree": "/abs/path/t
 |---|---|
 | Web UI | 主路径之一：人看进度、批审批、验审计 |
 | MCP 工具集（`/mcp`） | 主路径之一：agent 干活 |
-| CLI（`wb`） | 次要入口；但 `wb mcp` 的 stdio 桥接不可替代（只支持 stdio 的客户端全靠它） |
+| CLI（`guanfu`） | 次要入口；但 `guanfu mcp` 的 stdio 桥接不可替代（只支持 stdio 的客户端全靠它） |
 
 ---
 
@@ -86,24 +86,26 @@ mcp.call("workbench_claim_task", {"taskKey": "REQ-001", "worktree": "/abs/path/t
 
 ```bash
 ./tests/verify.sh                          # 先验收（可选，但建议）
-./.dotnet/dotnet run --project src/Workbench.Web   # 仓库自带隔离的 .NET 8 SDK
+./.dotnet/dotnet run --project src/Guanfu.Web   # 仓库自带隔离的 .NET 8 SDK
 # 没有 .dotnet/ 时用 PATH 上的 dotnet（需 8.0.x）：
-dotnet run --project src/Workbench.Web
+dotnet run --project src/Guanfu.Web
 ```
 
 - 默认地址 **http://127.0.0.1:5177**（UI + REST + `/mcp` 同一个进程）。
-  换端口：`dotnet run --project src/Workbench.Web --urls http://127.0.0.1:8080`。
+  换端口：`dotnet run --project src/Guanfu.Web --urls http://127.0.0.1:8080`。
 - 只监听回环。内网给别人访问时**必须**显式放行 Host（见 §2），否则 DNS rebinding 防护会拒。
-- 启动横幅会打印**人工凭证**（§3）。凭证同时落在 `WORKBENCH_HOME/.human-token`（权限 0600）。
+- 启动横幅会打印**人工凭证**（§3）。凭证同时落在数据目录的 `.human-token`（权限 0600）。
 - 老库不用手动迁移：启动时 `SchemaUpgrader` 从 EF 模型推导缺的表/列/索引自动补（不用 EF Migrations）。
 
-CLI 也能起服务：`wb serve`。
+CLI 也能起服务：`guanfu serve`。
 
 ---
 
 ## 2. 数据目录与配置
 
-数据目录由 **`WORKBENCH_HOME`** 决定，默认 `~/.workbench`：
+数据目录由 **`GUANFU_HOME`** 决定，默认 `~/.guanfu`。
+旧的环境变量 `WORKBENCH_HOME` 与旧目录 `~/.workbench` **仍然认** ——
+改名不该让人打开一看数据没了：
 
 ```
 ~/.workbench/
@@ -119,14 +121,14 @@ CLI 也能起服务：`wb serve`。
 
 | 键 | 作用 | 默认 |
 |---|---|---|
-| `Workbench:Home` | 数据目录（等价于 `WORKBENCH_HOME`） | `~/.workbench` |
-| `Workbench:AllowedHosts` | 允许的 Host 头清单（数组或逗号串） | 仅回环 |
-| `Workbench:AuditArchivePath` | 审计链头的外部归档位置（文件或目录） | 不归档 |
+| `Guanfu:Home` | 数据目录（等价于 `GUANFU_HOME`；旧键 `Workbench:Home` 仍然认） | `~/.guanfu` |
+| `Guanfu:AllowedHosts` | 允许的 Host 头清单（数组或逗号串） | 仅回环 |
+| `Guanfu:AuditArchivePath` | 审计链头的外部归档位置（文件或目录） | 不归档 |
 
-环境变量：`WORKBENCH_HOME`（数据目录）、`WORKBENCH_URL`（CLI 默认服务地址）、
+环境变量：`GUANFU_HOME`（数据目录；旧名 `WORKBENCH_HOME` 仍然认）、`GUANFU_URL`（CLI 默认服务地址）、
 `WORKBENCH_HUMAN_TOKEN`（CLI 人工凭证）。
 
-**归档路径必须落在 `WORKBENCH_HOME` 之外**，落在里面启动后会被拒——那种归档等于没归档。
+**归档路径必须落在数据目录之外**，落在里面启动后会被拒——那种归档等于没归档。
 归档位置本身能不能被同样的人改（只读挂载 / 另一台机器 / 另一个权限域）是**部署方的责任**。
 
 REST 有每分钟 300 次的限流；`/api` 写方法要求 `Origin` 与 `Host` 同源。
@@ -148,8 +150,8 @@ REST 有每分钟 300 次的限流；`/api` 写方法要求 `Origin` 与 `Host` 
 
 - **本机开网页**：自动获取，不用管。
 - **远程开网页**：从启动控制台复制那串，粘贴到页面上的 token 输入框（如项目设置页）。
-- **CLI**：`wb token` 打印；或 `--token <凭证>`；或环境变量 `WORKBENCH_HUMAN_TOKEN`；
-  或默认读 `WORKBENCH_HOME/.human-token`。优先级：`--token` > 环境变量 > 文件。
+- **CLI**：`guanfu token` 打印；或 `--token <凭证>`；或环境变量 `WORKBENCH_HUMAN_TOKEN`；
+  或默认读数据目录的 `.human-token`。优先级：`--token` > 环境变量 > 文件。
 
 凭证是「证明屏幕前是人」的共享秘密，**不要提交进仓库、不要贴进聊天群**。
 
@@ -171,33 +173,33 @@ REST 有每分钟 300 次的限流；`/api` 写方法要求 `Origin` 与 `Host` 
    不会把其它的一起打回。传完把任务推到「文档就绪」。
 4. **接 agent**：打开 `/connect`，复制现成配置进你的客户端（§11）。
    页面上「接上了吗」会显示最近会话心跳；连没连上也可以看 `/audit`。
-5. **agent 领任务干活**：`workbench_claim_task`（带租约，默认 30 分钟，别人抢不走）→
-   `workbench_get_context` 一次取回文档 / 计划 / 产物 / 流水 / 允许迁移 →
-   `workbench_set_plan` 回写需求理解与开发计划 → 改代码、跑测试 →
-   `workbench_report_test_result` 回写测试结果 → `workbench_update_status` 推进。
+5. **agent 领任务干活**：`guanfu_claim_task`（带租约，默认 30 分钟，别人抢不走）→
+   `guanfu_get_context` 一次取回文档 / 计划 / 产物 / 流水 / 允许迁移 →
+   `guanfu_set_plan` 回写需求理解与开发计划 → 改代码、跑测试 →
+   `guanfu_report_test_result` 回写测试结果 → `guanfu_update_status` 推进。
 6. **写操作来审批**：agent 调 `db_execute` / `git_commit` / `git_push` / `shell_run` 时不会直接执行，
    而是返回审批号；你在 `/approvals` 点头后，agent 带审批号再调一次才真正执行（§7）。
-7. **评审与结项**：推进到「评审中」后开一轮评审（`workbench_start_review`），
+7. **评审与结项**：推进到「评审中」后开一轮评审（`guanfu_start_review`），
    agent 取评审包、逐维度回写结论；**7 个维度全过**才允许「评审中 → 已完成」（§8）。
-8. **离线补报**：网络不通、工作台在维护、活是上一轮会话干的时候，agent 是**先干活、后报**。
+8. **离线补报**：网络不通、观复在维护、活是上一轮会话干的时候，agent 是**先干活、后报**。
    这时回写时带上 `occurredAt`（实际发生时间，ISO 8601）：账本会同时记下
-   **什么时候发生**与**工作台什么时候知道**，流水上挂「补报」标记并摆出两个时间。
+   **什么时候发生**与**观复什么时候知道**，流水上挂「补报」标记并摆出两个时间。
    未来的时间不收 —— 还没发生的事不能补报。
 9. **并行要各开各的工位**：主工作区同一时刻只允许一个 agent 占着。
-   先调 `workbench_get_workstation` 问一句 —— 它会告诉你主工作区被谁占着、
+   先调 `guanfu_get_workstation` 问一句 —— 它会告诉你主工作区被谁占着、
    要并行的话该建哪个 worktree、**以及建它的确切命令**（照着抄就行）。
-   建好之后领活时把路径填进 `workbench_claim_task` 的 `worktree` 参数，工作台会校验它。
+   建好之后领活时把路径填进 `guanfu_claim_task` 的 `worktree` 参数，观复会校验它。
 10. **评审分工**：一轮七个维度可以拆给几个 agent 各评各的 ——
-    先 `workbench_claim_review_dimension` 认领（带租约，到期可接手），再逐维度回写。
+    先 `guanfu_claim_review_dimension` 认领（带租约，到期可接手），再逐维度回写。
     别人认领的维度不能替他交结论。
-    评完之后 `workbench_get_review` 会给出本轮的**分工**（judgements：谁评了哪一条）、
+    评完之后 `guanfu_get_review` 会给出本轮的**分工**（judgements：谁评了哪一条）、
     还差几条（pendingCount）、几条不通过（failedCount）—— 收尾的人一次看完。
-11. **接手别人放下的活**：先调 `workbench_get_handoff_pack` —— 一次拿全：
+11. **接手别人放下的活**：先调 `guanfu_get_handoff_pack` —— 一次拿全：
     上一个是谁、为什么交出来、做到哪一步、规约、文档、产出、测试、工位、当前能去哪。
     交接链（`handoffChain`）是这个活转过几次手、每次谁交给谁、为什么。
-12. **干完了把工位收掉**：调 `workbench_release_workstation` —— 工作台清掉登记，
-    并给出 `git worktree remove <目录>` 的确切命令。**工作台不替 agent 删目录**
-    （那是它自己仓库里的事）。想知道哪些工位没人管了，调 `workbench_list_workstations`
+12. **干完了把工位收掉**：调 `guanfu_release_workstation` —— 观复清掉登记，
+    并给出 `git worktree remove <目录>` 的确切命令。**观复不替 agent 删目录**
+    （那是它自己仓库里的事）。想知道哪些工位没人管了，调 `guanfu_list_workstations`
     （项目页的「工位」页签也看得见；活干完的工位标成「该收了」）。
 
 人全程只做三件事：建项目建任务传文档、批审批、看审计与度量。
@@ -273,19 +275,19 @@ REST 有每分钟 300 次的限流；`/api` 写方法要求 `Origin` 与 `Host` 
 - `shell_run` 不走 shell 解析：命令拆成可执行文件 + 参数直接 exec，杜绝 `;` `&` `|` 拼接；
   且必须命中项目白名单。白名单是**按词的前缀**：`git status` 只放行 `git status`，不误伤 `git status-tree`。
 - 服务在执行途中重启：那条审批会被标成**已过期 + 结果未知**，交人工确认后再重新申请
-  （写操作可能已经生效，工作台不假装知道）。
+  （写操作可能已经生效，观复不假装知道）。
 - 配了审批 webhook（钉钉 / 飞书 / 通用 JSON）时，有人请求审批会推一条消息——人不在电脑前也不会静静躺到过期。
 
 ---
 
-## 8. 评审：骨架在工作台，判断在 agent
+## 8. 评审：骨架在观复，判断在 agent
 
-- 推进到「评审中」后开一轮：`workbench_start_review`（或任务页按钮）。多轮历史都留着。
-- `workbench_get_review_pack` 取评审包：计划、diff、产物、测试结果、上一轮结论。
-- agent（可以开子 agent / 专家团并行）逐维度回写：`workbench_submit_review`，
+- 推进到「评审中」后开一轮：`guanfu_start_review`（或任务页按钮）。多轮历史都留着。
+- `guanfu_get_review_pack` 取评审包：计划、diff、产物、测试结果、上一轮结论。
+- agent（可以开子 agent / 专家团并行）逐维度回写：`guanfu_submit_review`，
   结论三选一：通过 / 不通过 / 不适用（`skipped=true`；「待评」是初始态，不是可回写的结论）。
   不通过必须写清 findings 与证据。任务页上也能逐维度点结论。
-  注意：CLI 的 `wb review submit` 目前只有 `--pass` / `--fail`，「不适用」走界面或 MCP。
+  注意：CLI 的 `guanfu review submit` 目前只有 `--pass` / `--fail`，「不适用」走界面或 MCP。
 - **结项门禁**：「评审中 → 已完成」要求当前轮 7 个维度全部有结论且通过。
   「不适用」算过，但有两条约束：必须在 findings 里写明**为什么不适用**，且**每轮最多跳 2 个**
   （否则七个全标跳过就能结项，门禁形同虚设）。没开过评审的老流程不受影响。
@@ -302,8 +304,8 @@ REST 有每分钟 300 次的限流；`/api` 写方法要求 `Origin` 与 `Host` 
 | `over_implementation` | 是否有需求过度实现 | 有没有做需求没要求的事 |
 | `over_operation` | 是否有过度操作的代码 | 有没有画蛇添足的动作 |
 
-每个维度带检查清单（定义在 `src/Workbench.Domain/ReviewDimensions.cs`），评审包里有。
-`wb review export` / `workbench_export_review` 导出评审报告。
+每个维度带检查清单（定义在 `src/Guanfu.Domain/ReviewDimensions.cs`），评审包里有。
+`guanfu review export` / `guanfu_export_review` 导出评审报告。
 
 ---
 
@@ -328,10 +330,10 @@ REST 有每分钟 300 次的限流；`/api` 写方法要求 `Origin` 与 `Host` 
 - **删除线**（Markdown `~~x~~`、DOCX `w:strike`）→ 语义是「已废弃」，agent 不能当需求读。
   `doc_list_struck` 专门列被划掉的内容。
 - **修订**（DOCX `w:ins` / `w:del` / 移动标记、diff 的 +/- 行）→ 带作者与时间。`doc_get_revisions` 取。
-- **PDF 没有语义级的删除线 / 修订**，工作台不假装能解析出来。
+- **PDF 没有语义级的删除线 / 修订**，观复不假装能解析出来。
 - 工具：`doc_upload` / `doc_parse` / `doc_get_outline` / `doc_get_text` / `doc_search` / `doc_list_formats`。
 - **批量导入**：`doc_upload` 给 `documents` 数组一次传多个（界面一次选多个、
-  REST `POST /api/tasks/{id}/documents/batch`、CLI `wb doc upload <任务> <文件...>`）。
+  REST `POST /api/tasks/{id}/documents/batch`、CLI `guanfu doc upload <任务> <文件...>`）。
   **一个文件失败不牵连其它的** —— 成功的进 `uploaded`，失败的进 `failures`（带文件名与原因）。
 - 渲染 agent 产出的 Markdown 时**原始 HTML 关闭**、URL scheme 白名单
   （只放行 http / https / mailto / 相对路径）——内容来自外部输入，这是 XSS 口子。
@@ -347,28 +349,28 @@ REST 有每分钟 300 次的限流；`/api` 写方法要求 `Origin` 与 `Host` 
 ```json
 {
   "mcpServers": {
-    "workbench": { "type": "http", "url": "http://127.0.0.1:5177/mcp" }
+    "guanfu": { "type": "http", "url": "http://127.0.0.1:5177/mcp" }
   }
 }
 ```
 
-**stdio 客户端**走桥接（`wb` 把 stdio 的 JSON-RPC 转发到 `/mcp`）：
+**stdio 客户端**走桥接（`guanfu` 把 stdio 的 JSON-RPC 转发到 `/mcp`）：
 
 ```json
 {
   "mcpServers": {
-    "workbench": { "command": "wb", "args": ["mcp", "--url", "http://127.0.0.1:5177"] }
+    "guanfu": { "command": "guanfu", "args": ["mcp", "--url", "http://127.0.0.1:5177"] }
   }
 }
 ```
 
-开发时不想装 `wb`：`dotnet run --project src/Workbench.Cli -- mcp --url http://127.0.0.1:5177`。
+开发时不想装 `guanfu`：`dotnet run --project src/Guanfu.Cli -- mcp --url http://127.0.0.1:5177`。
 
 会话与归属：
 
-- 老协议客户端在 `initialize` 时拿到 `Mcp-Session-Id`，之后每次请求带着它——工作台靠它认出「还是那次干活」。
+- 老协议客户端在 `initialize` 时拿到 `Mcp-Session-Id`，之后每次请求带着它——观复靠它认出「还是那次干活」。
   新协议客户端按请求无状态服务，两种都支持。
-- `workbench_bind_session` 按**仓库目录**认项目：agent 工作目录落在哪个项目绑定范围内就绑哪个
+- `guanfu_bind_session` 按**仓库目录**认项目：agent 工作目录落在哪个项目绑定范围内就绑哪个
   （包含关系，子目录也算）；多个命中取**最具体**的；一样长（分不出来）**就不绑**，让调用方显式指定。
 - 认领成功后任务挂到会话上，之后调用自动带 taskId。
 - 工具的 `projectId` 可选（会话绑了就省），但**显式传了就要跟会话比**，不一致直接拒——
@@ -380,32 +382,32 @@ REST 有每分钟 300 次的限流；`/api` 写方法要求 `Origin` 与 `Host` 
 工具真抛异常时中央兜底过滤器转成 `{ok:false,error}`，agent 永远看得到原因。
 
 产出文件靠**采集**不靠自报：① `git_commit` 审批通过真正提交后；② 推进到「评审中」时快照工作区。
-`workbench_add_artifact` 只登记非代码产物。
+`guanfu_add_artifact` 只登记非代码产物。
 
 ---
 
-## 12. CLI（`wb`）速查
+## 12. CLI（`guanfu`）速查
 
 全局：`--url <地址>`（默认 http://127.0.0.1:5177，或 `WORKBENCH_URL`）、`--token <凭证>`（§3）。
 
 ```
-wb serve / wb mcp                     起服务 / stdio↔HTTP 桥接
-wb project list|add|show|config       项目；config 改仓库/启动命令/白名单/webhook（敏感）
-wb task list|create|show|claim        任务；list 支持 --status/--key/--type/--branch/--milestone/--limit/--offset
-wb task launch|assign                 启动 agent（敏感）/ 分派负责人、优先级、截止日、权重
-wb task deps|depend|undepend          任务依赖
-wb task events                        导出事件流水（markdown|csv|json）
-wb status set <任务> <状态> [--note]   状态迁移（中文或枚举名都认）
-wb doc upload <任务> <文件...> [--kind]   传文档（可一次传多个）
-wb approval list|approve|reject       审批（敏感）；batch 批量；revoke 撤销
-wb review start|list|submit|export    评审；submit 带 --pass|--fail --findings --evidence
-wb milestone list|create|delete|assign  里程碑；assign 传 0 摘出来
-wb metrics [<项目>]                   度量
-wb audit list [--tool/--project/--task/--limit]   审计
-wb db connections|rules|test          数据库连接 / 表级规则 / 试连
-wb tool list|enable|disable|reset     MCP 工具开关
-wb workspace export|import            换机搬迁（敏感）
-wb token                              打印人工凭证
+guanfu serve / guanfu mcp                     起服务 / stdio↔HTTP 桥接
+guanfu project list|add|show|config       项目；config 改仓库/启动命令/白名单/webhook（敏感）
+guanfu task list|create|show|claim        任务；list 支持 --status/--key/--type/--branch/--milestone/--limit/--offset
+guanfu task launch|assign                 启动 agent（敏感）/ 分派负责人、优先级、截止日、权重
+guanfu task deps|depend|undepend          任务依赖
+guanfu task events                        导出事件流水（markdown|csv|json）
+guanfu status set <任务> <状态> [--note]   状态迁移（中文或枚举名都认）
+guanfu doc upload <任务> <文件...> [--kind]   传文档（可一次传多个）
+guanfu approval list|approve|reject       审批（敏感）；batch 批量；revoke 撤销
+guanfu review start|list|submit|export    评审；submit 带 --pass|--fail --findings --evidence
+guanfu milestone list|create|delete|assign  里程碑；assign 传 0 摘出来
+guanfu metrics [<项目>]                   度量
+guanfu audit list [--tool/--project/--task/--limit]   审计
+guanfu db connections|rules|test          数据库连接 / 表级规则 / 试连
+guanfu tool list|enable|disable|reset     MCP 工具开关
+guanfu workspace export|import            换机搬迁（敏感）
+guanfu token                              打印人工凭证
 ```
 
 CLI 用的是应用层同一批 DTO 与 JSON 选项，不会出现「界面有、命令行漏字段」的第二份抄写。
@@ -419,11 +421,11 @@ CLI 用的是应用层同一批 DTO 与 JSON 选项，不会出现「界面有�
 - 参数里的 `password / secret / token / api_key / access_token` 等名字的值抹成 `***` 再落表。
 - 每条审计带 `prevHash + hash`（内容 + 上一条哈希），按单调 `Sequence` 定序（**不靠时间戳**）。
   `/audit` 页「验哈希链」能验出断点：改一条、删一条都会断。
-- **链头外部归档**（§2 配置）：每 10 分钟把链头追加到工作台之外的 JSONL；链头没变不重复追加。
+- **链头外部归档**（§2 配置）：每 10 分钟把链头追加到观复之外的 JSONL；链头没变不重复追加。
   `/audit` 页「对账」能查出**记录被删过 / 库被回滚过 / 同一条被改过**。
   这是「可发现」不是「不可篡改」：能连哈希一起重算的人照样骗得过库内链，所以才要库外归档。
 - 事件账本机器可读：`EventType` 是固定标识、`Payload` 是结构化 JSON（note 事件也带），
-  消费方按 `EventType` 判定，不猜自由文本。`workbench_export_events` 导出。
+  消费方按 `EventType` 判定，不猜自由文本。`guanfu_export_events` 导出。
 - **边界**：审计记的是 agent 通过 MCP 干了什么；**人点界面 / 直接调 REST 的操作不进审计表**
   （人的痕迹在任务状态事件流水里）。要给人操作留痕是另一个设计，见 ENTERPRISE.md 缺口清单。
 
@@ -431,8 +433,8 @@ CLI 用的是应用层同一批 DTO 与 JSON 选项，不会出现「界面有�
 
 ## 14. 运维
 
-- **备份**：每 6 小时自动备份到 `WORKBENCH_HOME/backups`。
-- **换机**：`wb workspace export <目录>` → 拷走 → `wb workspace import <目录> --home <目标WORKBENCH_HOME>`。
+- **备份**：每 6 小时自动备份到数据目录的 `backups/`。
+- **换机**：`guanfu workspace export <目录>` → 拷走 → `guanfu workspace import <目录> --home <目标数据目录>`。
   导出带库 + 文档 + 密钥 + 运行日志。归档文件不在导出里（它本来就该在别处）。
 - **重启对账**：执行途中进程被杀，再起同一个 `WORKBENCH_HOME` 时，那条写操作审批被标
   「已过期 + 结果未知」，审批卡上有明显标记，交人工确认。端到端链路 G 真杀进程验这条。
@@ -447,7 +449,7 @@ CLI 用的是应用层同一批 DTO 与 JSON 选项，不会出现「界面有�
 
 | 症状 | 原因与处理 |
 |---|---|
-| 敏感操作 401 | 没带人工凭证。本机网页自动带；远程粘贴 token；CLI 用 `--token` 或 `wb token` |
+| 敏感操作 401 | 没带人工凭证。本机网页自动带；远程粘贴 token；CLI 用 `--token` 或 `guanfu token` |
 | 批了还是拒 | 审批绑操作指纹：命令 / SQL / 目标库 / 项目换了，或 `git_commit` 等待期间工作区变了，或已执行过。重新申请 |
 | 审批卡显示「结果未知」 | 服务在执行途中重启过。人工确认那次写操作到底生效没有，再重新申请 |
 | 领取 / 推进 / 启动被分支守卫拒 | 仓库当前分支与任务绑定分支不一致，或读不到分支。切到对的分支 |
@@ -455,7 +457,7 @@ CLI 用的是应用层同一批 DTO 与 JSON 选项，不会出现「界面有�
 | 状态推进被拒 | 非法迁移。报错里带当前允许列表，照着走 |
 | 结项被拒 | 当前评审轮有维度没结论或不通过。补齐 / 改完再结 |
 | 两个项目绑了同一目录，agent 认不出项目 | 设计如此（分不出来就不绑）。调用时显式传 `projectId`，或改绑子目录 |
-| 远程访问网页被拒 / 接口报错 | Host 不在允许清单。配 `Workbench:AllowedHosts`；写接口还要求 Origin 同源 |
+| 远程访问网页被拒 / 接口报错 | Host 不在允许清单。配 `Guanfu:AllowedHosts`；写接口还要求 Origin 同源 |
 | 老库升级后缺列 | 不该发生：`SchemaUpgrader` 从 EF 模型自动补。若真遇到，看启动日志 |
 | 端口被占 | 换 `--urls`；或先确认是不是上一个实例没退 |
 

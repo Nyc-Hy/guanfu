@@ -33,13 +33,13 @@ record() {
 }
 
 echo "════════════════════════════════════════════════════════════"
-echo " 工作台验收：编译 → 单测 → 端到端"
+echo " 观复验收：编译 → 单测 → 端到端"
 echo "════════════════════════════════════════════════════════════"
 
 # ── 1 编译 ───────────────────────────────────────────────────────────
 echo
 echo "── [1/3] 编译 ──────────────────────────────────────────────"
-BUILD_OUT="$("$DOTNET" build "$ROOT/Workbench.sln" -v quiet --nologo 2>&1)"
+BUILD_OUT="$("$DOTNET" build "$ROOT/Guanfu.sln" -v quiet --nologo 2>&1)"
 BUILD_CODE=$?
 if [[ $BUILD_CODE -eq 0 ]]; then
   WARNINGS="$(printf '%s' "$BUILD_OUT" | grep -c 'Warning(s)' || true)"
@@ -53,7 +53,7 @@ fi
 # ── 2 单测 ───────────────────────────────────────────────────────────
 echo
 echo "── [2/3] 单元测试 ──────────────────────────────────────────"
-TEST_OUT="$("$DOTNET" test "$ROOT/Workbench.sln" --nologo 2>&1)"
+TEST_OUT="$("$DOTNET" test "$ROOT/Guanfu.sln" --nologo 2>&1)"
 TEST_CODE=$?
 printf '%s\n' "$TEST_OUT" | grep -E '已通过!|失败!|Failed!|Passed!' || true
 if [[ $TEST_CODE -eq 0 ]]; then

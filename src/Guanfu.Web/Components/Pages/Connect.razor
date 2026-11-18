@@ -1,0 +1,222 @@
+@page "/connect"
+@rendermode InteractiveServer
+@inject NavigationManager Nav
+@inject IMcpToolService Tools
+@inject IAgentSessionService Sessions
+@inject IJSRuntime JS
+
+<PageTitle>接入 agent · 观复</PageTitle>
+
+<div class="wb-page-head">
+    <div>
+        <h1>接入 agent</h1>
+        <p class="wb-muted">
+            观复通过 MCP 工具对外提供服务。agent 自己领任务、回写计划与测试结果，
+            写操作走审批——观复本身不提供 AI。
+        </p>
+    </div>
+</div>
+
+<div class="wb-detail-grid">
+    <div class="wb-detail-main">
+        <section class="wb-panel">
+            <div class="wb-card-head">
+                <h3>HTTP 客户端（推荐）</h3>
+                <span class="wb-chip">MCP Streamable HTTP</span>
+            </div>
+            <p class="wb-muted">Claude Code / Codex 等较新的客户端直接连这个地址。</p>
+            <pre class="wb-doc-code">@HttpConfig</pre>
+            <div class="wb-form-row">
+                <button class="wb-btn" @onclick="() => CopyAsync(HttpConfig)">复制</button>
+                <span class="wb-muted">端点：<code>@McpEndpoint</code></span>
+            </div>
+        </section>
+
+        @* 人复制完配置，接下来一定是问「接上了没有」——
+           这里给个心跳：最近一次 agent 有动静是什么时候。 *@
+        <section class="wb-panel">
+            <div class="wb-card-head">
+                <h3>接上了吗</h3>
+                @if (RecentSessions.Count > 0)
+                {
+                    <span class="wb-chip wb-chip-ok">有 agent 活动</span>
+                }
+            </div>
+            @if (RecentSessions.Count == 0)
+            {
+                <p class="wb-muted">
+                    还没有 agent 连上来过。把上面的配置复制到客户端，在那边问一句
+                    「观复里有哪些项目？」试试 —— 有没有连上，看这里的动静和
+                    <a href="/audit">工具调用记录</a>页就清楚了。
+                </p>
+            }
+            else
+            {
+                <ul class="wb-doc-list">
+                    @foreach (var session in RecentSessions)
+                    {
+                        <li>
+                            <span class="wb-chip">@session.AgentId</span>
+                            在 @session.ProjectName@(session.TaskKey is null ? "" : $" · {session.TaskKey}")
+                            · 最后有动静 @Ago(session.LastSeenAt)
+                        </li>
+                    }
+                </ul>
+                <p class="wb-hint">
+                    这里只显示最近 @RecentSessions.Count 条。完整的调用记录在
+                    <a href="/audit">工具调用记录</a>页。
+                </p>
+            }
+        </section>
+
+        <section class="wb-panel">
+            <div class="wb-card-head">
+                <h3>stdio 客户端</h3>
+                <span class="wb-chip">guanfu mcp 桥接</span>
+            </div>
+            <p class="wb-muted">
+                只支持 stdio 的客户端走这个桥接：<code>guanfu</code> 把 stdio 的 JSON-RPC
+                转发到观复的 <code>/mcp</code> 端点。智能仍在外部进程里，桥接只负责连通。
+            </p>
+            <pre class="wb-doc-code">@StdioConfig</pre>
+            <div class="wb-form-row">
+                <button class="wb-btn" @onclick="() => CopyAsync(StdioConfig)">复制</button>
+                <span class="wb-muted">
+                    开发时可直接用 <code>dotnet run --project src/Guanfu.Cli -- mcp</code>
+                </span>
+            </div>
+        </section>
+
+        <section class="wb-panel">
+            <h3>典型流程</h3>
+            <ol class="wb-doc-list">
+                <li>领一个任务（带租约，别人抢不走）</li>
+                <li>一次取回全部上下文：文档、计划、产物、流水、允许的状态迁移</li>
+                <li>回写需求理解与开发计划</li>
+                <li>干活（改代码、跑测试）</li>
+                <li>回写单元测试结果</li>
+                <li>推进状态；非法迁移会带出当前允许的列表</li>
+            </ol>
+            <p class="wb-hint">
+                改数据库、提交代码、推送、执行命令这几类写操作都要人工审批，
+                批准后带审批号再次调用即执行。
+            </p>
+            <details>
+                <summary class="wb-muted">对应的工具名（agent 按这些名字调用）</summary>
+                <ul class="wb-doc-list wb-muted">
+                    <li><code>guanfu_claim_task</code></li>
+                    <li><code>guanfu_get_context</code></li>
+                    <li><code>guanfu_set_plan</code></li>
+                    <li><code>guanfu_report_test_result</code></li>
+                    <li><code>guanfu_update_status</code></li>
+                    <li><code>db_execute</code> · <code>git_commit</code> · <code>git_push</code> · <code>shell_run</code></li>
+                </ul>
+            </details>
+        </section>
+    </div>
+
+    <aside class="wb-detail-side">
+        <section class="wb-panel">
+            <div class="wb-card-head">
+                <h3>当前暴露</h3>
+                <span class="wb-chip">@EnabledCount / @ToolCount</span>
+            </div>
+            <p class="wb-muted">工具开启</p>
+            <a class="wb-btn" href="/mcp-tools">管理工具开关</a>
+            <p class="wb-hint">关掉的工具不出现在 tools/list 里，agent 看不到也不会去调。</p>
+        </section>
+
+        <section class="wb-panel">
+            <h3>分类</h3>
+            <ul class="wb-timeline">
+                @foreach (var group in ToolsByCategory)
+                {
+                    <li>
+                        <div class="wb-timeline-what">
+                            <span>@group.Key</span>
+                            <span class="wb-chip wb-chip-muted">@group.Count()</span>
+                        </div>
+                    </li>
+                }
+            </ul>
+        </section>
+
+        @if (!string.IsNullOrWhiteSpace(Copied))
+        {
+            <p class="wb-hint">已复制到剪贴板。</p>
+        }
+    </aside>
+</div>
+
+@code {
+    private IReadOnlyList<McpToolInfo> Items { get; set; } = [];
+    private IReadOnlyList<AgentSessionDto> RecentSessions { get; set; } = [];
+    private string? Copied { get; set; }
+
+    private int ToolCount => Items.Count;
+    private int EnabledCount => Items.Count(t => t.Enabled);
+
+    private IEnumerable<IGrouping<string, McpToolInfo>> ToolsByCategory =>
+        Items.GroupBy(t => t.Category);
+
+    /// <summary>用当前访问地址拼出端点，复制出来的配置直接能用。</summary>
+    private string BaseUrl => Nav.BaseUri.TrimEnd('/');
+
+    private string McpEndpoint => $"{BaseUrl}/mcp";
+
+    private string HttpConfig => McpConnectInfo.HttpConfig(BaseUrl);
+
+    private string StdioConfig => McpConnectInfo.StdioConfig(BaseUrl);
+
+    protected override async Task OnInitializedAsync()
+    {
+        Items = await Tools.ListAsync();
+
+        // 心跳拿不到不算失败 —— 这一段只是给人看「连上没有」。
+        try
+        {
+            RecentSessions = await Sessions.ListRecentAsync();
+        }
+        catch (Exception)
+        {
+            RecentSessions = [];
+        }
+    }
+
+    /// <summary>相对时间，后面带绝对时间（悬停能看）。</summary>
+    private static string Ago(DateTimeOffset time)
+    {
+        var delta = DateTimeOffset.UtcNow - time;
+
+        if (delta.TotalMinutes < 1)
+        {
+            return "刚刚";
+        }
+
+        if (delta.TotalMinutes < 60)
+        {
+            return $"{(int)delta.TotalMinutes} 分钟前";
+        }
+
+        if (delta.TotalHours < 24)
+        {
+            return $"{(int)delta.TotalHours} 小时前";
+        }
+
+        return $"{(int)delta.TotalDays} 天前";
+    }
+
+    private async Task CopyAsync(string text)
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", text);
+            Copied = text;
+        }
+        catch (Exception)
+        {
+            // 浏览器不给剪贴板权限就算了，内容在页面上可以手动选
+            Copied = null;
+        }
+    }
+}

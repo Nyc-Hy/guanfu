@@ -1,0 +1,27 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Guanfu.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="$(EfCoreVersion)" />
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="$(SqlClientVersion)" />
+    <!-- T-SQL 解析器：把 SQL 解析成 AST，按语句类型判定读写，
+         而不是靠「首关键字 + 手搓分词器」猜。 -->
+    <PackageReference Include="Microsoft.SqlServer.TransactSql.ScriptDom" Version="$(ScriptDomVersion)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Guanfu.Domain\Guanfu.Domain.csproj" />
+    <ProjectReference Include="..\Guanfu.Application\Guanfu.Application.csproj" />
+    <ProjectReference Include="..\Guanfu.Documents\Guanfu.Documents.csproj" />
+  </ItemGroup>
+
+</Project>

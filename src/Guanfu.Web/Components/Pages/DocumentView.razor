@@ -1,0 +1,202 @@
+@page "/documents/{DocumentId:guid}"
+@rendermode InteractiveServer
+@inject IDocumentService Documents
+@inject IDocumentStore Store
+
+<PageTitle>文档 · 观复</PageTitle>
+
+@if (Loading)
+{
+    <div class="wb-empty">加载中…</div>
+}
+else if (Parsed is null)
+{
+    <div class="wb-page-head">
+        <a class="wb-back" href="/">← 返回</a>
+    </div>
+    <ErrorNotice Error="LoadError" />
+    @if (LoadError is null)
+    {
+        <div class="wb-empty">文档不存在或无法读取。</div>
+    }
+}
+else
+{
+    <div class="wb-page-head">
+        <div>
+            <a class="wb-back" href="/">← 返回</a>
+            <h1>@(string.IsNullOrWhiteSpace(Parsed.Title) ? Document?.FileName : Parsed.Title)</h1>
+            <p class="wb-muted">
+                @Document?.FileName · @Document?.Format
+                @if (!string.IsNullOrWhiteSpace(Document?.Kind))
+                {
+                    <span> · @Document.Kind</span>
+                }
+            </p>
+        </div>
+        <div class="wb-form-row">
+            <button class="wb-btn" @onclick="() => ParseAsync(force: true)">重新解析</button>
+            @if (!string.IsNullOrWhiteSpace(Document?.StoredPath))
+            {
+                <button class="wb-btn" @onclick="CopyPathAsync">复制原文路径</button>
+            }
+        </div>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(CopyFeedback))
+    {
+        <div class="wb-hint wb-mb-3">@CopyFeedback</div>
+    }
+
+    <ErrorNotice Error="LoadError" />
+
+    <div class="wb-detail-grid">
+        <div class="wb-detail-main">
+            <section class="wb-panel">
+                <h3>正文</h3>
+                @if (Parsed.Blocks.Count == 0)
+                {
+                    <p class="wb-muted">没有解析出内容。</p>
+                }
+                else
+                {
+                    @foreach (var block in Parsed.Blocks)
+                    {
+                        <DocumentBlockView Block="block" />
+                    }
+                }
+            </section>
+        </div>
+
+        <aside class="wb-detail-side">
+            <section class="wb-panel">
+                <h3>大纲</h3>
+                @if (Parsed.Outline.Count == 0)
+                {
+                    <p class="wb-muted">没有标题层级。</p>
+                }
+                else
+                {
+                    <ul class="wb-outline">
+                        @foreach (var entry in Parsed.Outline)
+                        {
+                            <li style="padding-left:@(entry.Level - 1) * 12px">@entry.Title</li>
+                        }
+                    </ul>
+                }
+            </section>
+
+            <section class="wb-panel">
+                <h3>修订 / 补丁 <span class="wb-chip">@Parsed.Revisions.Count</span></h3>
+                @if (Parsed.Revisions.Count == 0)
+                {
+                    <p class="wb-muted">没有检测到修订。</p>
+                }
+                else
+                {
+                    <ul class="wb-revisions">
+                        @foreach (var revision in Parsed.Revisions)
+                        {
+                            <li class="wb-rev-@revision.Kind">
+                                <div class="wb-rev-head">
+                                    <span class="wb-chip">@revision.Kind</span>
+                                    @if (!string.IsNullOrWhiteSpace(revision.Author))
+                                    {
+                                        <span>@revision.Author</span>
+                                    }
+                                    @if (revision.Date is not null)
+                                    {
+                                        <span class="wb-chip wb-chip-muted">@revision.Date.Value.ToLocalTime().ToString("MM-dd HH:mm")</span>
+                                    }
+                                </div>
+                                <div class="wb-rev-text">@revision.Text</div>
+                            </li>
+                        }
+                    </ul>
+                }
+            </section>
+
+            <section class="wb-panel">
+                <h3>删除线内容 <span class="wb-chip">@Struck.Count</span></h3>
+                @if (Struck.Count == 0)
+                {
+                    <p class="wb-muted">没有被划掉的内容。</p>
+                }
+                else
+                {
+                    <ul class="wb-struck">
+                        @foreach (var item in Struck)
+                        {
+                            <li><s>@item.Text</s></li>
+                        }
+                    </ul>
+                }
+            </section>
+        </aside>
+    </div>
+}
+
+@code {
+    [Parameter] public Guid DocumentId { get; set; }
+
+    private ParsedDocDto? Parsed { get; set; }
+    private DocumentDto? Document { get; set; }
+    private IReadOnlyList<StruckContentDto> Struck { get; set; } = [];
+    private PageError? LoadError { get; set; }
+    private string? CopyFeedback { get; set; }
+    private bool Loading { get; set; } = true;
+
+    protected override async Task OnParametersSetAsync() => await ParseAsync(force: false);
+
+    private async Task ParseAsync(bool force)
+    {
+        Loading = true;
+        CopyFeedback = null;
+        try
+        {
+            Parsed = await Documents.ParseAsync(DocumentId, force);
+            Struck = await Documents.ListStruckAsync(DocumentId);
+            Document = await Documents.GetAsync(DocumentId);
+            LoadError = null;
+        }
+        catch (NotFoundException)
+        {
+            // 文档确实不存在：给明确的话，别和解析失败混为一谈
+            Parsed = null;
+            LoadError = null;
+        }
+        catch (Exception ex)
+        {
+            // 解析/读取失败：把真实错误露出来，方便定位是文件损坏还是解析器不支持
+            Parsed = null;
+            LoadError = PageError.From(ex, "解析文档");
+        }
+        finally
+        {
+            Loading = false;
+        }
+    }
+
+    private async Task CopyPathAsync()
+    {
+        if (Document?.StoredPath is null)
+        {
+            return;
+        }
+
+        var absolute = Store.ResolveAbsolutePath(Document.StoredPath);
+
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", absolute);
+            CopyFeedback = $"已复制：{absolute}";
+        }
+        catch (Exception)
+        {
+            // 剪贴板不可用（非安全上下文/权限被拒）：把路径显示出来让用户手动复制
+            CopyFeedback = $"复制失败，请手动复制：{absolute}";
+        }
+    }
+
+    [Inject] private IJSRuntime JS { get; set; } = default!;
+}

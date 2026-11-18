@@ -1,0 +1,2109 @@
+@page "/tasks/{TaskId:guid}"
+@rendermode InteractiveServer
+@using Microsoft.AspNetCore.Http
+@using Microsoft.Extensions.DependencyInjection
+@inject ITaskService Tasks
+@inject IDocumentService Documents
+@inject IHandoffService HandoffService
+@inject IMilestoneService Milestones
+@inject IAgentLauncher Launcher
+@inject IReviewService Reviews
+@inject HumanTokenAccessor Tokens
+@inject IServiceScopeFactory ScopeFactory
+@inject IJSRuntime JS
+@inject NavigationManager Nav
+@implements IAsyncDisposable
+
+<PageTitle>任务 · 观复</PageTitle>
+
+@if (Loading && Context is null)
+{
+    <div class="wb-empty">加载中…</div>
+}
+else if (NotFound)
+{
+    <div class="wb-empty">任务不存在。<a href="/">返回</a></div>
+}
+else if (Context is null)
+{
+    @* 加载失败不等于不存在：把真实错误摆出来，别吞成「任务不存在」 *@
+    <ErrorNotice Error="LoadError" />
+    <div class="wb-empty">任务加载失败。<a href="/">返回</a></div>
+}
+else
+{
+    <div class="wb-page-head">
+        <div>
+            <a class="wb-back" href="/projects/@Context.Project.Id">← @Context.Project.Name</a>
+            <h1>
+                @Context.Task.Title
+                @if (Context.Task.IsArchived)
+                {
+                    <span class="wb-tag">已归档</span>
+                }
+            </h1>
+            <p class="wb-muted">
+                <span class="wb-chip @TaskTypes.CssClass(Context.Task.Type)">@TaskTypes.Name(Context.Task.Type)</span>
+                @if (!string.IsNullOrWhiteSpace(Context.Task.Key))
+                {
+                    <span> · </span>
+                    <span class="wb-chip">@Context.Task.Key</span>
+                }
+                @if (!string.IsNullOrWhiteSpace(Context.Task.Branch))
+                {
+                    <span> · </span>
+                    <span class="wb-chip @(Context.BranchReady ? "wb-chip-ok" : "wb-chip-warn")">⎇ @Context.Task.Branch</span>
+                }
+                <span> · </span>
+                <span class="wb-chip @UiText.StatusClass(Context.Task.Status)">@UiText.Status(Context.Task.Status)</span>
+                @if (!string.IsNullOrWhiteSpace(Context.Task.ClaimedBy))
+                {
+                    <span> · 持有者 @Context.Task.ClaimedBy</span>
+                }
+                @if (!string.IsNullOrWhiteSpace(Context.Task.WorkPath))
+                {
+                    // 工位一直显示 —— 活干完了租约会清掉，
+                    // 但「这活是在哪个目录干的」是这活的历史，不该跟着消失。
+                    <span> · </span>
+                    @if (IsMainCheckout)
+                    {
+                        <span class="wb-chip" title="@Context.Task.WorkPath">⌂ 主工作区</span>
+                    }
+                    else
+                    {
+                        <span class="wb-chip wb-chip-ok" title="@Context.Task.WorkPath">⌂ @System.IO.Path.GetFileName(Context.Task.WorkPath)</span>
+                    }
+                }
+                @if (!string.IsNullOrWhiteSpace(Context.Project.Branch))
+                {
+                    <span> · ⎇ @Context.Project.Branch</span>
+                }
+                @if (!string.IsNullOrWhiteSpace(Context.Project.HeadSha))
+                {
+                    <span> · 当前提交 @Context.Project.HeadSha[..Math.Min(8, Context.Project.HeadSha.Length)]</span>
+                }
+            </p>
+        </div>
+        <div class="wb-form-row">
+            <button class="wb-btn" disabled="@Loading" @onclick="() => ReloadAsync(syncInputs: true)">刷新</button>
+            <button class="wb-btn wb-btn-primary" disabled="@(Launching || Launched || !Gate.Authorized)"
+                    @onclick="LaunchAgentAsync">
+                @(Launching ? "启动中…" : Launched ? "已启动" : "启动 agent")
+            </button>
+        </div>
+    </div>
+
+    <ErrorNotice Error="LoadError" />
+    <ErrorNotice Error="Error" />
+
+    @if (!Gate.Authorized)
+    {
+        <div class="wb-panel">
+            <p class="wb-error">启动 agent 需要人工凭证 —— 这是执行外部命令的入口。</p>
+            <p class="wb-muted">
+                在本机打开观复时会自动获取；远程访问请从启动观复的控制台复制人工 token，粘贴到下面。
+            </p>
+            <div class="wb-form-row">
+                <input class="wb-input" type="password" placeholder="人工 token（控制台里那串）"
+                       @oninput="OnTokenInputChanged" />
+                <button class="wb-btn wb-btn-primary"
+                        disabled="@string.IsNullOrWhiteSpace(TokenInput)"
+                        @onclick="VerifyToken">验证</button>
+            </div>
+            @if (!string.IsNullOrWhiteSpace(Gate.Hint))
+            {
+                <p class="wb-hint">@Gate.Hint</p>
+            }
+        </div>
+    }
+
+    <div class="wb-detail-grid">
+        <div class="wb-detail-main">
+            @* 十一块面板一次铺开谁也看不过来 —— 按用途分页签，
+               一屏只留当前要看的那几块。页签跟着 URL 走，链接能直接发人。 *@
+            <div class="wb-tabs" role="tablist">
+                <button class="wb-tab @(ActiveTab == "plan" ? "wb-tab-active" : "")" role="tab"
+                        aria-selected="@(ActiveTab == "plan")" @onclick='() => GoTab("plan")'>
+                    进展
+                </button>
+                <button class="wb-tab @(ActiveTab == "docs" ? "wb-tab-active" : "")" role="tab"
+                        aria-selected="@(ActiveTab == "docs")" @onclick='() => GoTab("docs")'>
+                    文档 <span class="wb-count">@Context.Documents.Count</span>
+                </button>
+                <button class="wb-tab @(ActiveTab == "review" ? "wb-tab-active" : "")" role="tab"
+                        aria-selected="@(ActiveTab == "review")" @onclick='() => GoTab("review")'>
+                    评审
+                    @if (CurrentReview is not null)
+                    {
+                        <span class="wb-count">第 @CurrentReview.Round 轮</span>
+                    }
+                </button>
+                <button class="wb-tab @(ActiveTab == "deliver" ? "wb-tab-active" : "")" role="tab"
+                        aria-selected="@(ActiveTab == "deliver")" @onclick='() => GoTab("deliver")'>
+                    产出 <span class="wb-count">@(Context.Artifacts.Count + FileChangeItems.Count)</span>
+                </button>
+                <button class="wb-tab @(ActiveTab == "handoff" ? "wb-tab-active" : "")" role="tab"
+                        aria-selected="@(ActiveTab == "handoff")" @onclick='() => GoTab("handoff")'>
+                    交接
+                </button>
+                <button class="wb-tab @(ActiveTab == "log" ? "wb-tab-active" : "")" role="tab"
+                        aria-selected="@(ActiveTab == "log")" @onclick='() => GoTab("log")'>
+                    流水 <span class="wb-count">@Events.Count</span>
+                </button>
+            </div>
+
+            @if (ActiveTab == "plan")
+            {
+            <section class="wb-panel">
+                <h3>状态流转</h3>
+                <div class="wb-form-row">
+                    @foreach (var next in Context.AllowedTransitions)
+                    {
+                        <button class="wb-btn" disabled="@Busy" @onclick="() => ChangeStatusAsync(next)">→ @UiText.Status(next)</button>
+                    }
+                    @if (Context.AllowedTransitions.Count == 0)
+                    {
+                        <span class="wb-muted">当前状态没有可用的后续迁移。</span>
+                    }
+                </div>
+            </section>
+
+            <section class="wb-panel">
+                <h3>需求理解与开发计划</h3>
+                @if (Context.Plan is null)
+                {
+                    <p class="wb-muted">还没有计划。agent 回写开发计划后会显示在这里。</p>
+                }
+                else
+                {
+                    <p class="wb-muted">v@(Context.Plan.Version) · @(Context.Plan.Author ?? "未知作者") · @Context.Plan.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</p>
+                    @if (!string.IsNullOrWhiteSpace(Context.Plan.Background))
+                    {
+                        <h4>背景</h4>
+                        <p class="wb-pre">@Context.Plan.Background</p>
+                    }
+                    @if (!string.IsNullOrWhiteSpace(Context.Plan.Understanding))
+                    {
+                        <h4>需求理解</h4>
+                        <p class="wb-pre">@Context.Plan.Understanding</p>
+                    }
+                    @if (!string.IsNullOrWhiteSpace(Context.Plan.Breakdown))
+                    {
+                        <h4>任务拆解</h4>
+                        <p class="wb-pre">@Context.Plan.Breakdown</p>
+                    }
+                    @if (!string.IsNullOrWhiteSpace(Context.Plan.AcceptanceCriteria))
+                    {
+                        <h4>验收标准</h4>
+                        <p class="wb-pre">@Context.Plan.AcceptanceCriteria</p>
+                    }
+                    @if (!string.IsNullOrWhiteSpace(Context.Plan.Risks))
+                    {
+                        <h4>风险</h4>
+                        <p class="wb-pre">@Context.Plan.Risks</p>
+                    }
+                }
+            </section>
+            }
+            else if (ActiveTab == "docs")
+            {
+            <section class="wb-panel">
+                <h3>文档</h3>
+                <div class="wb-form-row">
+                    <InputFile OnChange="UploadAsync" multiple disabled="@Uploading" />
+                    <span class="wb-muted">可一次选多个 · PRD / 测试用例 / 接口文档等</span>
+                </div>
+
+                @if (UploadFailures.Count > 0)
+                {
+                    <p class="wb-error">有 @UploadFailures.Count 个文件没传上去：</p>
+                    <ul class="wb-plain-list">
+                        @foreach (var failure in UploadFailures)
+                        {
+                            <li>《@failure.FileName》—— @failure.Error</li>
+                        }
+                    </ul>
+                }
+
+                @if (Context.Documents.Count == 0)
+                {
+                    <p class="wb-muted">还没有文档。</p>
+                }
+                else
+                {
+                    <div class="wb-table-scroll">
+                        <table class="wb-table">
+                            <thead>
+                            <tr>
+                                <th>文件名</th>
+                                <th>类型</th>
+                                <th>大小</th>
+                                <th>解析</th>
+                                <th></th>
+                            </tr>
+                            </thead>
+                            <tbody>
+                            @foreach (var doc in Context.Documents)
+                            {
+                                <tr>
+                                    <td>@doc.FileName</td>
+                                    <td><span class="wb-chip">@doc.Kind</span></td>
+                                    <td>@(doc.SizeBytes / 1024) KB</td>
+                                    <td>
+                                        @if (doc.Parsed)
+                                        {
+                                            <span class="wb-tag wb-tag-ok">已解析</span>
+                                        }
+                                        else if (!string.IsNullOrWhiteSpace(doc.ParseError))
+                                        {
+                                            <span class="wb-tag wb-tag-danger" title="@doc.ParseError">失败</span>
+                                        }
+                                        else
+                                        {
+                                            <span class="wb-tag">未解析</span>
+                                        }
+                                    </td>
+                                    <td>
+                                        <a href="/documents/@doc.Id">详情</a>
+                                        <button class="wb-btn wb-btn-link" @onclick="() => ToggleDocumentAsync(doc.Id)">
+                                            @(IsDocumentExpanded(doc.Id) ? "收起" : "就地查看")
+                                        </button>
+                                    </td>
+                                </tr>
+                                @if (IsDocumentExpanded(doc.Id))
+                                {
+                                    <tr>
+                                        <td colspan="5">
+                                            <div class="wb-doc">
+                                                @if (DocumentOutline(doc.Id).Count > 0)
+                                                {
+                                                    <div class="wb-doc-outline">
+                                                        @foreach (var item in DocumentOutline(doc.Id))
+                                                        {
+                                                            <div style="padding-left: @(item.Level * 14)px">@item.Title</div>
+                                                        }
+                                                    </div>
+                                                }
+                                                <pre class="wb-pre">@DocumentText(doc.Id)</pre>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                }
+                            }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            </section>
+            }
+            else if (ActiveTab == "review")
+            {
+            <section class="wb-panel">
+                <div class="wb-card-head">
+                    <h3>评审</h3>
+                    @if (CurrentReview is not null)
+                    {
+                        <span class="wb-chip">第 @CurrentReview.Round 轮</span>
+                        <span class="wb-tag @(CurrentReview.Verdict == "Passed" ? "wb-tag-ok" : CurrentReview.Verdict == "Failed" ? "wb-tag-danger" : "")">
+                            @(CurrentReview.Verdict == "Passed" ? "通过" : CurrentReview.Verdict == "Failed" ? "不通过" : "评审中")
+                        </span>
+                        @if (!string.IsNullOrWhiteSpace(CurrentReview.CommitHash))
+                        {
+                            <span class="wb-chip wb-chip-muted" title="开轮时的仓库 HEAD">
+                                HEAD @CurrentReview.CommitHash[..Math.Min(8, CurrentReview.CommitHash.Length)]
+                            </span>
+                        }
+                        @* 分工的收尾：收尾的人要一眼看出「还差几条、哪条不通过、每条是谁说的」 *@
+                        <span class="wb-chip wb-chip-muted">
+                            已判 @(CurrentReview.Items.Count - CurrentReview.PendingCount)/@CurrentReview.Items.Count
+                            @if (CurrentReview.PendingCount > 0)
+                            {
+                                <text> · 还差 @CurrentReview.PendingCount 条</text>
+                            }
+                            @if (CurrentReview.FailedCount > 0)
+                            {
+                                <text> · @CurrentReview.FailedCount 条不通过</text>
+                            }
+                        </span>
+                    }
+                    <button class="wb-btn" disabled="@Busy" @onclick="StartReviewAsync">开始一轮评审</button>
+                </div>
+
+                @if (CurrentReview is null)
+                {
+                    <p class="wb-muted">
+                        还没开过评审。开一轮后，agent 拿到评审包，逐维度评审再回写结论；
+                        七个维度全部通过才能结项。
+                    </p>
+                }
+                else
+                {
+                    <div class="wb-table-scroll">
+                        <table class="wb-table">
+                            <thead>
+                            <tr>
+                                <th class="wb-col-dimension">维度</th>
+                                <th class="wb-col-verdict">结论</th>
+                                <th class="wb-col-finding">发现</th>
+                                <th class="wb-col-reviewer">评审人</th>
+                                <th class="wb-col-writeback">回写</th>
+                            </tr>
+                            </thead>
+                            <tbody>
+                            @foreach (var item in CurrentReview.Items)
+                            {
+                                <tr>
+                                    <td>@item.DimensionName</td>
+                                    <td>
+                                        @switch (item.Status)
+                                        {
+                                            case "Passed":
+                                                <span class="wb-tag wb-tag-ok">通过</span>
+                                                break;
+                                            case "Failed":
+                                                <span class="wb-tag wb-tag-danger">不通过</span>
+                                                break;
+                                            case "Skipped":
+                                                <span class="wb-tag">跳过</span>
+                                                break;
+                                            default:
+                                                <span class="wb-tag wb-tag-warn">待评审</span>
+                                                break;
+                                        }
+                                    </td>
+                                    <td class="wb-muted">
+                                        @if (!string.IsNullOrWhiteSpace(item.Findings))
+                                        {
+                                            <span>@item.Findings</span>
+                                        }
+                                        @if (!string.IsNullOrWhiteSpace(item.Evidence))
+                                        {
+                                            <div class="wb-timeline-note">@item.Evidence</div>
+                                        }
+                                    </td>
+                                    <td class="wb-muted">
+                                        @if (!string.IsNullOrWhiteSpace(item.ClaimedBy))
+                                        {
+                                            <span class="wb-chip wb-chip-warn"
+                                                  title="@(item.ClaimedUntil is DateTimeOffset until ? $"认领到 {until:u}" : "已被认领")">
+                                                在评 · @item.ClaimedBy
+                                            </span>
+                                        }
+                                        @item.Reviewer
+                                    </td>
+                                    <td>
+                                        @* 七个维度每行都摆「输入框 + 三个按钮」= 一屏全是重复的表单控件。
+                                           只给还没判的维度摆；判过的收成一个「改结论」入口。 *@
+                                        @if (IsOpenDimension(item))
+                                        {
+                                            <div class="wb-form-row">
+                                                <input class="wb-input" placeholder="发现 / 跳过理由"
+                                                       @bind:get="GetReviewFindings(item.Dimension)"
+                                                       @bind:set="v => SetReviewFindings(item.Dimension, v)"
+                                                       @bind:event="oninput" />
+                                            </div>
+                                            <div class="wb-form-row">
+                                                <button class="wb-btn" disabled="@Busy"
+                                                        @onclick="() => SubmitDimensionAsync(item.Dimension, true, false)">通过</button>
+                                                <button class="wb-btn wb-btn-danger" disabled="@Busy"
+                                                        @onclick="() => SubmitDimensionAsync(item.Dimension, false, false)">不通过</button>
+                                                <button class="wb-btn" disabled="@Busy"
+                                                        @onclick="() => SubmitDimensionAsync(item.Dimension, false, true)">跳过</button>
+                                            </div>
+                                        }
+                                        else
+                                        {
+                                            <button class="wb-btn wb-btn-link" disabled="@Busy"
+                                                    @onclick="() => OpenDimension(item)">改结论</button>
+                                        }
+                                    </td>
+                                </tr>
+                            }
+                            </tbody>
+                        </table>
+                    </div>
+                    <p class="wb-hint">跳过 = 该维度不适用，必须写理由，每轮最多跳 2 个。</p>
+
+                    @if (SpecItems.Count > 0)
+                    {
+                        <h4>项目规约（完成定义）逐条判定</h4>
+                        <p class="wb-hint">
+                            维度是通用的，规约是这个项目特有的 —— 完成定义一条一条判，
+                            没判完<strong>不许结项</strong>。
+                        </p>
+                        <div class="wb-table-scroll">
+                            <table class="wb-table">
+                                <thead>
+                                <tr>
+                                    <th class="wb-col-dimension">完成定义</th>
+                                    <th class="wb-col-verdict">判定</th>
+                                    <th class="wb-col-finding">说明</th>
+                                    <th class="wb-col-reviewer">判定人</th>
+                                    <th class="wb-col-writeback">回写</th>
+                                </tr>
+                                </thead>
+                                <tbody>
+                                @foreach (var item in SpecItems)
+                                {
+                                    <tr>
+                                        <td>
+                                            @item.Text
+                                            @if (!string.IsNullOrWhiteSpace(item.Source))
+                                            {
+                                                <div class="wb-muted">@SpecSource.Label(item.Source)</div>
+                                            }
+                                        </td>
+                                        <td>
+                                            @switch (item.Status)
+                                            {
+                                                case "Passed":
+                                                    <span class="wb-tag wb-tag-ok">满足</span>
+                                                    break;
+                                                case "Failed":
+                                                    <span class="wb-tag wb-tag-danger">不满足</span>
+                                                    break;
+                                                case "Skipped":
+                                                    <span class="wb-tag">不适用</span>
+                                                    break;
+                                                default:
+                                                    <span class="wb-tag wb-tag-warn">待判定</span>
+                                                    break;
+                                            }
+                                        </td>
+                                        <td class="wb-muted">@item.Note</td>
+                                        <td class="wb-muted">
+                                            @if (!string.IsNullOrWhiteSpace(item.ClaimedBy))
+                                            {
+                                                <span class="wb-chip wb-chip-warn"
+                                                      title="@(item.ClaimedUntil is DateTimeOffset until ? $"认领到 {until:u}" : "已被认领")">
+                                                    在判 · @item.ClaimedBy
+                                                </span>
+                                            }
+                                            @item.Reviewer
+                                        </td>
+                                        <td>
+                                            <div class="wb-form-row">
+                                                <input class="wb-input" placeholder="说明（不适用必填）"
+                                                       @bind:get="GetSpecNote(item.ItemKey)"
+                                                       @bind:set="v => SetSpecNote(item.ItemKey, v)"
+                                                       @bind:event="oninput" />
+                                            </div>
+                                            <div class="wb-form-row">
+                                                <button class="wb-btn" disabled="@Busy"
+                                                        @onclick="() => SubmitSpecVerdictAsync(item.Text, true, false)">满足</button>
+                                                <button class="wb-btn wb-btn-danger" disabled="@Busy"
+                                                        @onclick="() => SubmitSpecVerdictAsync(item.Text, false, false)">不满足</button>
+                                                <button class="wb-btn" disabled="@Busy"
+                                                        @onclick="() => SubmitSpecVerdictAsync(item.Text, false, true)">不适用</button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+
+                    @if (ReviewHistory.Count > 1)
+                    {
+                        <h4>历史轮次</h4>
+                        <div class="wb-form-row">
+                            @foreach (var round in ReviewHistory.Skip(1).Reverse())
+                            {
+                                <span class="wb-chip">
+                                    第 @round.Round 轮 · @(round.Verdict == "Passed" ? "通过" : round.Verdict == "Failed" ? "不通过" : "评审中")
+                                    @if (!string.IsNullOrWhiteSpace(round.CommitHash))
+                                    {
+                                        <span> · @round.CommitHash[..Math.Min(8, round.CommitHash.Length)]</span>
+                                    }
+                                </span>
+                            }
+                        </div>
+                    }
+                }
+            </section>
+            }
+            else if (ActiveTab == "deliver")
+            {
+            <section class="wb-panel">
+                <h3>登记的产物</h3>
+                @if (Context.Artifacts.Count == 0)
+                {
+                    <p class="wb-muted">还没有产物。</p>
+                }
+                else
+                {
+                    @foreach (var artifact in Context.Artifacts)
+                    {
+                        <div class="wb-artifact">
+                            <div class="wb-card-head">
+                                <strong>@artifact.Title</strong>
+                                <span class="wb-chip">@artifact.Type</span>
+                                @if (!string.IsNullOrWhiteSpace(artifact.CommitSha))
+                                {
+                                    <span class="wb-chip wb-chip-muted">@artifact.CommitSha[..Math.Min(8, artifact.CommitSha.Length)]</span>
+                                }
+                            </div>
+                            @if (!string.IsNullOrWhiteSpace(artifact.Content))
+                            {
+                                <button class="wb-btn wb-btn-link" @onclick="() => ToggleArtifact(artifact.Id)">
+                                    @(IsArtifactExpanded(artifact.Id) ? "收起内容" : "查看内容")
+                                </button>
+                            }
+                        </div>
+                        @if (IsArtifactExpanded(artifact.Id) && !string.IsNullOrWhiteSpace(artifact.Content))
+                        {
+                            <div class="wb-doc">
+                                @if (MarkdownRenderer.LooksLikeMarkdown(artifact.Content))
+                                {
+                                    @((MarkupString)MarkdownRenderer.ToHtml(artifact.Content))
+                                }
+                                else
+                                {
+                                    <pre class="wb-pre">@artifact.Content</pre>
+                                }
+                            </div>
+                        }
+                    }
+                }
+            </section>
+
+            <section class="wb-panel">
+                <div class="wb-card-head">
+                    <h3>代码改动</h3>
+                    <span class="wb-muted">@FileChangeItems.Count 个 · 观复自己从 git 数的</span>
+                </div>
+                @if (FileChangeItems.Count == 0)
+                {
+                    <p class="wb-muted">还没有文件改动记录。提交代码或推进到评审后会自动采集。</p>
+                }
+                else
+                {
+                    <div class="wb-table-scroll">
+                        <table class="wb-table">
+                            <thead>
+                            <tr><th>文件</th><th>类型</th><th>增删</th><th>提交</th><th>时间</th></tr>
+                            </thead>
+                            <tbody>
+                            @foreach (var change in FileChangeItems)
+                            {
+                                <tr>
+                                    <td>
+                                        <code>@change.Path</code>
+                                        @if (!string.IsNullOrWhiteSpace(change.OldPath))
+                                        {
+                                            <div class="wb-muted">原：@change.OldPath</div>
+                                        }
+                                    </td>
+                                    <td><span class="wb-chip">@UiText.ChangeKind(change.ChangeKind)</span></td>
+                                    <td class="wb-muted">+@change.LinesAdded / -@change.LinesDeleted</td>
+                                    <td class="wb-muted">
+                                        @(change.CommitSha is null ? "未提交" : change.CommitSha[..Math.Min(8, change.CommitSha.Length)])
+                                    </td>
+                                    <td class="wb-muted">@change.CreatedAt.ToLocalTime().ToString("MM-dd HH:mm")</td>
+                                </tr>
+                            }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            </section>
+            }
+            else if (ActiveTab == "handoff")
+            {
+            <section class="wb-panel">
+                <div class="wb-card-head">
+                    <h3>交接包</h3>
+                    <span class="wb-muted">接手的人一次拿全 · 结构化事实，不编故事</span>
+                </div>
+
+                @if (Handoff is null)
+                {
+                    <p class="wb-muted">交接包还没加载。</p>
+                }
+                else
+                {
+                    <div class="wb-table-scroll">
+                        <table class="wb-table">
+                            <thead>
+                            <tr>
+                                <th class="wb-col-dimension">项</th>
+                                <th>内容</th>
+                            </tr>
+                            </thead>
+                            <tbody>
+                            <tr>
+                                <td>上一个是谁</td>
+                                <td>
+                                    @if (!string.IsNullOrWhiteSpace(Handoff.Handoff?.PreviousHolder))
+                                    {
+                                        <span class="wb-chip wb-chip-agent">@Handoff.Handoff!.PreviousHolder</span>
+                                        @if (Handoff.Handoff.At is DateTimeOffset at)
+                                        {
+                                            <span class="wb-muted">@at.ToLocalTime().ToString("MM-dd HH:mm") 交出</span>
+                                        }
+                                    }
+                                    else
+                                    {
+                                        <span class="wb-muted">没有上一个 —— 这个活还没转过手。</span>
+                                    }
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>为什么交出来</td>
+                                <td>
+                                    @if (!string.IsNullOrWhiteSpace(Handoff.Handoff?.Reason))
+                                    {
+                                        @Handoff.Handoff!.Reason
+                                    }
+                                    else
+                                    {
+                                        <span class="wb-muted">他没写理由 —— 接手的人得自己问。</span>
+                                    }
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>现在在谁手上</td>
+                                <td>
+                                    @if (!string.IsNullOrWhiteSpace(Handoff.Task.ClaimedBy))
+                                    {
+                                        <span class="wb-chip wb-chip-agent">@Handoff.Task.ClaimedBy</span>
+                                        @if (Handoff.Task.LeaseExpiresAt is DateTimeOffset lease)
+                                        {
+                                            <span class="wb-muted">租约到 @lease.ToLocalTime().ToString("MM-dd HH:mm")</span>
+                                        }
+                                    }
+                                    else
+                                    {
+                                        <span class="wb-muted">没人持有 —— 接手的人可以直接领。</span>
+                                    }
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>工位</td>
+                                <td>
+                                    @if (!string.IsNullOrWhiteSpace(Handoff.Station?.EffectiveWorkPath))
+                                    {
+                                        <code>@Handoff.Station!.EffectiveWorkPath</code>
+                                        @if (Handoff.Station.Isolated)
+                                        {
+                                            <span class="wb-chip wb-chip-ok">独立工位</span>
+                                        }
+                                        else
+                                        {
+                                            <span class="wb-chip wb-chip-warn">主工作区（共享）</span>
+                                        }
+                                    }
+                                    else
+                                    {
+                                        <span class="wb-muted">项目没绑仓库。</span>
+                                    }
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>分支 / HEAD</td>
+                                <td>
+                                    <span>@(Handoff.Project.Branch ?? "未知")</span>
+                                    @if (!string.IsNullOrWhiteSpace(Handoff.Project.HeadSha))
+                                    {
+                                        <span class="wb-muted">· @Handoff.Project.HeadSha[..Math.Min(8, Handoff.Project.HeadSha.Length)]</span>
+                                    }
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>目标</td>
+                                <td>
+                                    @if (!string.IsNullOrWhiteSpace(Handoff.Spec?.Purpose))
+                                    {
+                                        @Handoff.Spec!.Purpose
+                                    }
+                                    else
+                                    {
+                                        <span class="wb-muted">项目还没填目标。</span>
+                                    }
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>完成定义</td>
+                                <td>
+                                    @if (Handoff.Spec?.DefinitionOfDone is { Count: > 0 } dod)
+                                    {
+                                        <ul class="wb-plain-list">
+                                            @foreach (var item in dod)
+                                            {
+                                                <li>@item</li>
+                                            }
+                                        </ul>
+                                    }
+                                    else
+                                    {
+                                        <span class="wb-muted">还没填完成定义。</span>
+                                    }
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>测试命令</td>
+                                <td>
+                                    @if (!string.IsNullOrWhiteSpace(Handoff.Spec?.TestCommand))
+                                    {
+                                        <code>@Handoff.Spec!.TestCommand</code>
+                                    }
+                                    else
+                                    {
+                                        <span class="wb-muted">没定。</span>
+                                    }
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>文档 / 产物</td>
+                                <td>
+                                    <span class="wb-muted">@Handoff.Documents.Count 个文档 · @Handoff.Artifacts.Count 个产物</span>
+                                    @if (Handoff.LastTestResult is { } test)
+                                    {
+                                        <span class="wb-muted">
+                                            · 最近测试 @test.Passed/@test.Total 通过
+                                            @if (test.Coverage is double cover)
+                                            {
+                                                <text> · 覆盖率 @cover.ToString("P1")</text>
+                                            }
+                                        </span>
+                                    }
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>评审</td>
+                                <td>
+                                    @if (Handoff.Review is { } review)
+                                    {
+                                        <span class="wb-chip">第 @review.Round 轮</span>
+                                        <span class="wb-chip @(review.Verdict == "Passed" ? "wb-chip-ok" : review.Verdict == "Failed" ? "wb-chip-danger" : "")">
+                                            @(review.Verdict == "Passed" ? "通过" : review.Verdict == "Failed" ? "不通过" : "评审中")
+                                        </span>
+                                        <span class="wb-muted">
+                                            @review.Items.Count(i => i.Status == "Pending") 个维度还没结论
+                                        </span>
+                                    }
+                                    else
+                                    {
+                                        <span class="wb-muted">还没开过评审。</span>
+                                    }
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>接下来能去哪</td>
+                                <td>
+                                    @if (Handoff.AllowedTransitions.Count > 0)
+                                    {
+                                        @string.Join("、", Handoff.AllowedTransitions.Select(t => UiText.Status(t)))
+                                    }
+                                    else
+                                    {
+                                        <span class="wb-muted">当前状态没有可去的地方。</span>
+                                    }
+                                </td>
+                            </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    @if (Handoff.HandoffChain.Count > 0)
+                    {
+                        <h4>交接链</h4>
+                        <p class="wb-hint">这个活转过几次手 —— 每次谁交给谁、为什么。</p>
+                        <div class="wb-table-scroll">
+                            <table class="wb-table">
+                                <thead>
+                                <tr>
+                                    <th>时间</th>
+                                    <th>谁交出去</th>
+                                    <th>谁接手</th>
+                                    <th>为什么</th>
+                                </tr>
+                                </thead>
+                                <tbody>
+                                @foreach (var step in Handoff.HandoffChain)
+                                {
+                                    <tr>
+                                        <td class="wb-muted">@step.At.ToLocalTime().ToString("MM-dd HH:mm")</td>
+                                        <td>@(step.From ?? "—")</td>
+                                        <td>@(step.To ?? "还没人接手")</td>
+                                        <td class="wb-muted">
+                                            @if (!string.IsNullOrWhiteSpace(step.Reason))
+                                            {
+                                                @step.Reason
+                                            }
+                                            else
+                                            {
+                                                <text>没写理由</text>
+                                            }
+                                        </td>
+                                    </tr>
+                                }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+
+                    @if (Handoff.Plan is { } plan)
+                    {
+                        <h4>最新开发计划（第 @plan.Version 版）</h4>
+                        @if (!string.IsNullOrWhiteSpace(plan.Understanding))
+                        {
+                            <p class="wb-pre">@plan.Understanding</p>
+                        }
+                        @if (!string.IsNullOrWhiteSpace(plan.Breakdown))
+                        {
+                            <p class="wb-pre">@plan.Breakdown</p>
+                        }
+                    }
+                }
+            </section>
+            }
+            else
+            {
+            <section class="wb-panel">
+                <div class="wb-card-head">
+                    <h3>会话</h3>
+                    <span class="wb-muted">@SessionItems.Count 个 · 谁在这个任务上干过活</span>
+                </div>
+                @if (SessionItems.Count == 0)
+                {
+                    <p class="wb-muted">还没有 agent 会话接这个任务。</p>
+                }
+                else
+                {
+                    <div class="wb-table-scroll">
+                        <table class="wb-table">
+                            <thead>
+                            <tr><th>agent</th><th>工作目录</th><th>开始</th><th>最后动静</th></tr>
+                            </thead>
+                            <tbody>
+                            @foreach (var session in SessionItems)
+                            {
+                                <tr>
+                                    <td><span class="wb-chip wb-chip-agent">@session.AgentId</span></td>
+                                    <td class="wb-muted"><code>@session.RepoPath</code></td>
+                                    <td class="wb-muted">@session.StartedAt.ToLocalTime().ToString("MM-dd HH:mm")</td>
+                                    <td class="wb-muted">@session.LastSeenAt.ToLocalTime().ToString("MM-dd HH:mm")</td>
+                                </tr>
+                            }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            </section>
+
+            <section class="wb-panel">
+                <div class="wb-card-head">
+                    <h3>事件时间线</h3>
+                    <span class="wb-muted">@Events.Count 条 · 新到旧</span>
+                </div>
+                @if (Events.Count == 0)
+                {
+                    <p class="wb-muted">没有事件。</p>
+                }
+                else
+                {
+                    <ul class="wb-timeline">
+                        @foreach (var evt in Events)
+                        {
+                            <li>
+                                <div class="wb-timeline-when" title="@(evt.OccurredAt ?? evt.CreatedAt).ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")">
+                                    <span class="@EventColorClass(evt.EventType)">@EventIcon(evt.EventType)</span>
+                                    @Relative(evt.OccurredAt ?? evt.CreatedAt)
+                                </div>
+                                <div class="wb-timeline-what">
+                                    <span class="wb-chip @EventColorClass(evt.EventType)">
+                                        @EventLabel(evt.EventType)
+                                    </span>
+                                    @if (evt.From is not null && evt.To is not null && evt.From != evt.To)
+                                    {
+                                        <span>@UiText.Status(evt.From) → @UiText.Status(evt.To)</span>
+                                    }
+                                    else if (evt.To is not null)
+                                    {
+                                        <span>@UiText.Status(evt.To)</span>
+                                    }
+                                    <span class="wb-chip wb-chip-muted">@UiText.EventSource(evt.Source)</span>
+                                    @if (!string.IsNullOrWhiteSpace(evt.Actor))
+                                    {
+                                        <span class="wb-chip wb-chip-agent">@evt.Actor</span>
+                                    }
+                                    @if (evt.OccurredAt is not null)
+                                    {
+                                        @* 补报：活是那时候干的，观复是现在才知道的 —— 两个时间都要摆出来 *@
+                                        <span class="wb-chip wb-chip-warn">补报</span>
+                                        <span class="wb-muted">
+                                            实际发生于 @evt.OccurredAt.Value.ToLocalTime().ToString("MM-dd HH:mm")
+                                            · 记录于 @evt.CreatedAt.ToLocalTime().ToString("MM-dd HH:mm")
+                                        </span>
+                                    }
+                                </div>
+                                @if (!string.IsNullOrWhiteSpace(evt.Note))
+                                {
+                                    <div class="wb-timeline-note">@evt.Note</div>
+                                }
+                                @if (!string.IsNullOrWhiteSpace(evt.Payload))
+                                {
+                                    <button class="wb-btn wb-btn-link" @onclick="() => ToggleEventPayload(evt.Id)">
+                                        @(IsEventPayloadExpanded(evt.Id) ? "收起原始数据" : "查看原始数据")
+                                    </button>
+                                    @if (IsEventPayloadExpanded(evt.Id))
+                                    {
+                                        <pre class="wb-pre">@evt.Payload</pre>
+                                    }
+                                }
+                            </li>
+                        }
+                    </ul>
+                }
+            </section>
+            }
+        </div>
+
+        <aside class="wb-detail-side">
+            @* 侧栏三块合成一块 —— 都是任务属性，分成三个面板只是多两道框。 *@
+            <section class="wb-panel">
+                <h3>任务属性</h3>
+
+                <h4>用量</h4>
+                @if (Usage is not null)
+                {
+                    <div class="wb-muted">
+                        工具调用 @Usage.ToolCalls 次（@Usage.UniqueTools 种工具）·
+                        事件 @Usage.Events 条
+                        @if (Usage.LeaseMinutes > 0)
+                        {
+                            <text> · 租约 @Usage.LeaseMinutes 分钟</text>
+                        }
+                    </div>
+                    @if (Usage.CallBudget > 0)
+                    {
+                        <div class="wb-muted">调用上限 @Usage.CallBudget 次（超了就停）</div>
+                    }
+                }
+                else
+                {
+                    <div class="wb-muted">用量统计还没加载。</div>
+                }
+
+                <h4>工位</h4>
+                @if (Context.Station is { } station)
+                {
+                    @if (station.MainCheckoutAvailable)
+                    {
+                        <div class="wb-muted">主工作区空着，可以直接用。</div>
+                    }
+                    else
+                    {
+                        <div class="wb-muted">
+                            主工作区被 @station.MainCheckoutHolder 占着
+                            @if (!string.IsNullOrWhiteSpace(station.MainCheckoutTaskKey))
+                            {
+                                <text>（@station.MainCheckoutTaskKey）</text>
+                            }
+                            ，要并行就得另开一个。
+                        </div>
+                    }
+
+                    @if (!string.IsNullOrWhiteSpace(station.SuggestedWorktree))
+                    {
+                        <div class="wb-muted">建议的独立工位：</div>
+                        <pre class="wb-pre">@station.SuggestedWorktree</pre>
+                        @if (station.SetupCommands is { Count: > 0 })
+                        {
+                            <pre class="wb-pre">@string.Join("\n", station.SetupCommands)</pre>
+                        }
+                    }
+
+                    @* 活干完了 → 那个工位该拆了。观复不替 agent 删目录，只给命令。 *@
+                    @if (IsFinished && !string.IsNullOrWhiteSpace(Context.Task.WorkPath)
+                        && !string.IsNullOrWhiteSpace(Context.Project.RepoPath))
+                    {
+                        <div class="wb-muted">活干完了，这个工位可以收了：</div>
+                        <pre class="wb-pre">git -C @Context.Project.RepoPath worktree remove @Context.Task.WorkPath</pre>
+                    }
+                }
+                else
+                {
+                    <div class="wb-muted">项目没绑仓库，没有文件系统面。</div>
+                }
+
+                <h4>迭代版本</h4>
+                <div class="wb-field-row">
+                    <select class="wb-input" @bind="SelectedMilestoneId" @bind:after="AssignMilestoneAsync">
+                        <option value="">不在任何迭代版本</option>
+                        @foreach (var m in MilestoneItems)
+                        {
+                            <option value="@m.Id">@m.Name（@m.DoneTasks/@m.TotalTasks）</option>
+                        }
+                    </select>
+                </div>
+                @if (MilestoneItems.Count == 0)
+                {
+                    <p class="wb-muted">项目还没有迭代版本，去项目页的「迭代版本」页签添加。</p>
+                }
+
+                <h4>分派与归档</h4>
+                <div class="wb-field-row">
+                    <label class="wb-label">负责人</label>
+                    <input class="wb-input" placeholder="人名或 agent id" @bind="AssigneeInput" @bind:event="oninput" />
+                </div>
+                <div class="wb-field-row">
+                    <label class="wb-label">优先级</label>
+                    <select class="wb-input" @bind="PriorityInput">
+                        <option value="Low">低</option>
+                        <option value="Normal">普通</option>
+                        <option value="High">高</option>
+                        <option value="Critical">紧急</option>
+                    </select>
+                </div>
+                <div class="wb-field-row">
+                    <label class="wb-label">截止日</label>
+                    <input class="wb-input" type="datetime-local" value="@DueInput"
+                           @onchange="e => DueInput = e.Value?.ToString() ?? string.Empty" />
+                </div>
+                <div class="wb-field-row wb-field-row-act">
+                    <div class="wb-field-ctl">
+                        <button class="wb-btn" disabled="@Busy" @onclick="SaveAssignmentAsync">保存分派</button>
+                        <button class="wb-btn" disabled="@Busy" @onclick="ToggleArchiveAsync">
+                            @(Context.Task.IsArchived ? "取消归档" : "归档")
+                        </button>
+                    </div>
+                </div>
+                <p class="wb-muted">
+                    当前：@(string.IsNullOrWhiteSpace(Context.Task.Assignee) ? "未分派" : Context.Task.Assignee)
+                    · @UiText.Priority(Context.Task.Priority)
+                    @if (Context.Task.DueAt is not null)
+                    {
+                        <span> · 截止 @Context.Task.DueAt.Value.ToLocalTime().ToString("MM-dd HH:mm")</span>
+                    }
+                </p>
+                <p class="wb-hint">归档不是删除：流水、产物、评审全都留着，只是默认不在列表里出现。</p>
+
+                <h4>类型与分支</h4>
+                <div class="wb-field-row">
+                    <label class="wb-label">类型</label>
+                    <select class="wb-input" @bind="SelectedType" @bind:after="ChangeTypeAsync">
+                        <option value="requirement">需求</option>
+                        <option value="bug">缺陷</option>
+                        <option value="optimization">优化</option>
+                    </select>
+                </div>
+                <p class="wb-muted">编号 @Context.Task.Key 由类型决定（需求 REQ- / 缺陷 BUG- / 优化 OPT-），改类型不改编号。</p>
+
+                <div class="wb-field-row">
+                    <label class="wb-label">绑定分支</label>
+                    <div class="wb-field-ctl">
+                        <input class="wb-input" @bind="BranchInput" placeholder="如 feature/login" />
+                        <button class="wb-btn" disabled="@Busy" @onclick="BindBranchAsync">绑定</button>
+                    </div>
+                </div>
+                <p class="wb-muted">
+                    仓库当前分支：<code>@(Context.CurrentBranch ?? "未知")</code>
+                </p>
+                @if (!string.IsNullOrWhiteSpace(Context.Task.Branch) && !Context.BranchReady)
+                {
+                    <p class="wb-error">
+                        当前不在绑定分支「@Context.Task.Branch」上，这个任务不会运行。
+                    </p>
+                }
+                else if (!string.IsNullOrWhiteSpace(Context.Task.Branch))
+                {
+                    <p class="wb-muted">分支就绪，可以运行。</p>
+                }
+                else
+                {
+                    <p class="wb-muted">没绑分支，不受分支限制。</p>
+                }
+            </section>
+        </aside>
+    </div>
+}
+
+@code {
+    /// <summary>
+    /// 页签跟着 URL 走 —— 「/tasks/{id}?tab=review」能直接落到评审那一页，
+    /// 链接也能发给人。默认是「进展」。
+    /// </summary>
+    [SupplyParameterFromQuery(Name = "tab")]
+    public string? Tab { get; set; }
+
+    private string ActiveTab => Tab switch
+    {
+        "docs" => "docs",
+        "review" => "review",
+        "deliver" => "deliver",
+        "handoff" => "handoff",
+        "log" => "log",
+        _ => "plan"
+    };
+
+    /// <summary>已经加载过的任务。切页签也是参数变化，别顺手把数据重拉一遍。</summary>
+    private Guid? _loadedTaskId;
+
+    private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(15);
+
+    [Parameter] public Guid TaskId { get; set; }
+
+    private TaskContextDto? Context { get; set; }
+    private IReadOnlyList<MilestoneDto> MilestoneItems { get; set; } = [];
+    private ReviewRoundDto? CurrentReview { get; set; }
+    private IReadOnlyList<ReviewRoundDto> ReviewHistory { get; set; } = [];
+
+    /// <summary>项目规约（DoD）的逐条判定。</summary>
+    private IReadOnlyList<SpecItemDto> SpecItems { get; set; } = [];
+
+    /// <summary>这个任务的用量（工具调用次数等）。</summary>
+    private TaskUsageDto? Usage { get; set; }
+
+    /// <summary>交接包（切到「交接」页签时才拉）。</summary>
+    private HandoffPackDto? Handoff { get; set; }
+
+    /// <summary>逐条判定的说明（按条目键存）。</summary>
+    private readonly Dictionary<string, string> _specNotes = new(StringComparer.Ordinal);
+    private IReadOnlyList<StatusEventDto> Events { get; set; } = [];
+
+    /// <summary>产出文件。观复自己从 git 数的，不是 agent 自报的。</summary>
+    private IReadOnlyList<TaskFileChangeDto> FileChangeItems { get; set; } = [];
+
+    /// <summary>干过这个任务的 agent 会话。</summary>
+    private IReadOnlyList<AgentSessionDto> SessionItems { get; set; } = [];
+    private bool Loading { get; set; }
+    private bool NotFound { get; set; }
+    private bool Busy { get; set; }
+    private string SelectedMilestoneId { get; set; } = string.Empty;
+    private string SelectedType { get; set; } = "requirement";
+    private string BranchInput { get; set; } = string.Empty;
+    private string AssigneeInput { get; set; } = string.Empty;
+    private string PriorityInput { get; set; } = "Normal";
+    private string DueInput { get; set; } = string.Empty;
+    private bool Launching { get; set; }
+    private bool Launched { get; set; }
+    private PageError? Error { get; set; }
+    private PageError? LoadError { get; set; }
+    private bool Uploading { get; set; }
+    private IReadOnlyList<UploadFailure> UploadFailures { get; set; } = [];
+
+    /// <summary>一次最多传多少个文件。</summary>
+    private const int MaxUploadFiles = 50;
+
+    /// <summary>单个文件的大小上限。</summary>
+    private const long MaxUploadBytes = 50 * 1024 * 1024;
+
+    // ---- 人工凭证（启动 agent 是执行外部命令的入口，必须有人在场）----
+    private UiTokenGate Gate { get; set; } = default!;
+    private string TokenInput { get; set; } = string.Empty;
+
+    [CascadingParameter] public HttpContext? RequestContext { get; set; }
+
+    // 防重复：agent 不重复拉起，同一个文件不重复传
+    private readonly SubmitLatch _launches = new();
+    private readonly SubmitLatch _uploads = new();
+
+    // 页面上「就地查看」用：展开状态 + 解析结果缓存
+    private readonly HashSet<Guid> _expandedDocuments = new();
+    private readonly HashSet<Guid> _expandedArtifacts = new();
+    private readonly HashSet<Guid> _expandedEventPayloads = new();
+    private readonly Dictionary<Guid, string> _documentText = new();
+    private readonly Dictionary<Guid, IReadOnlyList<ParsedOutlineDto>> _documentOutline = new();
+
+    // 评审回写：每个维度独立的发现 / 跳过理由
+    private readonly Dictionary<string, string> _reviewFindings = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// 正在编辑结论的维度。
+    ///
+    /// 默认只展开「还没判」的维度 —— 判过的收成「改结论」入口，
+    /// 七个维度不会在屏幕上摆七套一模一样的控件。
+    /// </summary>
+    private readonly HashSet<string> _openDimensions = new(StringComparer.OrdinalIgnoreCase);
+
+    private CancellationTokenSource? _timerCts;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        Gate ??= new UiTokenGate(Tokens.Token);
+        Gate.AuthorizeFromRequest(RequestContext?.Request);
+
+        // 只在任务换了才重载：切页签也会重新 supply 参数，
+        // 顺手重拉会浪费六路查询，还会把人正在填的分派草稿冲掉。
+        if (_loadedTaskId != TaskId)
+        {
+            _loadedTaskId = TaskId;
+            await ReloadAsync(syncInputs: true);
+        }
+
+        // 交接包只有那一页用得上 —— 不切过去就不拉
+        if (ActiveTab == "handoff" && Handoff is null)
+        {
+            await LoadHandoffAsync();
+        }
+    }
+
+    /// <summary>拉交接包。</summary>
+    private async Task LoadHandoffAsync()
+    {
+        try
+        {
+            Handoff = await InScopeAsync(sp => sp.GetRequiredService<IHandoffService>().GetAsync(TaskId));
+        }
+        catch (Exception ex)
+        {
+            Error = PageError.From(ex, "加载交接包");
+        }
+    }
+
+    /// <summary>切页签。URL 是唯一真相 —— 深链能直接落到某一页。</summary>
+    private void GoTab(string tab)
+    {
+        if (tab == ActiveTab)
+        {
+            return;
+        }
+
+        Nav.NavigateTo($"/tasks/{TaskId}?tab={tab}", replace: true);
+    }
+
+    protected override Task OnAfterRenderAsync(bool firstRender)
+    {
+        // 只在交互阶段起定时器与自动取 token：预渲染实例用完就扔
+        if (firstRender)
+        {
+            _ = AcquireTokenAsync();
+            _timerCts = new CancellationTokenSource();
+            _ = RunRefreshTimerAsync(_timerCts.Token);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// 自动刷新。每 tick 独立 scope，组件销毁即停。
+    /// 不覆盖输入框（syncInputs: false）—— 人正在打字时不能把草稿冲掉。
+    /// </summary>
+    private async Task RunRefreshTimerAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(RefreshInterval);
+
+            while (await timer.WaitForNextTickAsync(cancellationToken))
+            {
+                await InvokeAsync(async () =>
+                {
+                    await ReloadAsync(syncInputs: false);
+                    StateHasChanged();
+                });
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // 组件被销毁，正常收尾
+        }
+        catch (ObjectDisposedException)
+        {
+            // 电路已经断了
+        }
+    }
+
+    /// <summary>
+    /// 每次查询独立 scope：并行加载时几路查询不能共用一个 DbContext
+    /// （"A second operation was started"），定时器也不能与页面事件共用。
+    /// </summary>
+    private async Task<T> InScopeAsync<T>(Func<IServiceProvider, Task<T>> action)
+    {
+        using var scope = ScopeFactory.CreateScope();
+        return await action(scope.ServiceProvider);
+    }
+
+    /// <summary>
+    /// 这个任务用的是项目主工作区（还是自己的 worktree）。
+    ///
+    /// 界面上要分得清：主工作区是**共享**的那一个（同一时刻只允许一个 agent 占），
+    /// 自己的 worktree 是隔离的 —— 两者的提示不一样。
+    /// </summary>
+    /// <summary>活已经干完（已完成 / 已取消）—— 工位可以收了。</summary>
+    private bool IsFinished =>
+        Context?.Task.Status is TaskStatus.Done or TaskStatus.Cancelled;
+
+    private bool IsMainCheckout =>
+        string.IsNullOrWhiteSpace(Context?.Task.WorkPath) ||
+        string.IsNullOrWhiteSpace(Context?.Project.RepoPath) ||
+        string.Equals(Context.Project.RepoPath, Context.Task.WorkPath, StringComparison.OrdinalIgnoreCase);
+
+    private async Task ReloadAsync(bool syncInputs)
+    {
+        Loading = true;
+
+        try
+        {
+            // 上下文先拿（里程碑查询需要 ProjectId），其余四路并行
+            Context = await InScopeAsync(sp => sp.GetRequiredService<ITaskService>().GetContextAsync(TaskId));
+            var projectId = Context.Task.ProjectId;
+
+            var milestonesTask = InScopeAsync(sp => sp.GetRequiredService<IMilestoneService>().ListAsync(projectId));
+            var currentReviewTask = InScopeAsync(sp => sp.GetRequiredService<IReviewService>().GetCurrentAsync(TaskId));
+            var reviewHistoryTask = InScopeAsync(sp => sp.GetRequiredService<IReviewService>().ListAsync(TaskId));
+            var eventsTask = InScopeAsync(sp => sp.GetRequiredService<ITaskService>().ListEventsAsync(TaskId, 100));
+            var fileChangesTask = InScopeAsync(sp => sp.GetRequiredService<IFileChangeService>().ListAsync(TaskId));
+            var sessionsTask = InScopeAsync(sp => sp.GetRequiredService<IAgentSessionService>().ListByTaskAsync(TaskId));
+            var specItemsTask = InScopeAsync(sp => sp.GetRequiredService<IReviewService>().GetSpecItemsAsync(TaskId));
+            var usageTask = InScopeAsync(sp => sp.GetRequiredService<ITaskUsageService>().GetTaskUsageAsync(TaskId));
+
+            await Task.WhenAll(
+                milestonesTask, currentReviewTask, reviewHistoryTask, eventsTask, fileChangesTask, sessionsTask,
+                specItemsTask, usageTask);
+
+            MilestoneItems = milestonesTask.Result;
+            CurrentReview = currentReviewTask.Result;
+            ReviewHistory = reviewHistoryTask.Result;
+            Events = eventsTask.Result;
+            FileChangeItems = fileChangesTask.Result;
+            SessionItems = sessionsTask.Result;
+            SpecItems = specItemsTask.Result;
+            Usage = usageTask.Result;
+
+            if (syncInputs)
+            {
+                SyncInputs();
+            }
+
+            NotFound = false;
+            LoadError = null;
+        }
+        catch (NotFoundException)
+        {
+            Context = null;
+            NotFound = true;
+        }
+        catch (Exception ex)
+        {
+            // 别让异常从初始化方法冒出去 —— 冒出去就是整页白屏。
+            // 业务异常（PageError.From）会原文展示，不再吞成「任务不存在」。
+            LoadError = PageError.From(ex, "加载任务");
+        }
+        finally
+        {
+            Loading = false;
+        }
+    }
+
+    private void SyncInputs()
+    {
+        if (Context is null)
+        {
+            return;
+        }
+
+        SelectedMilestoneId = Context.Task.MilestoneId?.ToString() ?? string.Empty;
+        SelectedType = Context.Task.Type switch
+        {
+            TaskType.Bug => "bug",
+            TaskType.Optimization => "optimization",
+            _ => "requirement"
+        };
+        BranchInput = Context.Task.Branch ?? string.Empty;
+        AssigneeInput = Context.Task.Assignee ?? string.Empty;
+        PriorityInput = Context.Task.Priority.ToString();
+        DueInput = Context.Task.DueAt?.ToLocalTime().ToString("yyyy-MM-ddTHH:mm") ?? string.Empty;
+    }
+
+    /// <summary>操作后的局部刷新：只重读上下文与事件，不动评审 / 里程碑。</summary>
+    private async Task RefreshContextAndEventsAsync()
+    {
+        try
+        {
+            var contextTask = InScopeAsync(sp => sp.GetRequiredService<ITaskService>().GetContextAsync(TaskId));
+            var eventsTask = InScopeAsync(sp => sp.GetRequiredService<ITaskService>().ListEventsAsync(TaskId, 100));
+            await Task.WhenAll(contextTask, eventsTask);
+            Context = contextTask.Result;
+            Events = eventsTask.Result;
+            SyncInputs();
+        }
+        catch (Exception ex)
+        {
+            LoadError = PageError.From(ex, "刷新任务");
+        }
+    }
+
+    private string GetSpecNote(string key) => _specNotes.TryGetValue(key, out var note) ? note : string.Empty;
+
+    private void SetSpecNote(string key, string value) => _specNotes[key] = value;
+
+    /// <summary>回写规约某一条的判定。</summary>
+    private async Task SubmitSpecVerdictAsync(string item, bool satisfied, bool skipped)
+    {
+        if (Busy)
+        {
+            return;
+        }
+
+        var note = GetSpecNote(TaskKeys.Normalize(item));
+
+        if (skipped && string.IsNullOrWhiteSpace(note))
+        {
+            Error = PageError.Simple("判定为「不适用」必须写明理由。");
+            return;
+        }
+
+        Busy = true;
+        Error = null;
+        StateHasChanged();
+
+        try
+        {
+            await InScopeAsync(sp => sp.GetRequiredService<IReviewService>()
+                .SubmitSpecVerdictAsync(TaskId, item, satisfied, note, "human"));
+
+            _specNotes.Remove(TaskKeys.Normalize(item));
+            await RefreshReviewsAndEventsAsync();
+        }
+        catch (Exception ex)
+        {
+            Error = PageError.From(ex, "回写规约判定");
+        }
+        finally
+        {
+            Busy = false;
+        }
+    }
+
+    /// <summary>评审操作后的局部刷新：只重读评审与事件。</summary>
+    private async Task RefreshReviewsAndEventsAsync()
+    {
+        try
+        {
+            var currentTask = InScopeAsync(sp => sp.GetRequiredService<IReviewService>().GetCurrentAsync(TaskId));
+            var historyTask = InScopeAsync(sp => sp.GetRequiredService<IReviewService>().ListAsync(TaskId));
+            var eventsTask = InScopeAsync(sp => sp.GetRequiredService<ITaskService>().ListEventsAsync(TaskId, 100));
+            var specItemsTask = InScopeAsync(sp => sp.GetRequiredService<IReviewService>().GetSpecItemsAsync(TaskId));
+            var usageTask = InScopeAsync(sp => sp.GetRequiredService<ITaskUsageService>().GetTaskUsageAsync(TaskId));
+            await Task.WhenAll(currentTask, historyTask, eventsTask, specItemsTask);
+            CurrentReview = currentTask.Result;
+            ReviewHistory = historyTask.Result;
+            Events = eventsTask.Result;
+            SpecItems = specItemsTask.Result;
+        }
+        catch (Exception ex)
+        {
+            LoadError = PageError.From(ex, "刷新评审");
+        }
+    }
+
+    // ---- 人工凭证 ----
+
+    private async Task AcquireTokenAsync()
+    {
+        if (Gate.Authorized)
+        {
+            return;
+        }
+
+        string? payload = null;
+
+        try
+        {
+            payload = await JS.InvokeAsync<string>("eval", ApprovalUiGuard.FetchTokenScript);
+        }
+        catch (JSException)
+        {
+            // 取不到就走粘贴流程
+        }
+        catch (InvalidOperationException)
+        {
+            // 预渲染阶段没有 JS 运行时
+        }
+
+        Gate.ApplyFetchResult(payload);
+        StateHasChanged();
+    }
+
+    private void OnTokenInputChanged(ChangeEventArgs args) =>
+        TokenInput = args.Value?.ToString() ?? string.Empty;
+
+    private void VerifyToken()
+    {
+        if (Gate.TryVerify(TokenInput))
+        {
+            TokenInput = string.Empty;
+        }
+    }
+
+    // ---- 评审回写 ----
+
+    /// <summary>
+    /// 这个维度的结论控件是否展开。
+    ///
+    /// 没判过的默认展开（正要填），判过的默认收起，点「改结论」才展开。
+    /// </summary>
+    private bool IsOpenDimension(ReviewItemDto item) =>
+        _openDimensions.Contains(item.Dimension)
+        || IsUndecided(item);
+
+    /// <summary>这个维度还没给结论。</summary>
+    private static bool IsUndecided(ReviewItemDto item) =>
+        item.Status is not ("Passed" or "Failed" or "Skipped");
+
+    private void OpenDimension(ReviewItemDto item)
+    {
+        _openDimensions.Add(item.Dimension);
+
+        // 已填过的理由带回来，省得重写一遍
+        if (!_reviewFindings.ContainsKey(item.Dimension) && !string.IsNullOrWhiteSpace(item.Findings))
+        {
+            _reviewFindings[item.Dimension] = item.Findings;
+        }
+    }
+
+    private string GetReviewFindings(string dimension) =>
+        _reviewFindings.TryGetValue(dimension, out var findings) ? findings : string.Empty;
+
+    private void SetReviewFindings(string dimension, string? value) => _reviewFindings[dimension] = value ?? string.Empty;
+
+    private async Task SubmitDimensionAsync(string dimension, bool passed, bool skipped)
+    {
+        if (Busy)
+        {
+            return;
+        }
+
+        var findings = GetReviewFindings(dimension);
+        if (skipped && string.IsNullOrWhiteSpace(findings))
+        {
+            Error = PageError.Simple("跳过必须写理由 —— 「本次改动不涉及该维度」要说清楚为什么。");
+            return;
+        }
+
+        Busy = true;
+        StateHasChanged();
+
+        try
+        {
+            await Reviews.SubmitAsync(
+                TaskId, dimension, passed,
+                string.IsNullOrWhiteSpace(findings) ? null : findings,
+                reviewer: "human", skipped: skipped);
+            _reviewFindings.Remove(dimension);
+            // 判完就收起来 —— 下一轮再点「改结论」才展开
+            _openDimensions.Remove(dimension);
+            Error = null;
+            await RefreshReviewsAndEventsAsync();
+        }
+        catch (Exception ex)
+        {
+            Error = PageError.From(ex, "回写评审维度");
+        }
+        finally
+        {
+            Busy = false;
+        }
+    }
+
+    // ---- 分派 / 归档 ----
+
+    private async Task SaveAssignmentAsync()
+    {
+        if (Busy)
+        {
+            return;
+        }
+
+        if (!Enum.TryParse<TaskPriority>(PriorityInput, ignoreCase: true, out var priority))
+        {
+            Error = PageError.Simple($"未知优先级: {PriorityInput}");
+            return;
+        }
+
+        DateTimeOffset? dueAt = null;
+        if (!string.IsNullOrWhiteSpace(DueInput))
+        {
+            if (!DateTimeOffset.TryParse(DueInput, out var parsedDue))
+            {
+                Error = PageError.Simple($"截止日格式不对: {DueInput}");
+                return;
+            }
+
+            dueAt = parsedDue;
+        }
+
+        Busy = true;
+        StateHasChanged();
+
+        try
+        {
+            await Tasks.SetAssignmentAsync(
+                TaskId,
+                string.IsNullOrWhiteSpace(AssigneeInput) ? null : AssigneeInput.Trim(),
+                priority, dueAt);
+            Error = null;
+            await RefreshContextAndEventsAsync();
+        }
+        catch (Exception ex)
+        {
+            Error = PageError.From(ex, "保存分派");
+        }
+        finally
+        {
+            Busy = false;
+        }
+    }
+
+    private async Task ToggleArchiveAsync()
+    {
+        if (Busy || Context is null)
+        {
+            return;
+        }
+
+        Busy = true;
+        StateHasChanged();
+
+        try
+        {
+            await Tasks.SetArchivedAsync(TaskId, !Context.Task.IsArchived);
+            Error = null;
+            await RefreshContextAndEventsAsync();
+        }
+        catch (Exception ex)
+        {
+            Error = PageError.From(ex, "归档任务");
+        }
+        finally
+        {
+            Busy = false;
+        }
+    }
+
+    // ---- 既有操作 ----
+
+    private async Task AssignMilestoneAsync()
+    {
+        Guid? milestoneId = Guid.TryParse(SelectedMilestoneId, out var parsed) ? parsed : null;
+
+        if (Busy)
+        {
+            return;
+        }
+
+        Busy = true;
+        StateHasChanged();
+
+        try
+        {
+            await Milestones.AssignTaskAsync(TaskId, milestoneId);
+            Error = null;
+            await RefreshContextAndEventsAsync();
+        }
+        catch (Exception ex)
+        {
+            Error = PageError.From(ex, "调整迭代版本");
+        }
+        finally
+        {
+            Busy = false;
+        }
+    }
+
+    private bool IsDocumentExpanded(Guid id) => _expandedDocuments.Contains(id);
+
+    private bool IsArtifactExpanded(Guid id) => _expandedArtifacts.Contains(id);
+
+    private bool IsEventPayloadExpanded(Guid id) => _expandedEventPayloads.Contains(id);
+
+    private void ToggleEventPayload(Guid id)
+    {
+        if (!_expandedEventPayloads.Add(id))
+        {
+            _expandedEventPayloads.Remove(id);
+        }
+    }
+
+    private void ToggleArtifact(Guid id)
+    {
+        if (!_expandedArtifacts.Add(id))
+        {
+            _expandedArtifacts.Remove(id);
+        }
+    }
+
+    private string DocumentText(Guid id) =>
+        _documentText.TryGetValue(id, out var text) ? text : "（读取中…）";
+
+    private IReadOnlyList<ParsedOutlineDto> DocumentOutline(Guid id) =>
+        _documentOutline.TryGetValue(id, out var outline) ? outline : [];
+
+    /// <summary>就地展开文档：按需解析，解析结果缓存住，翻回去不用再解析一遍。</summary>
+    private async Task ToggleDocumentAsync(Guid id)
+    {
+        if (!_expandedDocuments.Add(id))
+        {
+            _expandedDocuments.Remove(id);
+            return;
+        }
+
+        if (!_documentText.ContainsKey(id))
+        {
+            try
+            {
+                _documentOutline[id] = await Documents.GetOutlineAsync(id);
+                _documentText[id] = await Documents.GetTextAsync(id);
+            }
+            catch (Exception ex)
+            {
+                _documentText[id] = "读取失败: " + ex.Message;
+            }
+        }
+
+        StateHasChanged();
+    }
+
+    private async Task ChangeTypeAsync()
+    {
+        if (!TaskTypes.TryParse(SelectedType, out var type))
+        {
+            Error = PageError.Simple($"未知类型: {SelectedType}");
+            return;
+        }
+
+        if (Busy)
+        {
+            return;
+        }
+
+        Busy = true;
+        StateHasChanged();
+
+        try
+        {
+            await Tasks.SetTypeAsync(TaskId, type);
+            Error = null;
+            await RefreshContextAndEventsAsync();
+        }
+        catch (Exception ex)
+        {
+            Error = PageError.From(ex, "修改任务类型");
+        }
+        finally
+        {
+            Busy = false;
+        }
+    }
+
+    private async Task BindBranchAsync()
+    {
+        if (Busy)
+        {
+            return;
+        }
+
+        Busy = true;
+        StateHasChanged();
+
+        try
+        {
+            // 空串 = 解绑
+            await Tasks.BindBranchAsync(TaskId, string.IsNullOrWhiteSpace(BranchInput) ? null : BranchInput);
+            Error = null;
+            await RefreshContextAndEventsAsync();
+        }
+        catch (Exception ex)
+        {
+            Error = PageError.From(ex, "绑定分支");
+        }
+        finally
+        {
+            Busy = false;
+        }
+    }
+
+    private async Task StartReviewAsync()
+    {
+        if (Busy)
+        {
+            return;
+        }
+
+        Busy = true;
+
+        // 立刻把按钮置灰：Blazor 在 await 期间不重绘
+        StateHasChanged();
+
+        try
+        {
+            await Reviews.StartAsync(TaskId, "human");
+            Error = null;
+            await RefreshReviewsAndEventsAsync();
+        }
+        catch (Exception ex)
+        {
+            Error = PageError.From(ex, "开始评审");
+        }
+        finally
+        {
+            Busy = false;
+        }
+    }
+
+    private async Task LaunchAgentAsync()
+    {
+        // 启动 agent = 执行外部命令，必须有人在场
+        if (!Gate.Authorized)
+        {
+            Error = PageError.Simple(ApprovalUiGuard.MissingTokenMessage);
+            return;
+        }
+
+        // 连点两次：第二个事件到达时第一个可能还没跑完 ——
+        // 那就会拉起两个 agent 进程
+        if (Launching)
+        {
+            return;
+        }
+
+        // 已经启动过就不再来一次：Blazor 的事件是排队串行处理的，
+        // 等第二个事件被处理时，「启动中」标志早就复位了
+        var key = TaskId.ToString();
+        if (_launches.IsLatched(key))
+        {
+            Error = PageError.Simple("这个任务已经启动过 agent 了。要重跑请刷新页面。");
+            return;
+        }
+
+        _launches.TryLatch(key);
+        Launching = true;
+
+        // 立刻把按钮置灰：Blazor 在 await 期间不重绘
+        StateHasChanged();
+
+        try
+        {
+            var result = await Launcher.LaunchAsync(TaskId);
+
+            if (result.Ok)
+            {
+                Launched = true;
+                Error = PageError.Notice($"已拉起外部 agent（PID {result.ProcessId}）：{result.Command}");
+            }
+            else
+            {
+                // 没拉起来（分支不对、没配命令…）：把闩锁放掉，改好了还能再试
+                _launches.Release(key);
+                Error = PageError.Simple($"启动 agent 失败：{result.Error}");
+            }
+        }
+        catch (Exception ex)
+        {
+            _launches.Release(key);
+            Error = PageError.From(ex, "启动 agent");
+        }
+        finally
+        {
+            Launching = false;
+        }
+
+        await RefreshContextAndEventsAsync();
+    }
+
+    private async Task ChangeStatusAsync(string target)
+    {
+        if (Busy)
+        {
+            return;
+        }
+
+        Busy = true;
+        StateHasChanged();
+
+        try
+        {
+            if (!Enum.TryParse<TaskStatus>(target, ignoreCase: true, out var parsedTarget))
+            {
+                Error = PageError.Simple($"未知状态: {target}");
+                return;
+            }
+
+            await Tasks.ChangeStatusAsync(TaskId, parsedTarget, "人工操作", TaskEventSource.Human, "human");
+            Error = null;
+            await RefreshContextAndEventsAsync();
+        }
+        catch (Exception ex)
+        {
+            Error = PageError.From(ex, "修改任务状态");
+        }
+        finally
+        {
+            Busy = false;
+        }
+    }
+
+    private async Task UploadAsync(InputFileChangeEventArgs args)
+    {
+        // 连点两次：第二个事件到达时第一个可能还没跑完 ——
+        // 那就会把同一个文件存两遍
+        if (Uploading)
+        {
+            return;
+        }
+
+        IReadOnlyList<IBrowserFile> files;
+        try
+        {
+            files = args.GetMultipleFiles(MaxUploadFiles).ToList();
+        }
+        catch (InvalidOperationException)
+        {
+            Error = PageError.Simple($"一次最多传 {MaxUploadFiles} 个文件，请分批传。");
+            return;
+        }
+
+        var pending = new List<IBrowserFile>();
+        var duplicated = new List<string>();
+
+        foreach (var file in files)
+        {
+            var key = UploadKey(file);
+
+            // 同一个文件不重复传：Blazor 的事件排队处理，
+            // 「正在上传」标志在第二个事件被处理时早就复位了
+            if (_uploads.IsLatched(key))
+            {
+                duplicated.Add(file.Name);
+                continue;
+            }
+
+            _uploads.TryLatch(key);
+            pending.Add(file);
+        }
+
+        if (pending.Count == 0)
+        {
+            Error = PageError.Simple(duplicated.Count > 0
+                ? $"《{duplicated[0]}》已经传过了。"
+                : "没有选到文件。");
+            return;
+        }
+
+        Uploading = true;
+        UploadFailures = [];
+        StateHasChanged();
+
+        var failed = new List<UploadFailure>();
+        var uploaded = 0;
+
+        // 一个一个传：传砸的那个不影响后面的
+        foreach (var file in pending)
+        {
+            try
+            {
+                await using var stream = file.OpenReadStream(MaxUploadBytes);
+                await Documents.UploadAsync(TaskId, file.Name, stream);
+                uploaded++;
+            }
+            catch (Exception ex)
+            {
+                // 失败就放掉，好让人重传
+                _uploads.Release(UploadKey(file));
+                failed.Add(new UploadFailure(file.Name, PageError.From(ex, "上传文档").Message));
+            }
+        }
+
+        Uploading = false;
+        UploadFailures = failed;
+        Error = failed.Count == 0
+            ? null
+            : PageError.Simple($"{uploaded} 个传上去，{failed.Count} 个没传上去。");
+
+        await RefreshContextAndEventsAsync();
+    }
+
+    private sealed record UploadFailure(string FileName, string Error);
+
+    private static string UploadKey(IBrowserFile file) => $"{file.Name}:{file.Size}";
+
+    // ---- 事件时间线的展示 ----
+
+    private static string Relative(DateTimeOffset time)
+    {
+        var delta = DateTimeOffset.UtcNow - time;
+        if (delta.TotalSeconds < 60) return "刚刚";
+        if (delta.TotalHours < 1) return $"{(int)delta.TotalMinutes} 分钟前";
+        if (delta.TotalDays < 1) return $"{(int)delta.TotalHours} 小时前";
+        return $"{(int)delta.TotalDays} 天前";
+    }
+
+    private static string EventLabel(string? eventType) => eventType switch
+    {
+        TaskEventTypes.StatusChanged => "状态迁移",
+        TaskEventTypes.PlanSaved => "计划",
+        TaskEventTypes.ArtifactAdded => "产物",
+        TaskEventTypes.TestReported => "测试",
+        TaskEventTypes.DependencyAdded => "加依赖",
+        TaskEventTypes.DependencyRemoved => "删依赖",
+        TaskEventTypes.Assigned => "分派",
+        TaskEventTypes.Archived => "归档",
+        TaskEventTypes.Note => "备注",
+        TaskEventTypes.Claimed => "领取",
+        TaskEventTypes.Released => "释放",
+        TaskEventTypes.ReviewRoundOpened => "评审开轮",
+        TaskEventTypes.ReviewDimensionResult => "维度结论",
+        TaskEventTypes.ReviewRoundClosed => "评审结轮",
+        TaskEventTypes.AgentLaunched => "agent 启动",
+        TaskEventTypes.AgentExited => "agent 退出",
+        TaskEventTypes.MilestoneAssigned => "迭代",
+        TaskEventTypes.TypeChanged => "类型",
+        TaskEventTypes.BranchBound => "分支",
+        _ => eventType ?? "事件"
+    };
+
+    private static string EventIcon(string? eventType) => eventType switch
+    {
+        TaskEventTypes.StatusChanged => "⇄",
+        TaskEventTypes.PlanSaved => "≡",
+        TaskEventTypes.ArtifactAdded => "◆",
+        TaskEventTypes.TestReported => "✓",
+        TaskEventTypes.DependencyAdded or TaskEventTypes.DependencyRemoved => "↔",
+        TaskEventTypes.Assigned => "◎",
+        TaskEventTypes.Archived => "▣",
+        TaskEventTypes.Claimed or TaskEventTypes.Released => "●",
+        TaskEventTypes.ReviewRoundOpened => "◇",
+        TaskEventTypes.ReviewDimensionResult => "◈",
+        TaskEventTypes.ReviewRoundClosed => "◆",
+        TaskEventTypes.AgentLaunched => "▶",
+        TaskEventTypes.AgentExited => "■",
+        TaskEventTypes.MilestoneAssigned => "▤",
+        TaskEventTypes.TypeChanged => "✎",
+        TaskEventTypes.BranchBound => "⎇",
+        _ => "·"
+    };
+
+    /// <summary>
+    /// 事件类型的展示色（CSS 类）。
+    ///
+    /// 颜色本身在 CSS 里 —— 早先这里直接返回 #2563eb 这样的硬编码值内联进 style，
+    /// 亮色主题下那些颜色在浅底上对比度不够，而且颜色散在页面里，
+    /// 换主题时根本不知道还有这些地方要改。
+    /// </summary>
+    private static string EventColorClass(string? eventType) => eventType switch
+    {
+        TaskEventTypes.StatusChanged => "wb-ev-blue",
+        TaskEventTypes.PlanSaved => "wb-ev-purple",
+        TaskEventTypes.ArtifactAdded => "wb-ev-cyan",
+        TaskEventTypes.TestReported => "wb-ev-green",
+        TaskEventTypes.Assigned or TaskEventTypes.MilestoneAssigned or TaskEventTypes.TypeChanged => "wb-ev-amber",
+        TaskEventTypes.ReviewRoundOpened or TaskEventTypes.ReviewDimensionResult or TaskEventTypes.ReviewRoundClosed => "wb-ev-purple",
+        TaskEventTypes.AgentLaunched => "wb-ev-green",
+        TaskEventTypes.BranchBound or TaskEventTypes.Claimed or TaskEventTypes.Released => "wb-ev-cyan",
+        _ => "wb-ev-gray"
+    };
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_timerCts is not null)
+        {
+            await _timerCts.CancelAsync();
+            _timerCts.Dispose();
+            _timerCts = null;
+        }
+    }
+}

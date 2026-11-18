@@ -1,6 +1,8 @@
-# 开发工作台（Workbench）
+# 观复（Guanfu）
 
 > **这是一个给 agent 用的项目管理工具。** 第一公民是 agent，人也要用，但人不是唯一用户。
+>
+> 名字取自《老子》「万物并作，吾以观复」—— 事情一轮轮转回来，观复看着它们转。
 >
 > 任务、里程碑、依赖、状态机是内核；MCP 工具集把这些项目管理原语**喂给 agent**；
 > 审计与审批是让人**敢信这个看板**的底座 —— 看板上的状态是 agent 写的。
@@ -9,14 +11,14 @@
 于是三件事必须说得清：
 
 - 这个需求**干到哪一步了**？状态、里程碑、依赖、谁在干、卡在谁那儿、等谁点头。
-- 这次到底改了**哪些文件**？（不是 agent 自己说的，是工作台从 git 里数的）
+- 这次到底改了**哪些文件**？（不是 agent 自己说的，是观复从 git 里数的）
 - agent 到底**碰了哪个库、哪张表**、跑了什么 SQL、影响了几行、谁批的？
 
 没人写代码的状态机叫流程图，没人签字的审批叫摆设，没人能验的账叫日志 ——
 三样齐了，agent 才真的能当项目管理的执行者。
 
-工作台不提供 AI 服务——智能动作都发生在外部 agent 进程里，它们通过 MCP 工具与 CLI
-驱动工作台的状态流转。工作台负责的是**状态中枢 + 事件账本 + 审批门禁 + 评审骨架**。
+观复不提供 AI 服务 —— 智能动作都发生在外部 agent 进程里，它们通过 MCP 工具与 CLI
+驱动观复的状态流转。观复负责的是**状态中枢 + 事件账本 + 审批门禁 + 评审骨架**。
 
 ## 怎么用起来（三步）
 
@@ -25,7 +27,7 @@
 项目在创建时就要绑定本地仓库路径（绝对路径）：
 
 ```
-工作台首页 → 新建项目 → 填「本地仓库路径」
+观复首页 → 新建项目 → 填「本地仓库路径」
 ```
 
 这一步是整套东西的地基。绑了之后，agent 在这个目录里干活就会**自动落到这个项目**，
@@ -34,27 +36,27 @@
 
 ### 2. 让 agent 接进来
 
-agent 通过 `wb mcp`（stdio ↔ HTTP 桥接）连工作台。桥接启动时会带上自己的工作目录：
+agent 通过 `guanfu mcp`（stdio ↔ HTTP 桥接）连观复。桥接启动时会带上自己的工作目录：
 
 ```bash
 cd /Users/you/code/your-repo
-wb mcp
+guanfu mcp
 # 或者显式指定
-wb mcp --repo /Users/you/code/your-repo --agent my-agent
+guanfu mcp --repo /Users/you/code/your-repo --agent my-agent
 ```
 
-桥接每次转发都带上 `X-Workbench-Repo`，工作台据此反查项目并建立**会话**。
+桥接每次转发都带上 `X-Workbench-Repo`，观复据此反查项目并建立**会话**。
 会话一旦建立，这个 agent 后续所有工具调用的项目与任务归属就自动确定了。
 
-不想用桥接的话，agent 也可以直接调 `workbench_bind_session(repoPath, agentId)` 自己绑。
+不想用桥接的话，agent 也可以直接调 `guanfu_bind_session(repoPath, agentId)` 自己绑。
 
 ### 3. 干活
 
 agent 用编号（`REQ-001`）而不是 GUID 来指认任务 —— 人嘴里的编号它也认：
 
 ```
-workbench_claim_task   {"taskKey": "REQ-001"}      → 认领，任务自动挂到会话上
-workbench_get_context  {"taskKey": "REQ-001"}      → 一次拿全上下文
+guanfu_claim_task   {"taskKey": "REQ-001"}      → 认领，任务自动挂到会话上
+guanfu_get_context  {"taskKey": "REQ-001"}      → 一次拿全上下文
 fs_list / fs_read / git_commit / shell_run / db_query …   → 不用传 projectId 了
 ```
 
@@ -65,15 +67,15 @@ fs_list / fs_read / git_commit / shell_run / db_query …   → 不用传 projec
 
 ## 核心设计
 
-### 1. 工作台不含 AI
+### 1. 观复不含 AI
 
-工作台**不调模型、不跑 agent、不生成需求理解与开发计划**。它提供的是：
+观复**不调模型、不跑 agent、不生成需求理解与开发计划**。它提供的是：
 
 | 通道 | 使用者 | 用途 |
 |---|---|---|
 | **MCP 工具** | 外部 agent（Claude Code / Codex 等） | 读上下文、回写状态、传产物 |
 | **REST API** | CI / webhook / 外部脚本 | 回调更新状态 |
-| **CLI (`wb`)** | 人 / shell 脚本 | 建任务、推进状态、批处理、审批 |
+| **CLI (`guanfu`)** | 人 / shell 脚本 | 建任务、推进状态、批处理、审批 |
 
 三条通道汇聚到同一批应用服务，保证状态机校验、事件流水、审计一次不落。
 
@@ -81,27 +83,27 @@ fs_list / fs_read / git_commit / shell_run / db_query …   → 不用传 projec
 
 ```
               ┌──────────────────────────────────────────┐
-              │  Workbench.Web（宿主进程）                │
+              │  Guanfu.Web（宿主进程）                │
               │  应用服务 · 状态机 · 审批编排 · SQLite    │
               └───────────────┬──────────────────────────┘
                               │  REST /api  +  /mcp
         ┌─────────────────────┼─────────────────────┐
         │                     │                     │
-   Web UI (Blazor)      MCP 工具集              CLI (wb)
+   Web UI (Blazor)      MCP 工具集              CLI (guanfu)
    人：看板/审批/看文档   agent：结构化读写      人/脚本：批处理
-                                              ＋ wb mcp stdio 桥接
+                                              ＋ guanfu mcp stdio 桥接
 ```
 
 - **CLI 不是 MCP + Web UI 的组合**，是第三个平行入口。CLI 独有的是：审批的人工决定、
-  文档上传、里程碑增删、工具开关、启动 agent、工作区搬迁，以及 `wb mcp` 那个
+  文档上传、里程碑增删、工具开关、启动 agent、工作区搬迁，以及 `guanfu mcp` 那个
   **stdio 桥接**（只支持 stdio 的 MCP 客户端全靠它接进来）。
-- **改变工作台状态的动作不通过 MCP 暴露给 agent**：审批只能由人批（否则 agent 能自己
+- **改变观复状态的动作不通过 MCP 暴露给 agent**：审批只能由人批（否则 agent 能自己
   批自己的写请求，门禁形同虚设），上传文档、改里程碑结构、调工具开关同理。
 - CLI 与 MCP 都用**应用层的同一批 DTO**，不各自抄一份 —— 抄了就会漏字段。
 
 ### 2. 单一数据通路
 
-`Workbench.Web` 进程独占 SQLite（唯一写者）。MCP 与 CLI 都是 Web 的 HTTP 客户端，**不直连数据库**——
+`Guanfu.Web` 进程独占 SQLite（唯一写者）。MCP 与 CLI 都是 Web 的 HTTP 客户端，**不直连数据库**——
 避免 SQLite 多进程写锁冲突，也避免状态机/审计/审批逻辑散落多处。
 
 ### 3. 任务状态机
@@ -155,20 +157,20 @@ Draft → DocsReady → Planned → InDev → Testing → Review → Done
 「不知道当前在哪个分支」不等于「在对的分支上」。
 没绑分支的任务不受限制。
 
-`workbench_get_context` 会把 `currentBranch` 和 `branchReady` 一起带出来，
+`guanfu_get_context` 会把 `currentBranch` 和 `branchReady` 一起带出来，
 agent 拿到上下文就知道现在能不能开跑。
 
 ### 3.3 评审工作流（7 维度专家团）
 
-开发完成后，agent 调评审工具开一轮评审，**工作台给骨架，判断由 agent 做**：
+开发完成后，agent 调评审工具开一轮评审，**观复给骨架，判断由 agent 做**：
 
 ```
-workbench_start_review      开一轮，7 个维度各建一条待办
-workbench_get_review_pack   取评审包：维度清单 + 任务上下文 + 变更文件列表
+guanfu_start_review      开一轮，7 个维度各建一条待办
+guanfu_get_review_pack   取评审包：维度清单 + 任务上下文 + 变更文件列表
    ↓  agent（或它开的子 agent / 专家团）逐维度评审
-workbench_submit_review     逐维度回写结论（通过 / 不通过 + 发现 + 证据）
+guanfu_submit_review     逐维度回写结论（通过 / 不通过 + 发现 + 证据）
    ↓  7 个维度全过
-workbench_update_status(Done)  才放行结项
+guanfu_update_status(Done)  才放行结项
 ```
 
 七个维度（定义在代码里，不存库）：
@@ -184,16 +186,16 @@ workbench_update_status(Done)  才放行结项
 | 是否有过度操作的代码 | 有没有画蛇添足、没必要的动作？ |
 
 每个维度带一份**检查清单**，agent 照着清单查而不是自由发挥。多轮评审全部留 history。
-工作台**不判断代码好不好** —— 它只负责「不评完不许结项」和「每轮结论都留痕」。
+观复**不判断代码好不好** —— 它只负责「不评完不许结项」和「每轮结论都留痕」。
 
 ### 4. 三个可查的东西
 
-工作台的产出全部是**能查的**，不是只能写进去。三条主线各有各的查法：
+观复的产出全部是**能查的**，不是只能写进去。三条主线各有各的查法：
 
 | 你想知道 | 去哪儿看 | 数据从哪来 |
 |---|---|---|
 | 任务进度到哪了 | 首页总览 / 项目看板 / 任务详情 | 状态机 + 事件账本（append-only） |
-| 这个任务改了**哪些文件** | 任务详情「产出」页签 / 首页「最近产出」 | **工作台自己从 git 数**（`git show --numstat` / `git diff --numstat`） |
+| 这个任务改了**哪些文件** | 任务详情「产出」页签 / 首页「最近产出」 | **观复自己从 git 数**（`git show --numstat` / `git diff --numstat`） |
 | agent 碰了**哪个库哪张表** | 「SQL 执行记录」页 / 首页「最近的数据库调用」 | `db_*` 工具执行时结构化落库（SQL 原文、目标表、影响行数、审批人） |
 
 产出文件有**两个采集点**，都在 agent 绕不过去的地方：
@@ -202,7 +204,7 @@ workbench_update_status(Done)  才放行结项
   改的文件落库（路径 / 增删行数 / commit sha）。
 - **推进到 `Review` 时** —— 快照一次工作区，把「已产出但还没提交」的部分也捞进来。
 
-`workbench_add_artifact` 仍在，但只用来登记设计文档、说明这类**非代码**产物；
+`guanfu_add_artifact` 仍在，但只用来登记设计文档、说明这类**非代码**产物；
 代码文件不再依赖 agent 自觉登记。
 
 数据库调用记录是从通用审计表里**单独拆出来的一张表**：SQL 原文、server、database、
@@ -258,7 +260,7 @@ agent 走的就是它，它不能有裁决权。
 ```bash
 git clone <repo-url> workbench
 cd workbench
-dotnet run --project src/Workbench.Web
+dotnet run --project src/Guanfu.Web
 ```
 
 打开 http://127.0.0.1:5177 ，MCP 端点在 http://127.0.0.1:5177/mcp 。
@@ -273,7 +275,7 @@ dotnet run --project src/Workbench.Web
 ```json
 {
   "mcpServers": {
-    "workbench": {
+    "guanfu": {
       "type": "http",
       "url": "http://127.0.0.1:5177/mcp"
     }
@@ -284,43 +286,43 @@ dotnet run --project src/Workbench.Web
 只支持 stdio 的客户端用桥接：
 
 ```bash
-wb mcp --url http://127.0.0.1:5177
+guanfu mcp --url http://127.0.0.1:5177
 ```
 
-> `wb mcp` 桥接是 CLI 唯一不可替代的能力 —— 只支持 stdio 的 MCP 客户端全靠它接进来。
+> `guanfu mcp` 桥接是 CLI 唯一不可替代的能力 —— 只支持 stdio 的 MCP 客户端全靠它接进来。
 > 改这个桥接时要格外小心（stdout 只能输出 JSON-RPC，任何多余输出都会污染协议流）。
 
 ### CLI
 
 ```bash
-wb serve                              # 启动 Web
-wb project list                       # 列出项目
-wb project add "AIChat" --desc "桌面端重构"
-wb task create <项目ID> "写登录接口" --type requirement --branch feature/login
-wb task claim <任务ID> --agent claude
-wb task show REQ-001 --project <项目ID>       # 按编号看任务
-wb status set <任务ID> Planned --note "计划已出"
-wb doc upload <任务ID> ./PRD.md --kind prd
-wb approval list
-wb approval approve <审批ID>
+guanfu serve                              # 启动 Web
+guanfu project list                       # 列出项目
+guanfu project add "AIChat" --desc "桌面端重构"
+guanfu task create <项目ID> "写登录接口" --type requirement --branch feature/login
+guanfu task claim <任务ID> --agent claude
+guanfu task show REQ-001 --project <项目ID>       # 按编号看任务
+guanfu status set <任务ID> Planned --note "计划已出"
+guanfu doc upload <任务ID> ./PRD.md --kind prd
+guanfu approval list
+guanfu approval approve <审批ID>
 
-wb milestone list <项目ID>              # 里程碑
-wb milestone create <项目ID> "第一期"
-wb metrics [<项目ID>]                   # 度量：流速 / 周期 / 通过率 / 阻塞
+guanfu milestone list <项目ID>              # 里程碑
+guanfu milestone create <项目ID> "第一期"
+guanfu metrics [<项目ID>]                   # 度量：流速 / 周期 / 通过率 / 阻塞
 
-wb review start <任务ID>                        # 开一轮评审（7 个维度）
-wb review list <任务ID>                         # 看所有轮次与逐维度结论
-wb review submit <任务ID> security --fail --findings "有注入风险" --evidence "LoginService.cs:42"
+guanfu review start <任务ID>                        # 开一轮评审（7 个维度）
+guanfu review list <任务ID>                         # 看所有轮次与逐维度结论
+guanfu review submit <任务ID> security --fail --findings "有注入风险" --evidence "LoginService.cs:42"
 
-wb project config <项目ID> --repo /path --agent "claude -p \"{title}\"" --allow "dotnet test,npm run build"
-wb task launch <任务ID>                 # 拉起外部 agent
+guanfu project config <项目ID> --repo /path --agent "claude -p \"{title}\"" --allow "dotnet test,npm run build"
+guanfu task launch <任务ID>                 # 拉起外部 agent
 
-wb workspace export /tmp/wb-backup       # 换机：整目录导出（库+文档+密钥）
-wb workspace import /tmp/wb-backup --home ~/.workbench   # 本地搬文件，不必服务在跑
+guanfu workspace export /tmp/wb-backup       # 换机：整目录导出（库+文档+密钥）
+guanfu workspace import /tmp/wb-backup --home ~/.workbench   # 本地搬文件，不必服务在跑
 
-wb tool list                             # MCP 工具清单（按分类分组）
-wb tool disable shell_run                # 关掉某个 MCP 工具
-wb tool reset                            # 全部恢复默认
+guanfu tool list                             # MCP 工具清单（按分类分组）
+guanfu tool disable shell_run                # 关掉某个 MCP 工具
+guanfu tool reset                            # 全部恢复默认
 ```
 
 全局参数 `--url`（或环境变量 `WORKBENCH_URL`）指定服务地址。
@@ -331,70 +333,70 @@ wb tool reset                            # 全部恢复默认
 
 人只说一句自然语言：
 
-> 「你看下工作台中的当前项目 12月版本的 req001，做一下开发」
+> 「你看下观复中的当前项目 12月版本的 req001，做一下开发」
 
 agent 连上 MCP 之后自己走完：
 
 | 步 | agent 调什么 | 拿到什么 |
 |---|---|---|
-| 1 | `workbench_get_task_by_key(projectId, "req001")` | 落到具体任务（编号匹配不认连字符写法） |
-| 2 | `workbench_claim_task` | 领到租约，多 agent 不抢同一个任务。**任务绑了分支而当前分支不对时，这里就会被拒** |
-| 3 | `workbench_get_context` | 任务、文档、计划、产物、事件、允许的状态迁移、git 分支 —— 一次取全 |
-| 4 | `workbench_set_plan` | 回写需求理解与开发计划（工作台只存不生成） |
-| 5 | 干活 → `workbench_report_test_result` / `workbench_add_artifact` | 测试结果与产物入库 |
-| 6 | `workbench_update_status(Testing → Review)` | 进评审态 |
-| 7 | `workbench_start_review` | 开一轮，7 个维度各一条待办 |
-| 8 | `workbench_get_review_pack` | 每个维度的检查清单 + 任务上下文 + 变更文件列表 |
-| 9 | 逐维度评审（可开子 agent 并行）→ `workbench_submit_review` × 7 | 每条结论单独回写 |
-| 10 | `workbench_update_status(Done)` | **七个维度全过才放行**；否则返回「还差哪几个维度」 |
+| 1 | `guanfu_get_task_by_key(projectId, "req001")` | 落到具体任务（编号匹配不认连字符写法） |
+| 2 | `guanfu_claim_task` | 领到租约，多 agent 不抢同一个任务。**任务绑了分支而当前分支不对时，这里就会被拒** |
+| 3 | `guanfu_get_context` | 任务、文档、计划、产物、事件、允许的状态迁移、git 分支 —— 一次取全 |
+| 4 | `guanfu_set_plan` | 回写需求理解与开发计划（观复只存不生成） |
+| 5 | 干活 → `guanfu_report_test_result` / `guanfu_add_artifact` | 测试结果与产物入库 |
+| 6 | `guanfu_update_status(Testing → Review)` | 进评审态 |
+| 7 | `guanfu_start_review` | 开一轮，7 个维度各一条待办 |
+| 8 | `guanfu_get_review_pack` | 每个维度的检查清单 + 任务上下文 + 变更文件列表 |
+| 9 | 逐维度评审（可开子 agent 并行）→ `guanfu_submit_review` × 7 | 每条结论单独回写 |
+| 10 | `guanfu_update_status(Done)` | **七个维度全过才放行**；否则返回「还差哪几个维度」 |
 
-第 9 步是 agent 的事：工作台只给骨架、清单、门禁、历史，不替它判断代码好不好。
+第 9 步是 agent 的事：观复只给骨架、清单、门禁、历史，不替它判断代码好不好。
 
 ---
 
 ## MCP 工具
 
-**工作台组**
+**观复组**
 
 | 工具 | 说明 |
 |---|---|
-| `workbench_list_projects` | 项目列表（进度、停滞标记、git 分支） |
-| `workbench_get_project` | 项目详情 |
-| `workbench_create_task` | 建任务（可带 `type` 类型与 `branch` 绑定分支） |
-| `workbench_list_tasks` | 按项目 / 状态 / 关键字 / 编号 / 类型列任务 |
-| `workbench_get_task` | 任务详情 |
-| **`workbench_get_task_by_key`** | **按编号找任务**（`req001` / `REQ-001` 都认） |
-| `workbench_claim_task` | 领取任务（带租约，防止多 agent 抢同一任务） |
-| **`workbench_get_context`** | **一次取回干活所需的全部上下文**，避免反复零散调用 |
-| `workbench_set_plan` | 回写需求理解与开发计划（版本化） |
-| `workbench_update_status` | 推进状态（非法迁移会带出允许列表；评审没过不许结项） |
-| `workbench_add_artifact` | 上传产物（代码变更、测试报告、commit …） |
-| `workbench_report_test_result` | 回写单元测试结果 |
-| `workbench_post_event` | 写一条事件流水 |
-| **`workbench_start_review`** | **开一轮评审**（7 个维度各建一条待办） |
-| **`workbench_get_review_pack`** | **取评审包**：维度清单 + 任务上下文 + 变更文件 |
-| **`workbench_submit_review`** | **逐维度回写结论**（通过 / 不通过 + 发现 + 证据） |
-| **`workbench_list_reviews`** / **`workbench_get_review`** | 评审历史 / 当前轮汇总 |
-| `workbench_list_approvals` / `workbench_get_approval` | 查审批 |
-| `workbench_await_approval` | 阻塞等待人工审批 |
-| `workbench_list_milestones` / `workbench_assign_milestone` | 里程碑归组 |
-| `workbench_get_metrics` | 度量（流速 / 周期 / 通过率 / 阻塞） |
-| `workbench_get_project_config` | 项目配置（仓库路径 / 白名单 / agent 命令 / 通知地址） |
-| **`workbench_list_events`** | **任务的事件流水**（账本，独立端点，不只从上下文里捞） |
-| **`workbench_list_audit`** | **工具调用审计**（谁在什么时候调了哪个工具、结果如何） |
-| **`workbench_archive_task`** | **归档任务**（不是删除 —— 流水、产物、评审全留着） |
-| **`workbench_assign_task`** | **分派**：负责人 / 优先级 / 截止日 / 权重 |
-| **`workbench_list_dependencies`** | 任务的前置依赖与它阻塞了谁 |
-| **`workbench_add_task_dependency`** / **`workbench_remove_task_dependency`** | 增删任务依赖（成环会被拒） |
-| **`workbench_export_events`** / **`workbench_export_review`** | 导出事件流水 / 评审报告（Markdown / CSV / JSON） |
+| `guanfu_list_projects` | 项目列表（进度、停滞标记、git 分支） |
+| `guanfu_get_project` | 项目详情 |
+| `guanfu_create_task` | 建任务（可带 `type` 类型与 `branch` 绑定分支） |
+| `guanfu_list_tasks` | 按项目 / 状态 / 关键字 / 编号 / 类型列任务 |
+| `guanfu_get_task` | 任务详情 |
+| **`guanfu_get_task_by_key`** | **按编号找任务**（`req001` / `REQ-001` 都认） |
+| `guanfu_claim_task` | 领取任务（带租约，防止多 agent 抢同一任务） |
+| **`guanfu_get_context`** | **一次取回干活所需的全部上下文**，避免反复零散调用 |
+| `guanfu_set_plan` | 回写需求理解与开发计划（版本化） |
+| `guanfu_update_status` | 推进状态（非法迁移会带出允许列表；评审没过不许结项） |
+| `guanfu_add_artifact` | 上传产物（代码变更、测试报告、commit …） |
+| `guanfu_report_test_result` | 回写单元测试结果 |
+| `guanfu_post_event` | 写一条事件流水 |
+| **`guanfu_start_review`** | **开一轮评审**（7 个维度各建一条待办） |
+| **`guanfu_get_review_pack`** | **取评审包**：维度清单 + 任务上下文 + 变更文件 |
+| **`guanfu_submit_review`** | **逐维度回写结论**（通过 / 不通过 + 发现 + 证据） |
+| **`guanfu_list_reviews`** / **`guanfu_get_review`** | 评审历史 / 当前轮汇总 |
+| `guanfu_list_approvals` / `guanfu_get_approval` | 查审批 |
+| `guanfu_await_approval` | 阻塞等待人工审批 |
+| `guanfu_list_milestones` / `guanfu_assign_milestone` | 里程碑归组 |
+| `guanfu_get_metrics` | 度量（流速 / 周期 / 通过率 / 阻塞） |
+| `guanfu_get_project_config` | 项目配置（仓库路径 / 白名单 / agent 命令 / 通知地址） |
+| **`guanfu_list_events`** | **任务的事件流水**（账本，独立端点，不只从上下文里捞） |
+| **`guanfu_list_audit`** | **工具调用审计**（谁在什么时候调了哪个工具、结果如何） |
+| **`guanfu_archive_task`** | **归档任务**（不是删除 —— 流水、产物、评审全留着） |
+| **`guanfu_assign_task`** | **分派**：负责人 / 优先级 / 截止日 / 权重 |
+| **`guanfu_list_dependencies`** | 任务的前置依赖与它阻塞了谁 |
+| **`guanfu_add_task_dependency`** / **`guanfu_remove_task_dependency`** | 增删任务依赖（成环会被拒） |
+| **`guanfu_export_events`** / **`guanfu_export_review`** | 导出事件流水 / 评审报告（Markdown / CSV / JSON） |
 
 **会话组**（把 agent 的对话跟项目 / 任务接上）
 
 | 工具 | 说明 |
 |---|---|
-| **`workbench_bind_session`** | **按仓库路径绑定会话**：传你所在仓库的绝对路径，工作台反查出项目并记住这次会话 |
-| **`workbench_get_session`** | **看当前会话**：绑的是哪个项目、在哪个仓库、有没有挂着任务 |
-| **`workbench_verify_audit_chain`** | **验审计哈希链**：审计有没有被人在库文件层面改过 |
+| **`guanfu_bind_session`** | **按仓库路径绑定会话**：传你所在仓库的绝对路径，观复反查出项目并记住这次会话 |
+| **`guanfu_get_session`** | **看当前会话**：绑的是哪个项目、在哪个仓库、有没有挂着任务 |
+| **`guanfu_verify_audit_chain`** | **验审计哈希链**：审计有没有被人在库文件层面改过 |
 
 绑上会话之后，`projectId` 就不用每次都传了 —— 而且**传错会被拒**：
 会话在 A 项目却调用 B 项目的 id，直接报「不一致」。
@@ -439,14 +441,14 @@ agent 连上 MCP 之后自己走完：
 
 ### 工具开关（`/mcp-tools`）
 
-工作台页面 `/mcp-tools` 可以**按分类**（工作台组 / 文档组 / 数据库组 / 通用组）逐个开关 MCP 工具：
+观复页面 `/mcp-tools` 可以**按分类**（观复组 / 文档组 / 数据库组 / 通用组）逐个开关 MCP 工具：
 
 - 关掉的工具**不出现在 `tools/list`** 里 —— agent 看不到，也就不会去调
 - 就算客户端缓存了工具清单硬调，服务端也会拒（返回 `isError` 与中文提示）
 - 开关落库（只存「被显式改过的」），重启后仍然生效；以后加新工具不用写迁移脚本
 - 写类工具（`db_execute` / `git_commit` / `git_push` / `shell_run`）标着「需审批」
 
-作用域是**工作台级**，不是项目级：MCP 的 `tools/list` 是会话级的，没有项目参数，
+作用域是**观复级**，不是项目级：MCP 的 `tools/list` 是会话级的，没有项目参数，
 没法按项目返回不同的工具清单。要按项目管执行范围，用项目配置里的**命令白名单**。
 
 ---
@@ -454,23 +456,23 @@ agent 连上 MCP 之后自己走完：
 ## 目录结构
 
 ```
-Workbench.sln
+Guanfu.sln
 ├─ src/
-│  ├─ Workbench.Domain          实体、任务状态机、规则
-│  ├─ Workbench.Application     用例服务、DTO、事件、审批编排
-│  ├─ Workbench.Documents       文档解析引擎（MD/DOCX/PDF/diff → 统一模型）
-│  ├─ Workbench.Infrastructure  EF Core/SQLite、文档存储、Git 检视、SQL Server 执行器
-│  ├─ Workbench.Mcp             MCP 工具集 + 注册
-│  ├─ Workbench.Web             Blazor UI + REST API + /mcp 端点（宿主进程）
-│  └─ Workbench.Cli             wb 命令行 + stdio↔HTTP MCP 桥接
-└─ tests/Workbench.Tests
+│  ├─ Guanfu.Domain          实体、任务状态机、规则
+│  ├─ Guanfu.Application     用例服务、DTO、事件、审批编排
+│  ├─ Guanfu.Documents       文档解析引擎（MD/DOCX/PDF/diff → 统一模型）
+│  ├─ Guanfu.Infrastructure  EF Core/SQLite、文档存储、Git 检视、SQL Server 执行器
+│  ├─ Guanfu.Mcp             MCP 工具集 + 注册
+│  ├─ Guanfu.Web             Blazor UI + REST API + /mcp 端点（宿主进程）
+│  └─ Guanfu.Cli             guanfu 命令行 + stdio↔HTTP MCP 桥接
+└─ tests/Guanfu.Tests
 ```
 
 ---
 
 ## 数据与迁移
 
-工作台数据全部在 `WORKBENCH_HOME`（默认 `~/.workbench`）：
+观复数据全部在 `WORKBENCH_HOME`（默认 `~/.workbench`）：
 
 ```
 ~/.workbench/
@@ -483,9 +485,9 @@ Workbench.sln
 换电脑时：
 
 ```bash
-wb workspace export /tmp/wb-backup          # 导出（库用 VACUUM INTO 做一致性快照）
+guanfu workspace export /tmp/wb-backup          # 导出（库用 VACUUM INTO 做一致性快照）
 # 把 /tmp/wb-backup 整个目录拷到新机器
-wb workspace import /tmp/wb-backup --home ~/.workbench
+guanfu workspace import /tmp/wb-backup --home ~/.workbench
 export WORKBENCH_HOME=~/.workbench
 ```
 
@@ -502,8 +504,8 @@ export WORKBENCH_HOME=~/.workbench
 
 ```bash
 ./tests/verify.sh              # 一键验收：编译 → 单测 → 端到端，给总账
-dotnet build Workbench.sln
-dotnet test Workbench.sln
+dotnet build Guanfu.sln
+dotnet test Guanfu.sln
 ./tests/e2e/run.sh          # 端到端：自起临时服务，跑完即收摊
 ```
 
@@ -517,7 +519,7 @@ dotnet test Workbench.sln
   没批准不执行、批准后带 `approvalId` 续跑、一条审批只能执行一次、
   换个命令或换个项目都用不了、撤销是后悔药、只读通道不许写、全程审计留痕。
 - **E**（`cli_smoke.py`）—— CLI 常用命令、敏感命令没凭证是 401、
-  `wb mcp` 的 stdio 桥接真能转发 JSON-RPC。
+  `guanfu mcp` 的 stdio 桥接真能转发 JSON-RPC。
 - **F**（`session_e2e.py`）—— **会话绑定链路**：项目绑仓库 → 不传 `projectId` 也能干活 →
   跨项目被拒 → 按编号认领 → 审计自动带任务 → 提交后产出文件自动落库。
 

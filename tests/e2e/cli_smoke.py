@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""CLI（wb）冒烟 —— 次要入口也得能用，而且不能靠人工点。
+"""CLI（guanfu）冒烟 —— 次要入口也得能用，而且不能靠人工点。
 
-CLI 在工作台里是「次要入口」（主路径是 Web UI + MCP），但 `wb mcp` 的
+CLI 在观复里是「次要入口」（主路径是 Web UI + MCP），但 `guanfu mcp` 的
 stdio 桥接不可替代：只支持 stdio 的 MCP 客户端全靠它接进来。
 所以这一份脚本守两件事：
 
   E1 常用命令都跑得通（项目 / 任务 / 计划 / 上下文 / 产物 / 测试结果 /
      事件流水 / 里程碑 / 审批 / 审计 / 数据库 / 工具清单 / 指标 / 评审）
   E2 敏感命令没凭证就是 401 —— 人工凭证这条门槛在 CLI 上同样生效
-  E3 `wb mcp` 的 stdio 桥接能真的把 JSON-RPC 转发出去（不可替代的那条路）
+  E3 `guanfu mcp` 的 stdio 桥接能真的把 JSON-RPC 转发出去（不可替代的那条路）
 
 用法:
     python3 tests/e2e/cli_smoke.py --url http://127.0.0.1:5191 \
-        --dotnet /path/to/dotnet --cli /path/to/Workbench.Cli.dll
+        --dotnet /path/to/dotnet --cli /path/to/Guanfu.Cli.dll
 """
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", default="http://127.0.0.1:5191")
     parser.add_argument("--dotnet", required=True, help="dotnet 可执行文件路径")
-    parser.add_argument("--cli", required=True, help="Workbench.Cli.dll 路径")
+    parser.add_argument("--cli", required=True, help="Guanfu.Cli.dll 路径")
     parser.add_argument("--token", default=os.environ.get("WB_HUMAN_TOKEN", ""))
     args = parser.parse_args()
 
@@ -52,8 +52,8 @@ def main() -> int:
             env["WORKBENCH_HOME"] = tempfile.mkdtemp(prefix="wb-e2e-no-token-")
         return env
 
-    def wb(*cli_args: str, token: str | None = None, expect_code: int | None = 0) -> tuple[int, str]:
-        """跑一条 wb 命令。
+    def guanfu(*cli_args: str, token: str | None = None, expect_code: int | None = 0) -> tuple[int, str]:
+        """跑一条 guanfu 命令。
 
         token=None（默认）→ 用命令行给的凭证；token="" → 明确不给凭证。
         """
@@ -71,85 +71,85 @@ def main() -> int:
         if expect_code is not None:
             expect(
                 proc.returncode == expect_code,
-                f"wb {' '.join(cli_args[:3])} 退出码应为 {expect_code}（实际 {proc.returncode}）"
+                f"guanfu {' '.join(cli_args[:3])} 退出码应为 {expect_code}（实际 {proc.returncode}）"
                 f"{'' if proc.returncode == expect_code else '：' + output.strip()[:200]}",
             )
 
         return proc.returncode, output
 
     # ── E1 常用命令 ────────────────────────────────────────────────────
-    section("链路 E：CLI（wb）常用命令")
+    section("链路 E：CLI（guanfu）常用命令")
 
     print("\n-- E1.1 用法与只读命令 --")
-    code, out = wb("--help")
-    expect("开发工作台命令行" in out, "wb --help 应打出用法")
+    code, out = guanfu("--help")
+    expect("观复的命令行" in out, "guanfu --help 应打出用法")
 
-    code, out = wb("project", "list")
-    expect("ID" in out or "还没有项目" in out, "wb project list 应列出项目")
+    code, out = guanfu("project", "list")
+    expect("ID" in out or "还没有项目" in out, "guanfu project list 应列出项目")
 
-    code, out = wb("tool", "list")
-    expect("开启" in out, "wb tool list 应报出工具开关情况")
+    code, out = guanfu("tool", "list")
+    expect("开启" in out, "guanfu tool list 应报出工具开关情况")
 
     print("\n-- E1.2 建项目与任务 --")
-    code, out = wb("project", "add", f"CLI 冒烟 {suffix}")
+    code, out = guanfu("project", "add", f"CLI 冒烟 {suffix}")
     project_id = ""
     found = re.search(r"已创建项目\s+([0-9a-fA-F-]{36})", out)
     if found:
         project_id = found.group(1)
-    expect(bool(project_id), f"wb project add 应回显项目 ID（输出：{out.strip()[:160]}）")
+    expect(bool(project_id), f"guanfu project add 应回显项目 ID（输出：{out.strip()[:160]}）")
 
-    code, out = wb("project", "show", project_id)
-    expect(f"CLI 冒烟 {suffix}" in out, "wb project show 应回显项目名")
+    code, out = guanfu("project", "show", project_id)
+    expect(f"CLI 冒烟 {suffix}" in out, "guanfu project show 应回显项目名")
 
-    code, out = wb("task", "create", project_id, "CLI 冒烟任务", "--type", "requirement")
+    code, out = guanfu("task", "create", project_id, "CLI 冒烟任务", "--type", "requirement")
     task_id = ""
     task_key = ""
     found = re.search(r"已创建任务\s+([0-9a-fA-F-]{36})\s+·\s+(\S+)", out)
     if found:
         task_id = found.group(1)
         task_key = found.group(2)
-    expect(bool(task_id), f"wb task create 应回显任务 ID 与编号（输出：{out.strip()[:160]}）")
+    expect(bool(task_id), f"guanfu task create 应回显任务 ID 与编号（输出：{out.strip()[:160]}）")
     expect(task_key.startswith("REQ-"), f"需求任务的编号应是 REQ- 前缀（实际 {task_key}）")
 
-    code, out = wb("task", "list", "--project", project_id)
-    expect(task_key in out, "wb task list 应能按项目过滤出任务")
+    code, out = guanfu("task", "list", "--project", project_id)
+    expect(task_key in out, "guanfu task list 应能按项目过滤出任务")
 
-    code, out = wb("task", "show", task_id)
-    expect("CLI 冒烟任务" in out, "wb task show <ID> 应回显任务")
+    code, out = guanfu("task", "show", task_id)
+    expect("CLI 冒烟任务" in out, "guanfu task show <ID> 应回显任务")
 
-    code, out = wb("task", "show", task_key, "--project", project_id)
-    expect("CLI 冒烟任务" in out, "wb task show <编号> 应能按编号找到同一个任务")
+    code, out = guanfu("task", "show", task_key, "--project", project_id)
+    expect("CLI 冒烟任务" in out, "guanfu task show <编号> 应能按编号找到同一个任务")
 
     print("\n-- E1.3 状态、计划与上下文 --")
-    code, out = wb("status", "set", task_id, "DocsReady", "--note", "e2e 冒烟")
-    expect("文档就绪" in out, "wb status set 应推进状态（输出中文状态）")
+    code, out = guanfu("status", "set", task_id, "DocsReady", "--note", "e2e 冒烟")
+    expect("文档就绪" in out, "guanfu status set 应推进状态（输出中文状态）")
 
     # 中文状态也要认：人敲命令用中文，agent 用枚举名，两种都得能落地
-    code, out = wb("task", "create", project_id, "CLI 中文状态任务", "--type", "requirement")
+    code, out = guanfu("task", "create", project_id, "CLI 中文状态任务", "--type", "requirement")
     cn_task_id = ""
     found = re.search(r"已创建任务\s+([0-9a-fA-F-]{36})", out)
     if found:
         cn_task_id = found.group(1)
-    code, out = wb("status", "set", cn_task_id, "文档就绪", "--note", "e2e 中文状态")
-    expect("文档就绪" in out, "wb status set 也该认中文状态")
+    code, out = guanfu("status", "set", cn_task_id, "文档就绪", "--note", "e2e 中文状态")
+    expect("文档就绪" in out, "guanfu status set 也该认中文状态")
 
-    code, out = wb(
+    code, out = guanfu(
         "task", "plan", task_id,
         "--background", "CLI 冒烟",
         "--understanding", "命令行也要能回写计划",
         "--breakdown", "1) 建任务 2) 回写计划",
-        "--acceptance", "wb task plan 退出码为 0",
+        "--acceptance", "guanfu task plan 退出码为 0",
         "--author", "e2e",
     )
-    expect(code == 0, "wb task plan 应成功")
+    expect(code == 0, "guanfu task plan 应成功")
 
-    code, out = wb("task", "context", task_id)
-    expect("CLI 冒烟任务" in out, "wb task context 应能取到一次性上下文包")
+    code, out = guanfu("task", "context", task_id)
+    expect("CLI 冒烟任务" in out, "guanfu task context 应能取到一次性上下文包")
 
     print("\n-- E1.4 产物、测试结果、事件流水 --")
-    code, out = wb("task", "artifact", task_id, "CodeChange", "CLI 冒烟产物",
+    code, out = guanfu("task", "artifact", task_id, "CodeChange", "CLI 冒烟产物",
                    "--content", "改了三个文件", "--author", "e2e")
-    expect(code == 0, "wb task artifact 应成功")
+    expect(code == 0, "guanfu task artifact 应成功")
 
     print("\n-- E1.4b 批量导入文档 --")
     with tempfile.TemporaryDirectory(prefix="wb-e2e-docs-") as doc_dir:
@@ -160,77 +160,77 @@ def main() -> int:
         with open(doc_b, "w", encoding="utf-8") as handle:
             handle.write("# 接口\nPOST /api/login")
 
-        code, out = wb("doc", "upload", task_id, doc_a, doc_b)
-        expect(code == 0, f"wb doc upload 多个文件应成功（输出：{out.strip()[:200]}）")
+        code, out = guanfu("doc", "upload", task_id, doc_a, doc_b)
+        expect(code == 0, f"guanfu doc upload 多个文件应成功（输出：{out.strip()[:200]}）")
         expect("2" in out, f"应报出上传了几个文件（输出：{out.strip()[:200]}）")
 
-    code, out = wb("task", "test-result", task_id, "--total", "10", "--passed", "9",
+    code, out = guanfu("task", "test-result", task_id, "--total", "10", "--passed", "9",
                    "--failures", "用例A", "--coverage", "0.9", "--author", "e2e")
-    expect(code == 0, "wb task test-result 应成功")
+    expect(code == 0, "guanfu task test-result 应成功")
 
-    code, out = wb("task", "events", task_id, "--format", "markdown")
-    expect(code == 0, "wb task events 应能导出事件流水")
+    code, out = guanfu("task", "events", task_id, "--format", "markdown")
+    expect(code == 0, "guanfu task events 应能导出事件流水")
 
-    code, out = wb("task", "events", task_id, "--format", "json")
-    expect(code == 0, "wb task events --format json 应能导出事件流水")
+    code, out = guanfu("task", "events", task_id, "--format", "json")
+    expect(code == 0, "guanfu task events --format json 应能导出事件流水")
 
     print("\n-- E1.5 认领、依赖、评审 --")
-    code, out = wb("task", "claim", task_id, "--agent", "e2e-agent", "--lease", "30")
-    expect("已认领" in out, "wb task claim 应成功")
+    code, out = guanfu("task", "claim", task_id, "--agent", "e2e-agent", "--lease", "30")
+    expect("已认领" in out, "guanfu task claim 应成功")
 
-    code, out = wb("task", "deps", task_id)
-    expect(code == 0, "wb task deps 应能列出依赖")
+    code, out = guanfu("task", "deps", task_id)
+    expect(code == 0, "guanfu task deps 应能列出依赖")
 
-    code, out = wb("milestone", "list", project_id)
-    expect(code == 0, "wb milestone list 应成功")
+    code, out = guanfu("milestone", "list", project_id)
+    expect(code == 0, "guanfu milestone list 应成功")
 
     # 评审：先把任务推到 Review 再开轮次
     for target in ["Planned", "InDev", "Testing", "Review"]:
-        code, out = wb("status", "set", task_id, target)
-        expect(code == 0, f"wb status set {target} 应成功")
+        code, out = guanfu("status", "set", task_id, target)
+        expect(code == 0, f"guanfu status set {target} 应成功")
 
-    code, out = wb("review", "start", task_id)
-    expect("7 个维度" in out, "wb review start 应开出 7 个维度")
+    code, out = guanfu("review", "start", task_id)
+    expect("7 个维度" in out, "guanfu review start 应开出 7 个维度")
 
-    code, out = wb("review", "submit", task_id, "security", "--pass",
+    code, out = guanfu("review", "submit", task_id, "security", "--pass",
                    "--findings", "无注入风险", "--evidence", "看了实现")
-    expect(code == 0, "wb review submit 应成功")
+    expect(code == 0, "guanfu review submit 应成功")
 
-    code, out = wb("review", "list", task_id)
-    expect("第 1 轮" in out, "wb review list 应回显轮次")
+    code, out = guanfu("review", "list", task_id)
+    expect("第 1 轮" in out, "guanfu review list 应回显轮次")
 
-    code, out = wb("review", "export", task_id, "--format", "markdown")
-    expect(code == 0, "wb review export 应能导出评审报告")
+    code, out = guanfu("review", "export", task_id, "--format", "markdown")
+    expect(code == 0, "guanfu review export 应能导出评审报告")
 
     print("\n-- E1.6 审批、审计、数据库、指标 --")
-    code, out = wb("approval", "list")
-    expect(code == 0, "wb approval list 应成功")
+    code, out = guanfu("approval", "list")
+    expect(code == 0, "guanfu approval list 应成功")
 
-    code, out = wb("audit", "list", "--project", project_id, "--limit", "20")
-    expect(code == 0, "wb audit list 应能查工具调用审计")
+    code, out = guanfu("audit", "list", "--project", project_id, "--limit", "20")
+    expect(code == 0, "guanfu audit list 应能查工具调用审计")
 
-    code, out = wb("db", "connections", project_id)
-    expect(code == 0, "wb db connections 应能列连接")
+    code, out = guanfu("db", "connections", project_id)
+    expect(code == 0, "guanfu db connections 应能列连接")
 
-    code, out = wb("metrics", project_id)
-    expect(code == 0, "wb metrics 应成功")
+    code, out = guanfu("metrics", project_id)
+    expect(code == 0, "guanfu metrics 应成功")
 
     # ── E2 敏感命令的凭证门槛 ─────────────────────────────────────────
     print("\n-- E2 敏感命令没凭证就是 401 --")
-    code, out = wb("project", "config", project_id, "--allow", "touch", token="",
+    code, out = guanfu("project", "config", project_id, "--allow", "touch", token="",
                    expect_code=2)
     expect("401" in out, f"没凭证改项目配置应报 401（输出：{out.strip()[:160]}）")
 
     # 建项目同样要凭证 —— 项目一创建就把一个文件系统根目录授给了它，
     # 不设门的话 agent 自己建个项目指向 /etc 就能把文件读出去。
-    code, out = wb("project", "add", "无凭证建的项目", token="", expect_code=2)
+    code, out = guanfu("project", "add", "无凭证建的项目", token="", expect_code=2)
     expect("401" in out, f"没凭证建项目应报 401（输出：{out.strip()[:160]}）")
 
     # 带凭证要能改 —— 而且要顺手把仓库路径与白名单配好，
     # 后面的 shell_run 要靠它造出待审审批。
     repo_dir = tempfile.mkdtemp(prefix="wb-e2e-cli-repo-")
     try:
-        code, out = wb("project", "config", project_id, "--repo", repo_dir, "--allow", "touch")
+        code, out = guanfu("project", "config", project_id, "--repo", repo_dir, "--allow", "touch")
         expect("已更新项目配置" in out, "带凭证改项目配置应成功")
 
         print("\n-- E2.2 人工裁决审批（CLI 这条路也要能批） --")
@@ -246,19 +246,19 @@ def main() -> int:
         expect(bool(approval_id), f"应造出一条待审审批（返回：{pending}）")
 
         if approval_id:
-            code, out = wb("approval", "approve", approval_id, "--by", "e2e-human")
-            expect("已批准" in out, "wb approval approve 应成功")
+            code, out = guanfu("approval", "approve", approval_id, "--by", "e2e-human")
+            expect("已批准" in out, "guanfu approval approve 应成功")
 
-            code, out = wb("approval", "list")
-            expect(code == 0, "wb approval list 在裁决后仍应成功")
+            code, out = guanfu("approval", "list")
+            expect(code == 0, "guanfu approval list 在裁决后仍应成功")
     finally:
         shutil.rmtree(repo_dir, ignore_errors=True)
 
     print("\n-- E2.3 工作区导出（换机要带走的东西） --")
     export_dir = tempfile.mkdtemp(prefix="wb-e2e-export-")
     try:
-        code, out = wb("workspace", "export", export_dir)
-        expect(code == 0, "wb workspace export 应成功")
+        code, out = guanfu("workspace", "export", export_dir)
+        expect(code == 0, "guanfu workspace export 应成功")
         expect(
             any(name.endswith(".db") for name in os.listdir(export_dir)),
             f"导出的工作区里应有数据库文件（实际：{os.listdir(export_dir)}）",
@@ -268,14 +268,14 @@ def main() -> int:
 
     # ── E2.4 人工凭证 ──────────────────────────────────────────────────
     print("\n-- E2.4 人工凭证（远程访问网页时粘贴用） --")
-    code, out = wb("token")
-    expect(code == 0, "wb token 应成功")
+    code, out = guanfu("token")
+    expect(code == 0, "guanfu token 应成功")
     # 不把凭证本身写进断言消息里，只看它是不是一串非空的东西
-    expect(len(out.strip()) >= 10, "wb token 应打印出一串人工凭证")
+    expect(len(out.strip()) >= 10, "guanfu token 应打印出一串人工凭证")
 
-    # ── E3 wb mcp 的 stdio 桥接 ───────────────────────────────────────
-    print("\n-- E3 wb mcp 的 stdio 桥接 --")
-    expect(bridge_roundtrip(args), "wb mcp 应能把 JSON-RPC 转发到工作台并回结果")
+    # ── E3 guanfu mcp 的 stdio 桥接 ───────────────────────────────────────
+    print("\n-- E3 guanfu mcp 的 stdio 桥接 --")
+    expect(bridge_roundtrip(args), "guanfu mcp 应能把 JSON-RPC 转发到观复并回结果")
 
     section("结果")
     if FAILURES:
@@ -289,7 +289,7 @@ def main() -> int:
 
 
 def bridge_roundtrip(args) -> bool:
-    """跑一次 wb mcp：喂一条 initialize，读回一条 JSON-RPC 响应。"""
+    """跑一次 guanfu mcp：喂一条 initialize，读回一条 JSON-RPC 响应。"""
     command = [args.dotnet, args.cli, "--url", args.url, "mcp"]
     proc = subprocess.Popen(
         command,
@@ -334,14 +334,14 @@ def bridge_roundtrip(args) -> bool:
                 payload = json.loads(raw)
             except json.JSONDecodeError:
                 # 桥接的 stdout 只能有 JSON-RPC：出现别的就是流污染。
-                expect(False, f"wb mcp 的 stdout 混进了非 JSON 内容：{raw[:160]}")
+                expect(False, f"guanfu mcp 的 stdout 混进了非 JSON 内容：{raw[:160]}")
                 return False
 
             line = raw
             break
 
         if not line:
-            expect(False, "wb mcp 没有在 30 秒内回出响应")
+            expect(False, "guanfu mcp 没有在 30 秒内回出响应")
             return False
 
         payload = json.loads(line)
@@ -370,7 +370,7 @@ def bridge_roundtrip(args) -> bool:
             try:
                 payload = json.loads(raw)
             except json.JSONDecodeError:
-                expect(False, f"wb mcp 的 stdout 混进了非 JSON 内容：{raw[:160]}")
+                expect(False, f"guanfu mcp 的 stdout 混进了非 JSON 内容：{raw[:160]}")
                 return False
 
             if payload.get("id") == 2:
@@ -378,7 +378,7 @@ def bridge_roundtrip(args) -> bool:
                 break
 
         if not tools_line:
-            expect(False, "wb mcp 的 tools/list 没有回包")
+            expect(False, "guanfu mcp 的 tools/list 没有回包")
             return False
 
         tools = json.loads(tools_line).get("result", {}).get("tools", [])

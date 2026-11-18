@@ -33,8 +33,8 @@ jobs:
       # CI 里没有全局身份，提交会失败 —— 先把身份定死。
       - name: 定 git 身份
         run: |
-          git config --global user.email "ci@workbench.local"
-          git config --global user.name "Workbench CI"
+          git config --global user.email "ci@guanfu.local"
+          git config --global user.name "Guanfu CI"
 
       # 一键验收：编译 → 单测 → 端到端，末尾给总账。
       # 没有仓库自带的隔离 SDK 时，脚本会用 PATH 上的 dotnet（版本已固定在 8.0.x）。

@@ -15,13 +15,13 @@
 不沦为 agent 的自说自话。** 没人写代码的状态机叫流程图，没人签字的审批叫摆设，
 没人能验的账叫日志 —— 三样齐了，agent 才真的能当 PM 的执行者。
 
-**工作台不提供 AI 服务** —— 不调模型、不跑 agent、不生成需求理解与开发计划。
-所有智能动作发生在外部 agent 进程里，它们通过 MCP 工具与 CLI 驱动工作台的状态流转。
-改动时不要往工作台里塞模型调用。
+**观复不提供 AI 服务** —— 不调模型、不跑 agent、不生成需求理解与开发计划。
+所有智能动作发生在外部 agent 进程里，它们通过 MCP 工具与 CLI 驱动观复的状态流转。
+改动时不要往观复里塞模型调用。
 
-**评审同理**：工作台给的是**骨架** —— 阶段、7 个维度的定义与检查清单、结项门禁、多轮历史。
+**评审同理**：观复给的是**骨架** —— 阶段、7 个维度的定义与检查清单、结项门禁、多轮历史。
 判断由 agent（可以开子 agent / 专家团并行）做，再逐维度回写结论。
-别在工作台里写「这个代码好不好」这种判断逻辑。
+别在观复里写「这个代码好不好」这种判断逻辑。
 
 ## 现在往哪儿长（优先级）
 
@@ -35,7 +35,7 @@
    上下文包与评审包里都带着。
 3. ~~**「下一个该干的活」**~~ —— **v0.10 已做**（见规矩 37）：调度板三桶
    （能干 / 有人在干 / 卡着），agent 与人看的是同一份。
-4. ~~**容量与预算**~~ —— **v0.11 已做**（见规矩 38）：工具调用次数（工作台自己数）
+4. ~~**容量与预算**~~ —— **v0.11 已做**（见规矩 38）：工具调用次数（观复自己数）
    + token / 费用（agent 自报）+ 每任务调用上限（可执行的节流阀）。
 5. ~~**里程碑验收门禁**~~ —— **v0.11 已做**（见规矩 39）：验收是人的签字，
    签过之后里面的活不许悄悄回退。
@@ -63,13 +63,13 @@
 
 - .NET 8（`net8.0`），EF Core 8 + SQLite
 - ASP.NET Core Blazor Web App（`InteractiveServer` 渲染模式）
-- MCP：`ModelContextProtocol` 2.4.0，工具名一律用下划线（`workbench_get_context`），
+- MCP：`ModelContextProtocol` 2.4.0，工具名一律用下划线（`guanfu_get_context`），
   不要用点号 —— 部分 MCP 客户端不接受点号
 - 文档解析：Markdig / DocumentFormat.OpenXml / PdfPig，全部走 AST，不用正则糊
 
 ## 几条不能破的规矩
 
-1. **单一数据通路**：`Workbench.Web` 独占 SQLite，是唯一写者。
+1. **单一数据通路**：`Guanfu.Web` 独占 SQLite，是唯一写者。
    MCP 与 CLI 都是 Web 的 HTTP 客户端，**不要**让它们直连数据库。
 2. **状态迁移必须过 `TaskStatusMachine`**：非法迁移要拒绝，并且要把
    **当前允许的迁移列表**带回给调用方（agent 靠这个自我纠正）。
@@ -129,10 +129,10 @@
    字段取否定式是刻意的：`SchemaUpgrader` 补 NOT NULL 列时用 CLR 默认值，
    bool 的 CLR 默认是 false，所以 false 必须表示「不禁止」，老库补列后才不会一夜全禁写。
 7. **外部命令只在白名单里跑**：git 命令走 `IGitWriter`（同样不走 shell），
-   agent 启动命令走 `IAgentLauncher`。工作台不提供 AI，只执行用户配置好的外部命令。
-8. **CLI 用应用层的 DTO，别自己抄一份**：CLI 引用 `Workbench.Application`，
+   agent 启动命令走 `IAgentLauncher`。观复不提供 AI，只执行用户配置好的外部命令。
+8. **CLI 用应用层的 DTO，别自己抄一份**：CLI 引用 `Guanfu.Application`，
    直接用 `TaskSummaryDto` / `ApprovalDto` / `ProjectConfigDto`。抄第二份就会漏字段
-   （`MilestoneId` 漏过一次）。JSON 选项同理，统一用应用层的 `WorkbenchJson`，
+   （`MilestoneId` 漏过一次）。JSON 选项同理，统一用应用层的 `GuanfuJson`，
    CLI 只加一层 `WriteIndented`（`CliJson.Pretty`）。
 9. **评审门禁是服务层的业务前置条件，叠加在状态机之上**：
    `TaskService.ChangeStatusAsync` 在 `Review → Done` 时校验当前轮 7 个维度全过
@@ -148,7 +148,7 @@
     **重号要由数据库兜住**：唯一索引按原字符串比，拦不住「req-001」与「REQ-001」
     这类大小写不同的重号（业务口径认它们是同一个号）——
     所以另有一列 `KeyNormalized`（归一化形式）+ 唯一索引
-    `(ProjectId, KeyNormalized)`。这一列由 `WorkbenchDbContext` 在保存前统一填，
+    `(ProjectId, KeyNormalized)`。这一列由 `GuanfuDbContext` 在保存前统一填，
     **别指望每条写入路径自己记得填**；它可空，老库补列后是 NULL，不影响索引。
 13. **读 git 输出别整段 `Trim()`**：`git status --porcelain` 第一行常以空格开头
     （`" M src/x.cs"`），`Trim()` 会把前导空格吃掉，第一条路径就变成 `rc/x.cs`。
@@ -162,13 +162,13 @@
     `DisableHtml()`，内容来自外部输入，这是 XSS 口子，别去掉。
     URL scheme 也要管（`LinkUrlPolicy`）：`javascript:` / `data:` / `vbscript:` /
     `file:` / 协议相对链接一律降级成纯文本，只放行 `http` / `https` / `mailto` / 相对路径。
-16. **路径边界统一走 `PathBoundary`**（`Workbench.Application.Services`）：
+16. **路径边界统一走 `PathBoundary`**（`Guanfu.Application.Services`）：
     比较必须**带目录分隔符**（`/tmp/wb-root-secrets` 不是 `/tmp/wb-root` 的子目录），
     并且要**解析符号链接后再判一遍**（根目录自身也要解，否则 macOS 上 `/tmp → /private/tmp`
     会误判）。自己写 `StartsWith` 判路径就是在挖洞。
 17. **REST 敏感端点要人工凭证**：裁决审批（含批量）、改项目配置、存数据库密码、
     启动 agent、工作区搬迁、**新建项目** —— 这些没 token 直接 401（`HumanTokenMiddleware`）。
-    token 落在 `WORKBENCH_HOME/.human-token`（0600），启动横幅打印。
+    token 落在数据目录的 `.human-token`（0600），启动横幅打印。
     **新增敏感端点时记得在 `HumanTokenPolicy.IsSensitiveEndpoint` 里补规则**，
     漏一条就等于开了一扇门。
     **新建项目为什么也要凭证**：项目一创建就把一个文件系统根目录授给了它，
@@ -176,11 +176,11 @@
     自己建个项目指向 `/etc` 就能把文件读出去（改 `repoPath` 要凭证，建项目不要，
     等于开了扇后门）。
     **「给项目绑仓库路径」这件事只能人做**（REST 建项目 / 改配置 / 界面）——
-    绑路径 = 授出一个文件系统根。MCP 的 `workbench_create_project` 刻意**不接
+    绑路径 = 授出一个文件系统根。MCP 的 `guanfu_create_project` 刻意**不接
     repoPath**：agent 可以开新项目，但没有仓库根就没有文件面。
-    会话绑定（`workbench_bind_session`）也一样：目录必须在**人配好的**项目仓库范围内，
+    会话绑定（`guanfu_bind_session`）也一样：目录必须在**人配好的**项目仓库范围内，
     否则拒 —— 不然「绑到 /etc」又是一条绕路。
-18. **应用层不依赖 Hosting**：`BackgroundService` / `IHostedService` 只能放 `Workbench.Web`。
+18. **应用层不依赖 Hosting**：`BackgroundService` / `IHostedService` 只能放 `Guanfu.Web`。
     应用层只放业务用例与 DTO。
 19. **别在 SQL 的 Where 里写 C# 逻辑**：归一化（`NormalizeKey`）之类的转换
     EF 翻译不了会直接抛异常。可以在 SQL 里做**粗筛**（如 `StartsWith` 前缀），
@@ -196,7 +196,7 @@
     每个操作单开一个 scope（`ScopeFactory.CreateScope()`）。
     **页面上新增的定时刷新也一样**：总览、项目任务页的 15 秒自动刷新若跟页面上的
     写操作共用电路级 DbContext，人正点「流转」推状态时定时器来查库，就是同一个错。
-    测试里同理：`WorkbenchTestHost` 的审批服务每次给新的 DbContext，
+    测试里同理：`GuanfuTestHost` 的审批服务每次给新的 DbContext，
     别让「等审批」的轮询和「裁决」的写共用一个。
 22. **REST 端点的敏感分类有测试兜底**：`EndpointClassificationTests` 会枚举所有
     `/api` 写端点，断言该要人工凭证的要、读端点别误伤。
@@ -204,7 +204,7 @@
 23. **跨站与 DNS rebinding 要挡**：`OriginHostGuardMiddleware` 做两道检查 ——
     `/api` 写方法的 `Origin` 必须与 `Host` 同源；`Host` 头必须在允许清单里
     （默认回环）。只监听回环挡不住 rebinding，浏览器发出来的 `Host` 就是攻击者的域名。
-    内网部署用 `Workbench:AllowedHosts` 显式放行。
+    内网部署用 `Guanfu:AllowedHosts` 显式放行。
 24. **架构约定要靠测试钉住，不能只写在文档里**：
     `McpToolContractTests`（工具名 / 结果形状 / 写工具的审批标记）、
     `EventLedgerContractTests`（事件必带 Payload）、
@@ -233,7 +233,7 @@
 27. **产出文件靠采集，不靠 agent 自报**：
     采集点只有两个，都在 agent 绕不过去的地方 ——
     ① `git_commit` 审批通过、真正提交之后；② 推进到 `Review` 时快照工作区。
-    `workbench_add_artifact` 只登记非代码产物，代码文件不靠它。
+    `guanfu_add_artifact` 只登记非代码产物，代码文件不靠它。
     **第 ② 点要放在服务层**（`TaskService.ChangeStatusAsync`）——
     放在某个入口里就只有那条路会采：以前只有 MCP 采，人从界面推进（以及 CI 走
     REST）就漏了，而「还没提交就进评审」恰恰是最该看见的产出。
@@ -262,7 +262,7 @@
 
 30. **界面上不许露代码标识**：
     用户看到的是「提交代码」「开发中」「文档就绪」，不是 `git_commit`、`InDev`。
-    中文说法统一走 `UiText`（`src/Workbench.Application/Contracts/UiText.cs`），
+    中文说法统一走 `UiText`（`src/Guanfu.Application/Contracts/UiText.cs`），
     **别在页面里各写各的映射**。GUID 同样不许出现在界面上 ——
     任务给编号（`REQ-001`），项目给名字，给不出名字就写「未命名」。
     两个例外：`/connect` 与 `/mcp-tools` 这两页是给开发者按名字调 agent 用的，
@@ -277,7 +277,7 @@
     别拿「要列表就用表格」把它改回去，也别把它当成铺卡片的借口去别处学。
     状态流转在表格行内做（点「状态」格弹菜单，选项只列 `TaskStatusMachine.AllowedFrom`），
     不用拖拽。**状态筛选用下拉，不要再摊成一排页签** —— 一屏十来个页签没人看得过来。
-    **颜色一律走 CSS 变量**：`wwwroot/workbench.css` 是 token 化的设计系统（`--wb-*`），
+    **颜色一律走 CSS 变量**：`wwwroot/guanfu.css` 是 token 化的设计系统（`--wb-*`），
     页面里出现 `#2563eb` 这种硬编码值就是漏出来了 —— 亮色主题下那些颜色在浅底上
     对比度不够，换主题时也不知道还有哪些地方要改。任务状态色走 `UiText.StatusClass`，
     事件类型色走 `wb-ev-*` 类。固定列宽写成 CSS 类，别塞进 `style`。
@@ -324,14 +324,14 @@
     现在写成「已等 X · 剩余 Y」，两个数都摆出来，快过期的染红。
     相对时间（「3 天前」）后面要跟 `title` 给绝对时间。
 
-34. **审计链头归档必须落在工作台数据目录之外**：
+34. **审计链头归档必须落在观复的数据目录之外**：
     库里的哈希链是应用层算的 —— 拿到库文件的人**连哈希一起重算**，链照样能对上。
-    链头归档到工作台够不着的地方（`Workbench:AuditArchivePath`），对账才能发现
+    链头归档到观复够不着的地方（`Guanfu:AuditArchivePath`），对账才能发现
     「记录被删过 / 库被回滚过 / 同一条被改过」。
-    **归档路径落在 `WORKBENCH_HOME` 里面要拒掉** —— 那种归档等于没归档，
+    **归档路径落在数据目录里面要拒掉** —— 那种归档等于没归档，
     拿到库文件的人连归档文件一起改就白搭。
     归档位置本身能不能被同样的人改，是**部署方的责任**（只读挂载、另一台机器、
-    另一个权限域），别在工作台里假装能挡住。
+    另一个权限域），别在观复里假装能挡住。
     链头没变时不要重复追加 —— 定时任务每 10 分钟跑一次，
     一次没写入就等于把归档文件灌成流水账。
 35. **agent 干活要有自己的工位**：
@@ -340,7 +340,7 @@
     - **主工作区（仓库根）同一时刻只允许一个 agent 占着**；
       同一个 agent 手上多个活不算冲突（它自己知道先后）；
     - 要并行，各开各的 git worktree，领任务时带 `worktree` 参数登记。
-      **工作台不替 agent 建 worktree**（那是它自己仓库里的事），
+      **观复不替 agent 建 worktree**（那是它自己仓库里的事），
       但要**校验**：读 `<worktree>/.git` 文件（worktree 的 .git 是文件，
       主 checkout 的是目录），确认它确实在这个仓库的 `.git/worktrees/` 下 ——
       不校验的话，声明 `/etc` 之类的地方就绕开了主工作区独占；
@@ -350,11 +350,11 @@
     - 项目级**并行上限**（`Project.MaxConcurrentAgents`，0 = 不限）是节流阀，
       拦的是并发过头，不是越权 —— 它可以非原子（读一下活跃数就行）；
     - 界面上给人看「谁在哪个工位」（`TaskSummaryDto.WorkPath`、
-      `WorkStationDto`），agent 在 `workbench_get_context` 里也要看得到 ——
+      `WorkStationDto`），agent 在 `guanfu_get_context` 里也要看得到 ——
       不然它只能靠踩文件发现有人在同目录干活。
     - **工具必须认工位**（`IWorkstationResolver`）：`fs_*` / `git_*` / `shell_run`
       / 产出采集，全都按工位走，不许写死项目仓库根。登记了工位但工具不认，
-      等于 agent 在 worktree 里写代码、工作台却去读主工作区 ——
+      等于 agent 在 worktree 里写代码、观复却去读主工作区 ——
       **产出采集会把主工作区的改动记成这个任务的产出**，审计记的是假的。
     - **工位是「这个 agent 手上那个活」的属性**，不是「这个任务」的属性：
       工具按「会话的任务」找不到时，回退到「这个 agent 在这个项目里活着的租约」。
@@ -367,7 +367,7 @@
     agent 读不到，「什么算做完」就各说各话。
     现在 `ProjectSpec` 是**一等实体**：人填（界面 / REST，**要人工凭证**——
     规矩是人的决定，agent 不该自己改「什么算做完」），
-    agent 读（`workbench_get_project_spec` + 上下文包 + 评审包）。
+    agent 读（`guanfu_get_project_spec` + 上下文包 + 评审包）。
     评审时它就是尺子：七个维度是通用的，规约是这个项目特有的。
     **DoD 逐条存**（一行一条）—— agent 逐条对着做，评审逐条对着判。
 37. **调度板是「现在什么能干」的答案**：agent-native PM 缺的就是这块 ——
@@ -375,17 +375,17 @@
     `IDispatchService` 把它组织成三个桶：
     **ready**（前置全清、没人占着）、**inProgress**（租约还活着）、
     **blocked**（还有前置没做完，带上卡它的是谁、**链有多深**）。
-    agent 与人看的是同一份（`workbench_get_dispatch_board` / 项目页「现在能干」页签）。
+    agent 与人看的是同一份（`guanfu_get_dispatch_board` / 项目页「现在能干」页签）。
     **链深要算对**：递归时别把起点预置进「递归路径」集合里 —— 预置了自己会被当成环，
     深度直接算成 0（踩过）。
-38. **用量只记「工作台数得出来的」**：工具调用次数、用到的工具种类、事件条数、
-    租约时长 —— 来自工作台自己的账本，可验证。
-    **token 与费用刻意不记**：工作台不调模型，不知道 agent 用的是哪个模型、什么价格、
+38. **用量只记「观复自己数得出来的」**：工具调用次数、用到的工具种类、事件条数、
+    租约时长 —— 来自观复自己的账本，可验证。
+    **token 与费用刻意不记**：观复不调模型，不知道 agent 用的是哪个模型、什么价格、
     什么套餐，那些数字只能靠 agent 自报 —— **自报的数字在审计上站不住**
     （查证不了的东西不要摆成看起来可查证的）。agent 花的「资源」用
     **工具调用次数**来代理。
     **每任务工具调用上限**（`Project.MaxToolCallsPerTask`，0 = 不限）是**节流阀**：
-    拦的是「一个 agent 跑飞、把工作台当自己的工具箱刷」，不是安全边界。
+    拦的是「一个 agent 跑飞、把观复当自己的工具箱刷」，不是安全边界。
     它在 MCP 的中央过滤器里生效 —— 被拦下的那次调用照样进审计（agent 得知道自己被拦了）。
 39. **里程碑验收是人的签字，而且要看完成定义**：
     评审有结项门禁，里程碑以前没有对应的判定 ——「这个版本真做完了吗」没人判。
@@ -404,7 +404,7 @@
     - **接手的人要看得见「为什么换手」**：领活的结果里带 `previousHolder` 与
       `handoffReason`（优先取他放手时写的理由，没有就取他接活时留的上下文）；
       不知道原因，接手的人只能瞎猜有没有坑要重蹈。
-    - **agent 要能放掉活**（`workbench_release_task`，带 reason）：卡住了（分支不对、
+    - **agent 要能放掉活**（`guanfu_release_task`，带 reason）：卡住了（分支不对、
       缺上下文、跑不动）就交回去 —— 占着别人就接不了这个活。
 41. **「先干哪个」要可解释**：调度板回答「什么能干」，调度建议回答「先干哪个」——
     同样能干的活有五个，挑哪个、为什么挑，是两回事。
@@ -413,10 +413,10 @@
     **已经在干的活不算候选**；主工作区被别人占着时给**提示**（要自己开 worktree），
     不排除 —— 排除了就等于告诉 agent「这活别干」。
     排除某个 agent 时要连它**刚放下的**活一起排除（上一个持有者从事件流里取）。
-42. **agent 离线干了活，要按「实际发生时间」补报**：网络不通、工作台在维护、
+42. **agent 离线干了活，要按「实际发生时间」补报**：网络不通、观复在维护、
     活是上一轮会话干的 —— 这些时候 agent 是**先干活、后报**。
     报的时候给 `occurredAt`（ISO 8601），账本上**两个时间都要有**：
-    `OccurredAt` 是发生时间，`CreatedAt` 是「工作台什么时候知道的」。
+    `OccurredAt` 是发生时间，`CreatedAt` 是「观复什么时候知道的」。
     只记一个就是在骗人：流水看着像那会儿干的，其实不是。
     规矩：**未来的时间不收**（还没发生的事不能补报），**离谱的过去也拒**（多半是写错了）。
     产物、计划、测试结果的「产出时间」按发生时间算，任务的活动时间仍按记录时间算
@@ -431,10 +431,10 @@
 44. **agent 得能一眼知道「我该在哪儿干活」**：主工作区同一时刻只允许一个 agent 占着，
     并行的办法是各开各的 worktree —— 但 agent 常常**不知道该建在哪**，
     只能靠踩文件发现有人在同目录干活。
-    `workbench_get_workstation` 回答这件事：主工作区被谁占着、这次该用哪个目录、
+    `guanfu_get_workstation` 回答这件事：主工作区被谁占着、这次该用哪个目录、
     要并行的话建哪个工位、**建它的确切命令**。
-    **工作台不替 agent 建 worktree**（规矩 35）—— 那是它自己仓库里的事，
-    工作台只给路径与命令，外加事后校验（登记时验它确实是本仓库的 worktree）。
+    **观复不替 agent 建 worktree**（规矩 35）—— 那是它自己仓库里的事，
+    观复只给路径与命令，外加事后校验（登记时验它确实是本仓库的 worktree）。
     建议的工位放在**仓库旁边**（`<仓库名>-wb-worktrees/<编号>`）：
     放仓库里会变成主工作区的未跟踪文件，提交时容易误带进去。
 45. **评审可以分工，结论按维度独立**：一轮七个维度，agent 常开子 agent 并行评。
@@ -445,10 +445,10 @@
     **结论不需要合并**：七个维度各自独立，全过才结项。
 46. **交接包 = 散落事实打成一份**：交接的难点不是把文件传过去，
     是**让接手的人知道从哪儿下手**（做到哪一步、为什么停下、哪些坑别再踩）。
-    `workbench_get_handoff_pack` 一次给全：任务与项目、分支与 HEAD、生效的规约、
+    `guanfu_get_handoff_pack` 一次给全：任务与项目、分支与 HEAD、生效的规约、
     最新计划、文档、产物、最近一次测试、当前评审轮、当前工位、
     **上一个是谁 / 为什么交出来 / 什么时候交的**、最近流水、当前允许的迁移。
-    只放**结构化事实** —— 工作台不生成自然语言总结（它不调模型，也不该假装会）。
+    只放**结构化事实** —— 观复不生成自然语言总结（它不调模型，也不该假装会）。
 
 47. **并行上限有两层**：项目级的（这个项目里别挤）+ **工作区级的**
     （整个工作区别挤，跨项目一起算）。人把一个工作区铺成十个项目时，
@@ -466,8 +466,8 @@
     下一个 agent 不知道那个目录还在，人也不知道哪些能删。
     所以工位要能**列出来**（谁在用、目录还在不在、**有没有人管**），
     也要能**放掉**（清登记 + 给出 `git worktree remove` 的确切命令）。
-    **工作台不替 agent 删目录** —— 跟不替它建 worktree 一个道理：
-    那是它自己仓库里的事，工作台只给命令。
+    **观复不替 agent 删目录** —— 跟不替它建 worktree 一个道理：
+    那是它自己仓库里的事，观复只给命令。
     比对工位时**路径要归一化**（解软链）：登记的是人填的（`/tmp/...`），
     git 报的是解过的（`/private/tmp/...`），不归一化会把同一个工位算成两个。
 50. **交接链 = 每次转手都留痕**：一个活转手多次时，只说「上一个是谁」不够 ——
@@ -483,16 +483,16 @@
 52. **活干完了要提醒收工位**：worktree 建了没人收是常态 ——
     活结项了，那个目录还躺在磁盘上，下一个 agent 不知道它还在。
     所以任务进终态时留一笔「该收了」，工位清单上标出来，任务页给出清理的确切命令。
-    **工作台仍然不替 agent 删目录** —— 只给命令。
+    **观复仍然不替 agent 删目录** —— 只给命令。
 
 ## 常用命令
 
 ```bash
 ./tests/verify.sh                               # 一键验收：编译 → 单测 → 端到端，给总账
-./.dotnet/dotnet build Workbench.sln     # 用仓库里隔离的 .NET 8 SDK
-./.dotnet/dotnet test Workbench.sln
-dotnet run --project src/Workbench.Web          # 起服务（UI + REST + /mcp）
-dotnet run --project src/Workbench.Cli -- --help # CLI
+./.dotnet/dotnet build Guanfu.sln     # 用仓库里隔离的 .NET 8 SDK
+./.dotnet/dotnet test Guanfu.sln
+dotnet run --project src/Guanfu.Web          # 起服务（UI + REST + /mcp）
+dotnet run --project src/Guanfu.Cli -- --help # CLI
 
 ./tests/e2e/run.sh                              # 端到端验证（自起临时服务，跑完即收）
 ```
@@ -507,28 +507,30 @@ CI（`.github/workflows/verify.yml`）每次推送与 PR 都跑 `verify.sh`。
 |---|---|---|
 | A/B/C | `mcp_e2e.py` | MCP 主链路（按编号找任务 → claim → 上下文 → 回写计划 →推进到 Review → 开评审轮 → 取评审包 → 逐维度回写 → 结项）、评审拦截（只评 6 个维度 / 有一个维度不通过）、类型编号与分支守卫 |
 | D | `approval_e2e.py` | **写操作的人工审批门禁**：白名单外的直接拒 / 没批准不执行 / 批准后续跑 / 一条审批只能执行一次 / 换命令换项目都用不了 / 撤销是后悔药 / 只读通道不许写 / db_execute 也要审批 / 全程审计留痕 / **只读调用也留痕** |
-| E | `cli_smoke.py` | CLI 常用命令、敏感命令没凭证是 401、`wb mcp` 的 stdio 桥接真能转发 JSON-RPC |
+| E | `cli_smoke.py` | CLI 常用命令、敏感命令没凭证是 401、`guanfu mcp` 的 stdio 桥接真能转发 JSON-RPC |
 | F | `session_e2e.py` | **会话绑定链路**：项目绑仓库 → 不传 projectId 也能干活 → 跨项目被拒 → 按编号认领 → 审计自动带任务 → 提交后产出文件自动落库 |
-| G | `restart_e2e.py` | **重启对账**：真起服务 → 执行途中杀进程 → 同一个 WORKBENCH_HOME 再起一次 → 那次写操作标成「结果未知」交人工确认 |
+| G | `restart_e2e.py` | **重启对账**：真起服务 → 执行途中杀进程 → 同一个数据目录再起一次 → 那次写操作标成「结果未知」交人工确认 |
 
 改完 MCP 工具、状态机**或审批闸门**后跑一遍，比只看单测靠谱。
 新增写工具时，`approval_e2e.py` 里要跟着加一条「不批就不执行」的断言。
 
 企业验收看 `docs/ENTERPRISE.md`（逐条能力 → 落地位置 → 自动化证据 + 诚实的缺口清单）。
 
-数据目录由 `WORKBENCH_HOME` 决定（默认 `~/.workbench`），里面是 SQLite、文档原件、密钥文件、
+数据目录由 `GUANFU_HOME` 决定（默认 `~/.guanfu`；旧的环境变量 `WORKBENCH_HOME` 与旧目录
+`~/.workbench` **仍然认** —— 改名不该让人打开一看数据没了）。
+里面是 SQLite（`guanfu.db`，老库的 `workbench.db` 也照样用）、文档原件、密钥文件、
 外部 agent 的运行日志（`runs/`）、人工凭证（`.human-token`）与定时备份（`backups/`）。
-换机用 `wb workspace export` / `wb workspace import`（导出带库+文档+密钥+运行日志）。
+换机用 `guanfu workspace export` / `guanfu workspace import`（导出带库+文档+密钥+运行日志）。
 
-审计链头的归档**不在**这里 —— 配 `Workbench:AuditArchivePath` 指向工作台数据目录之外的
+审计链头的归档**不在**这里 —— 配 `Guanfu:AuditArchivePath` 指向观复的数据目录之外的
 文件（或目录）。不配就不归档（规矩 34）。
 
 ## 三个前端，权重不一样
 
-`Web UI` / `MCP 工具集` / `CLI (wb)` 是**平行**的三个入口，共用同一批应用服务。
+`Web UI` / `MCP 工具集` / `CLI (guanfu)` 是**平行**的三个入口，共用同一批应用服务。
 
 **主路径是 Web UI + MCP**（人看界面，agent 走工具）。CLI 是次要入口——
-功能上大多被前两者覆盖，但 **`wb mcp` 的 stdio 桥接不可替代**（只支持 stdio 的
+功能上大多被前两者覆盖，但 **`guanfu mcp` 的 stdio 桥接不可替代**（只支持 stdio 的
 MCP 客户端全靠它接进来），改动桥接时要格外小心。
 
 CLI 命令**全部保留**（用户 2026-11-12 决定），不因为「大概率不用」就精简——
@@ -538,13 +540,13 @@ CLI 命令**全部保留**（用户 2026-11-12 决定），不因为「大概率
 
 | 目录 | 职责 |
 |---|---|
-| `src/Workbench.Domain` | 实体、任务状态机、评审维度定义、规则 |
-| `src/Workbench.Application` | 用例服务、DTO、事件、审批编排、评审工作流、任务依赖/分派/导出 |
-| `src/Workbench.Documents` | 文档解析引擎（MD/DOCX/PDF/diff → 统一模型） |
-| `src/Workbench.Infrastructure` | EF Core/SQLite、schema 升级、文档存储、Git 读写、SQL Server 执行器、工作区搬迁 |
-| `src/Workbench.Mcp` | MCP 工具集 |
-| `src/Workbench.Web` | Blazor UI + REST API + /mcp 端点（宿主进程）、人工凭证、定时备份 |
-| `src/Workbench.Cli` | `wb` 命令行 + stdio↔HTTP MCP 桥接 |
+| `src/Guanfu.Domain` | 实体、任务状态机、评审维度定义、规则 |
+| `src/Guanfu.Application` | 用例服务、DTO、事件、审批编排、评审工作流、任务依赖/分派/导出 |
+| `src/Guanfu.Documents` | 文档解析引擎（MD/DOCX/PDF/diff → 统一模型） |
+| `src/Guanfu.Infrastructure` | EF Core/SQLite、schema 升级、文档存储、Git 读写、SQL Server 执行器、工作区搬迁 |
+| `src/Guanfu.Mcp` | MCP 工具集 |
+| `src/Guanfu.Web` | Blazor UI + REST API + /mcp 端点（宿主进程）、人工凭证、定时备份 |
+| `src/Guanfu.Cli` | `guanfu` 命令行 + stdio↔HTTP MCP 桥接 |
 
 ## 文档语义别弄丢
 

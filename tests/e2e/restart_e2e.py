@@ -41,17 +41,17 @@ LONG_COMMAND = "sleep 45"
 
 
 def start_server(dotnet: str, root: str, home: str, port: int) -> subprocess.Popen:
-    """起一个工作台进程，等它真的能服务了再返回。"""
+    """起一个观复进程，等它真的能服务了再返回。"""
     env = dict(os.environ)
     env["WORKBENCH_HOME"] = home
 
     # 直接跑编译好的 dll，而不是 dotnet run ——
     # dotnet run 会再 fork 一个子进程，杀父进程杀不掉真在干活的那个。
-    dll = os.path.join(root, "src/Workbench.Web/bin/Debug/net8.0/Workbench.Web.dll")
+    dll = os.path.join(root, "src/Guanfu.Web/bin/Debug/net8.0/Guanfu.Web.dll")
     proc = subprocess.Popen(
         [dotnet, dll, "--urls", f"http://127.0.0.1:{port}"],
         env=env,
-        cwd=os.path.join(root, "src/Workbench.Web"),
+        cwd=os.path.join(root, "src/Guanfu.Web"),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -118,7 +118,7 @@ def main() -> int:
         section("链路 G：重启对账（执行中断 → 结果未知）")
 
         build = subprocess.run(
-            [args.dotnet, "build", os.path.join(root, "src/Workbench.Web"), "-v", "quiet", "--nologo"],
+            [args.dotnet, "build", os.path.join(root, "src/Guanfu.Web"), "-v", "quiet", "--nologo"],
             capture_output=True, text=True, timeout=300)
         if build.returncode != 0:
             print(f"❌ 编译失败:\n{build.stdout}\n{build.stderr}")
