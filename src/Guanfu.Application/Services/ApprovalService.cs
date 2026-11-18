@@ -18,7 +18,13 @@ public interface IApprovalService
         Guid? taskId = null,
         Guid? projectId = null,
         int ttlMinutes = 30,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        /// <summary>
+        /// 这条审批归谁批（成员 id）。
+        ///
+        /// 「审批只能个人审批」：agent 的写操作要人点头，点的是这把钥匙背后的人。
+        /// </summary>
+        Guid? assigneeMemberId = null);
 
     Task<ApprovalDto?> GetAsync(Guid id, CancellationToken cancellationToken = default);
 
@@ -44,7 +50,13 @@ public interface IApprovalService
         /// 参数放在 CancellationToken 之后：插在中间会破坏既有的位置参数调用
         /// （老代码第 5 个位置传的是 ct，直接编译不过）。
         /// </summary>
-        string? decidedByCredential = null);
+        string? decidedByCredential = null,
+        /// <summary>
+        /// 代批时被代的人（成员 id）。
+        ///
+        /// 不传就算「本人批自己的」；管理员批别人的单子时由服务端按归属人补上。
+        /// </summary>
+        Guid? onBehalfOfMemberId = null);
 
     /// <summary>
     /// 人工撤销一条审批（Pending / Approved → Rejected）。
@@ -112,9 +124,16 @@ public sealed record ApprovalConsumeResult(bool Ok, Guid ApprovalId, string Stat
         new(false, id, status, error);
 }
 
-public sealed class ApprovalService(IAppDbContext db, IClock clock, INotifier? notifier = null) : IApprovalService
+public sealed class ApprovalService(
+    IAppDbContext db,
+    IClock clock,
+    INotifier? notifier = null,
+    ICurrentMemberScope? currentMember = null) : IApprovalService
 {
     private readonly INotifier? _notifier = notifier;
+
+    /// <summary>当前身份（没人登录 = 单人本机模式 = 不过滤）。</summary>
+    private MemberScope? Scope => currentMember?.Current;
 
     public const int DefaultTtlMinutes = 30;
 
@@ -133,7 +152,14 @@ public sealed class ApprovalService(IAppDbContext db, IClock clock, INotifier? n
         Guid? taskId = null,
         Guid? projectId = null,
         int ttlMinutes = 30,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        /// <summary>
+        /// 这条审批归谁批。
+        ///
+        /// 「审批只能个人审批」：agent 的写操作要人点头，点的是**这把钥匙背后的人**。
+        /// 为空 = 还没归到人身上（老数据）。
+        /// </summary>
+        Guid? assigneeMemberId = null)
     {
         var now = clock.UtcNow;
         var hash = ComputePayloadHash(payload);
@@ -169,6 +195,7 @@ public sealed class ApprovalService(IAppDbContext db, IClock clock, INotifier? n
             RequestedBy = requestedBy,
             TaskId = taskId,
             ProjectId = projectId,
+            AssigneeMemberId = assigneeMemberId,
             CreatedAt = now,
             ExpiresAt = now.AddMinutes(Math.Clamp(ttlMinutes, 1, 24 * 60))
         };
@@ -256,6 +283,10 @@ public sealed class ApprovalService(IAppDbContext db, IClock clock, INotifier? n
 
         var query = db.Approvals.AsNoTracking();
 
+        // 可见性：普通成员只看**自己的**待批（审批只能个人审批）。
+        // 管理员看全部 —— 并且可以代批（代批要写理由）。
+        query = query.VisibleTo(Scope);
+
         if (status is not null)
         {
             query = query.Where(a => a.Status == status.Value);
@@ -284,7 +315,13 @@ public sealed class ApprovalService(IAppDbContext db, IClock clock, INotifier? n
         string? decidedBy = null,
         string? reason = null,
         CancellationToken cancellationToken = default,
-        string? decidedByCredential = null)
+        string? decidedByCredential = null,
+        /// <summary>
+        /// 代批时被代的人（成员 id）。
+        ///
+        /// 不传就算「本人批自己的」；管理员批别人的单子时由服务端按归属人补上。
+        /// </summary>
+        Guid? onBehalfOfMemberId = null)
     {
         if (!approve && string.IsNullOrWhiteSpace(reason))
         {
@@ -316,6 +353,32 @@ public sealed class ApprovalService(IAppDbContext db, IClock clock, INotifier? n
             throw new GuanfuException($"审批 {id} 已过期。");
         }
 
+        // 「审批只能个人审批」：普通成员只能批**自己的**单子。
+        // 管理员可以代批 —— 但那要写理由，而且要记下「谁替谁批的」。
+        var scope = Scope;
+
+        if (scope is not null && !scope.IsAdmin)
+        {
+            if (current.AssigneeMemberId is null || current.AssigneeMemberId != scope.MemberId)
+            {
+                throw new GuanfuException("这条审批不是你的 —— 只能批自己的。");
+            }
+        }
+
+        if (scope is not null
+            && scope.IsAdmin
+            && current.AssigneeMemberId is Guid assignee
+            && assignee != scope.MemberId)
+        {
+            if (string.IsNullOrWhiteSpace(reason))
+            {
+                throw new GuanfuException(
+                    "这是代批 —— 必须写理由：谁替谁批的要看得见。");
+            }
+
+            onBehalfOfMemberId ??= assignee;
+        }
+
         var target = approve ? ApprovalStatus.Approved : ApprovalStatus.Rejected;
 
         // 条件更新：两个人同时点，只有一个改得动，另一个明确收到「已被处理」
@@ -326,7 +389,8 @@ public sealed class ApprovalService(IAppDbContext db, IClock clock, INotifier? n
                 .SetProperty(a => a.DecidedBy, decidedBy)
                 .SetProperty(a => a.DecidedByCredential, decidedByCredential)
                 .SetProperty(a => a.DecisionReason, reason)
-                .SetProperty(a => a.DecidedAt, now), cancellationToken);
+                .SetProperty(a => a.DecidedAt, now)
+                .SetProperty(a => a.OnBehalfOfMemberId, onBehalfOfMemberId), cancellationToken);
 
         if (affected == 0)
         {
@@ -686,5 +750,9 @@ public sealed class ApprovalService(IAppDbContext db, IClock clock, INotifier? n
         a.Task?.Key,
         a.Task?.Title,
         a.Project?.Name,
+        a.AssigneeMemberId,
+        a.AssigneeMember?.DisplayName,
+        a.OnBehalfOfMemberId,
+        a.OnBehalfOfMember?.DisplayName,
         a.OutcomeUnknown);
 }

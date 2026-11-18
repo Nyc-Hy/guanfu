@@ -60,7 +60,8 @@ public sealed class GeneralMcpTools(
     IGitInspector? gitInspector = null,
     IProjectScopeResolver? scopeResolver = null,
     IFileChangeService? fileChanges = null,
-    IWorkstationResolver? workstations = null)
+    IWorkstationResolver? workstations = null,
+    IAgentSessionAccessor? sessions = null)
 {
     /// <summary>
     /// 算出这次调用算在哪个项目上。
@@ -243,7 +244,8 @@ public sealed class GeneralMcpTools(
             var gate = await approvalGate.AcquireAsync(
                 "git_commit", "git.write", payload,
                 BuildCommitSummary(config.Name, message, config.RepoPath!),
-                callerId, taskId, scope.ProjectId, approvalId, waitSeconds, cancellationToken);
+                callerId, taskId, scope.ProjectId, approvalId, waitSeconds, cancellationToken,
+                sessions?.CurrentCredential?.MemberId);
 
             if (!gate.Approved)
             {
@@ -483,7 +485,8 @@ public sealed class GeneralMcpTools(
             var gate = await approvalGate.AcquireAsync(
                 "git_push", "git.write", payload,
                 $"在 {config.Name} 推送：{target}",
-                callerId, taskId, scope.ProjectId, approvalId, waitSeconds, cancellationToken);
+                callerId, taskId, scope.ProjectId, approvalId, waitSeconds, cancellationToken,
+                sessions?.CurrentCredential?.MemberId);
 
             if (!gate.Approved)
             {
@@ -608,7 +611,8 @@ public sealed class GeneralMcpTools(
             var gate = await approvalGate.AcquireAsync(
                 "shell_run", "shell.write", command,
                 $"在 {config.Name} 执行：{command}",
-                callerId, taskId, scope.ProjectId, approvalId, waitSeconds, cancellationToken);
+                callerId, taskId, scope.ProjectId, approvalId, waitSeconds, cancellationToken,
+                sessions?.CurrentCredential?.MemberId);
 
             if (!gate.Approved)
             {

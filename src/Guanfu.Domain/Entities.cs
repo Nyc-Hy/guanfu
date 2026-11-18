@@ -417,6 +417,17 @@ public class TaskItem
     /// <summary>负责人（人名或 agent id）。为空表示还没分派。</summary>
     public string? Assignee { get; set; }
 
+    /// <summary>
+    /// 负责人是哪个成员。
+    ///
+    /// 「负责人」那一列是给人看的名字（可能是人，也可能是 agent），
+    /// 这一列才是**归属**：可见性按它算 —— 普通成员只看得到自己的活。
+    /// 为空 = 还没分派（谁都能看见，也谁都能认领）。
+    /// </summary>
+    public Guid? AssigneeMemberId { get; set; }
+
+    public Member? AssigneeMember { get; set; }
+
     /// <summary>优先级。不参与状态机，只影响排序与展示。</summary>
     public TaskPriority Priority { get; set; } = TaskPriority.Normal;
 
@@ -717,6 +728,26 @@ public class Approval
     public string? RequestedBy { get; set; }
     public string? DecidedBy { get; set; }
     public string? DecisionReason { get; set; }
+
+    /// <summary>
+    /// 这条审批归谁批。
+    ///
+    /// 「审批只能个人审批」：agent 的写操作要人点头，点的是**这把钥匙背后的人**。
+    /// 为空 = 还没归到人身上（老数据，或没人签发过凭证）。
+    /// </summary>
+    public Guid? AssigneeMemberId { get; set; }
+
+    public Member? AssigneeMember { get; set; }
+
+    /// <summary>
+    /// 代批时被代的人。
+    ///
+    /// 管理员可以替别人批 —— 但**谁替谁批的必须看得见**：
+    /// 实际裁决人记在 <see cref="DecidedBy"/>，被代人记在这里。
+    /// </summary>
+    public Guid? OnBehalfOfMemberId { get; set; }
+
+    public Member? OnBehalfOfMember { get; set; }
 
     /// <summary>
     /// 裁决人所用人工凭证的指纹（哈希前 12 位，不存明文）。

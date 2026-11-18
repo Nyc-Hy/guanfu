@@ -2,7 +2,9 @@
 @rendermode InteractiveServer
 @using Microsoft.AspNetCore.Http
 @using Microsoft.Extensions.DependencyInjection
+@using Microsoft.AspNetCore.Components.Authorization
 @inject ITaskService Tasks
+@inject IMemberService MemberStore
 @inject IDocumentService Documents
 @inject IArtifactService Artifacts
 @inject IHandoffService HandoffService
@@ -1142,6 +1144,26 @@ else
                     <label class="wb-label">负责人</label>
                     <input class="wb-input" placeholder="人名或 agent id" @bind="AssigneeInput" @bind:event="oninput" />
                 </div>
+                @if (MemberItems.Count > 0)
+                {
+                    <div class="wb-field-row">
+                        <label class="wb-label">归属成员</label>
+                        <select class="wb-input" @bind="AssigneeMemberValue">
+                            <option value="">未分派</option>
+                            @foreach (var member in AssignableMembers)
+                            {
+                                <option value="@member.Id">@member.DisplayName（@member.UserName）</option>
+                            }
+                        </select>
+                    </div>
+                    <div class="wb-muted">
+                        归属成员决定「谁看得见这个活」—— 普通成员只看自己的。
+                        @if (!IsAdmin)
+                        {
+                            <text>（只有管理员能分给别人）</text>
+                        }
+                    </div>
+                }
                 <div class="wb-field-row">
                     <label class="wb-label">优先级</label>
                     <select class="wb-input" @bind="PriorityInput">
@@ -1269,6 +1291,24 @@ else
     private string SelectedType { get; set; } = "requirement";
     private string BranchInput { get; set; } = string.Empty;
     private string AssigneeInput { get; set; } = string.Empty;
+
+    /// <summary>归属成员（空 = 未分派）。</summary>
+    private string AssigneeMemberValue { get; set; } = string.Empty;
+
+    /// <summary>团队成员（用来分派活）。</summary>
+    private IReadOnlyList<MemberDto> MemberItems { get; set; } = [];
+
+    /// <summary>当前用户是不是管理员（管理员能分给别人）。</summary>
+    private bool IsAdmin { get; set; }
+
+    /// <summary>当前用户自己（普通成员只能分给自己）。</summary>
+    private Guid? CurrentMemberId { get; set; }
+
+    /// <summary>能选的人：管理员看全部，普通成员只有自己。</summary>
+    private IReadOnlyList<MemberDto> AssignableMembers =>
+        IsAdmin ? MemberItems : MemberItems.Where(m => m.Id == CurrentMemberId).ToList();
+
+    [CascadingParameter] private Task<AuthenticationState>? AuthStateTask { get; set; }
     private string PriorityInput { get; set; } = "Normal";
     private string DueInput { get; set; } = string.Empty;
     private bool Launching { get; set; }
@@ -1295,6 +1335,8 @@ else
     private readonly SubmitLatch _uploads = new();
 
     // 页面上「就地查看」用：展开状态 + 解析结果缓存
+    private bool _identityLoaded;
+
     private readonly HashSet<Guid> _expandedDocuments = new();
     private readonly HashSet<Guid> _expandedArtifacts = new();
     private readonly HashSet<Guid> _expandedEventPayloads = new();
@@ -1340,10 +1382,41 @@ else
             await ReloadAsync(syncInputs: true);
         }
 
+        // 身份与成员名单：分派面板要用（谁能分给谁）。
+        if (!_identityLoaded)
+        {
+            _identityLoaded = true;
+            await LoadIdentityAsync();
+        }
+
         // 交接包只有那一页用得上 —— 不切过去就不拉
         if (ActiveTab == "handoff" && Handoff is null)
         {
             await LoadHandoffAsync();
+        }
+    }
+
+    /// <summary>
+    /// 读当前身份与成员名单。
+    ///
+    /// 身份决定「谁能分给别人」，成员名单是分派下拉的内容。
+    /// </summary>
+    private async Task LoadIdentityAsync()
+    {
+        try
+        {
+            if (AuthStateTask is not null)
+            {
+                var state = await AuthStateTask;
+                IsAdmin = MemberAuth.IsAdmin(state.User);
+                CurrentMemberId = MemberAuth.MemberId(state.User);
+            }
+
+            MemberItems = await MemberStore.ListAsync();
+        }
+        catch (Exception ex)
+        {
+            Error = PageError.From(ex, "读成员名单");
         }
     }
 
@@ -1511,6 +1584,7 @@ else
         };
         BranchInput = Context.Task.Branch ?? string.Empty;
         AssigneeInput = Context.Task.Assignee ?? string.Empty;
+        AssigneeMemberValue = Context.Task.AssigneeMemberId?.ToString() ?? string.Empty;
         PriorityInput = Context.Task.Priority.ToString();
         DueInput = Context.Task.DueAt?.ToLocalTime().ToString("yyyy-MM-ddTHH:mm") ?? string.Empty;
     }
@@ -1741,7 +1815,11 @@ else
             await Tasks.SetAssignmentAsync(
                 TaskId,
                 string.IsNullOrWhiteSpace(AssigneeInput) ? null : AssigneeInput.Trim(),
-                priority, dueAt);
+                priority, dueAt,
+                assigneeMemberId: string.IsNullOrWhiteSpace(AssigneeMemberValue)
+                    ? null
+                    : Guid.Parse(AssigneeMemberValue),
+                clearAssigneeMember: string.IsNullOrWhiteSpace(AssigneeMemberValue));
             Error = null;
             await RefreshContextAndEventsAsync();
         }

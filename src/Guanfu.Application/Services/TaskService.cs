@@ -187,7 +187,17 @@ public interface ITaskService
         TaskPriority? priority = null,
         DateTimeOffset? dueAt = null,
         double? weight = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        /// <summary>
+        /// 负责人是哪个成员（可见性按它算）。
+        /// </summary>
+        Guid? assigneeMemberId = null,
+        /// <summary>
+        /// 取消归属（放回「未分派」）。
+        ///
+        /// null 的 assigneeMemberId 表示「不动这个字段」，所以「清空」要显式说。
+        /// </summary>
+        bool clearAssigneeMember = false);
 }
 
 /// <summary>
@@ -212,9 +222,15 @@ public sealed class TaskService(
     IFileChangeService? fileChanges = null,
     IWorkstationResolver? workstations = null,
     IProjectSpecService? specService = null,
-    IWorkstationService? stationService = null) : ITaskService
+    IWorkstationService? stationService = null,
+    ICurrentMemberScope? currentMember = null) : ITaskService
 {
     public const int StaleAfterHours = 72;
+
+    /// <summary>
+    /// 当前身份（没有人登录 = 单人本机模式 = 不过滤）。
+    /// </summary>
+    private MemberScope? Scope => currentMember?.Current;
 
     /// <summary>补报的时间最多能比记录时间晚多久（留点时钟误差的余量）。</summary>
     private static readonly TimeSpan FutureTolerance = TimeSpan.FromMinutes(5);
@@ -350,6 +366,10 @@ public sealed class TaskService(
         bool includeArchived = false)
     {
         var query = db.Tasks.AsNoTracking();
+
+        // 可见性：普通成员只看自己的活（外加还没分派的 ——
+        // 不然没人能认领它）。管理员看全部；没人登录时不过滤（单人本机模式）。
+        query = query.VisibleTo(Scope);
 
         if (!includeArchived)
         {
@@ -492,7 +512,10 @@ public sealed class TaskService(
 
     public async Task<TaskSummaryDto?> GetAsync(Guid id, CancellationToken cancellationToken = default)
     {
-        var task = await db.Tasks.AsNoTracking().FirstOrDefaultAsync(t => t.Id == id, cancellationToken);
+        var task = await db.Tasks.AsNoTracking()
+            .VisibleTo(Scope)
+            .FirstOrDefaultAsync(t => t.Id == id, cancellationToken);
+
         if (task is null)
         {
             return null;
@@ -1673,7 +1696,16 @@ public sealed class TaskService(
         TaskPriority? priority = null,
         DateTimeOffset? dueAt = null,
         double? weight = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        /// <summary>
+        /// 负责人是哪个成员。
+        ///
+        /// 「负责人」那一列是给人看的名字，这一列才是**归属** ——
+        /// 可见性按它算（普通成员只看自己的活）。
+        /// </summary>
+        Guid? assigneeMemberId = null,
+        /// <summary>取消归属（放回「未分派」）。</summary>
+        bool clearAssigneeMember = false)
     {
         var task = await db.Tasks.FirstOrDefaultAsync(t => t.Id == id, cancellationToken)
                    ?? throw new NotFoundException("任务", id);
@@ -1687,6 +1719,45 @@ public sealed class TaskService(
             {
                 task.Assignee = value;
                 changes.Add($"负责人 → {value ?? "(未分派)"}");
+            }
+        }
+
+        if (clearAssigneeMember && task.AssigneeMemberId is not null)
+        {
+            task.AssigneeMemberId = null;
+            changes.Add("负责人归属 → 未分派");
+        }
+
+        if (assigneeMemberId is not null)
+        {
+            // 「管理员可以分配任务给其他人」—— 普通成员只能分给自己。
+            // 这条判定在**服务层**：界面上的下拉只是方便，不是保证。
+            var scope = Scope;
+
+            if (scope is not null && !scope.IsAdmin && scope.MemberId != assigneeMemberId.Value)
+            {
+                throw new GuanfuException("只有管理员能把活分给别人。");
+            }
+
+            if (task.AssigneeMemberId != assigneeMemberId)
+            {
+                // 归属的人必须真的存在 —— 挂一个不存在的成员等于没挂。
+                var member = await db.Members.AsNoTracking()
+                    .FirstOrDefaultAsync(m => m.Id == assigneeMemberId.Value, cancellationToken)
+                    ?? throw new NotFoundException("成员", assigneeMemberId.Value);
+
+                task.AssigneeMemberId = member.Id;
+
+                // 归属的是人，名字也该是人 —— 免得界面上写着 agent、归属却是人。
+                if (string.IsNullOrWhiteSpace(task.Assignee))
+                {
+                    task.Assignee = member.DisplayName;
+                    changes.Add($"负责人 → {member.DisplayName}");
+                }
+                else
+                {
+                    changes.Add($"负责人归属 → {member.DisplayName}");
+                }
             }
         }
 
@@ -1750,8 +1821,10 @@ public sealed class TaskService(
         CancellationToken cancellationToken = default,
         string? agentId = null)
     {
-        var task = await db.Tasks.AsNoTracking().FirstOrDefaultAsync(t => t.Id == id, cancellationToken)
-                   ?? throw new NotFoundException("任务", id);
+        var task = await db.Tasks.AsNoTracking()
+            .VisibleTo(Scope)
+            .FirstOrDefaultAsync(t => t.Id == id, cancellationToken)
+            ?? throw new NotFoundException("任务", id);
 
         var project = await db.Projects.AsNoTracking().FirstOrDefaultAsync(p => p.Id == task.ProjectId, cancellationToken);
 
@@ -2294,6 +2367,7 @@ public sealed class TaskService(
             task.Branch,
             task.IsArchived,
             task.Assignee,
+            task.AssigneeMemberId,
             task.Priority,
             task.DueAt,
             task.Weight,

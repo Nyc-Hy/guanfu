@@ -338,6 +338,7 @@ public sealed class MyWorkService(
         task.Branch,
         task.IsArchived,
         task.Assignee,
+        task.AssigneeMemberId,
         task.Priority,
         task.DueAt,
         task.Weight,

@@ -1,6 +1,7 @@
 @page "/approvals"
 @rendermode InteractiveServer
 @using Microsoft.AspNetCore.Http
+@using Microsoft.AspNetCore.Components.Authorization
 @using Microsoft.Extensions.DependencyInjection
 @inject IProjectService Projects
 @inject HumanTokenAccessor Tokens
@@ -36,7 +37,7 @@
    错误提示写在每张卡片里的话，一刷新就没了。 *@
 <ErrorNotice Error="ActionError" />
 
-@if (!Gate.Authorized)
+@if (!Gate.Authorized && !IsLoggedIn)
 {
     <div class="wb-panel">
         <p class="wb-error">@ApprovalUiGuard.MissingTokenMessage</p>
@@ -162,6 +163,14 @@ else
                         {
                             <a class="wb-chip wb-chip-muted" href="/projects/@approval.ProjectId">@approval.ProjectName</a>
                         }
+                        @* 归谁批：普通成员只看得到自己的单子，这里写明是谁的。 *@
+                        @if (!string.IsNullOrWhiteSpace(approval.AssigneeMemberName))
+                        {
+                            <span class="wb-chip wb-chip-muted"
+                                  title="@AssigneeTitle(approval)">
+                                归 @approval.AssigneeMemberName 批
+                            </span>
+                        }
                         @* 结果未知：服务重启把执行打断了，那次写操作可能已经生效。
                            跟「执行失败」不是一回事，得让人先确认再让 agent 重来。 *@
                         @if (approval.OutcomeUnknown)
@@ -196,6 +205,10 @@ else
                         @if (!string.IsNullOrWhiteSpace(approval.DecidedBy))
                         {
                             <span>裁决人 @approval.DecidedBy · </span>
+                        }
+                        @if (!string.IsNullOrWhiteSpace(approval.OnBehalfOfMemberName))
+                        {
+                            <span>代 @approval.OnBehalfOfMemberName 批 · </span>
                         }
                         @if (approval.DecidedAt is not null)
                         {
@@ -332,7 +345,22 @@ else
 
     private CancellationTokenSource? _timerCts;
 
-    private bool CanDecideNow => Gate.Authorized && !Submitting;
+    /// <summary>当前登录的成员（没登录就是 null）。</summary>
+    private bool IsLoggedIn { get; set; }
+
+    /// <summary>当前成员的名字（裁决人记这个）。</summary>
+    private string CurrentMemberName { get; set; } = string.Empty;
+
+    /// <summary>当前成员是不是管理员（管理员能代批）。</summary>
+    private bool IsAdminMember { get; set; }
+
+    /// <summary>当前成员的 id。</summary>
+    private Guid? CurrentMemberId { get; set; }
+
+    [CascadingParameter] private Task<AuthenticationState>? AuthStateTask { get; set; }
+
+    /// <summary>能不能裁决：有人在场（人工凭证）**或**用成员账号登录了。</summary>
+    private bool CanDecideNow => (Gate.Authorized || IsLoggedIn) && !Submitting;
 
     private bool AllSelected => VisibleItems.Count > 0 && VisibleItems.All(i => _selected.Contains(i.Id));
 
@@ -346,6 +374,8 @@ else
     {
         Gate = new UiTokenGate(Tokens.Token);
         Gate.AuthorizeFromRequest(RequestContext?.Request);
+
+        await LoadIdentityAsync();
 
         try
         {
@@ -535,6 +565,56 @@ else
         }
     }
 
+    /// <summary>读当前登录的成员（审批可以由成员账号来批）。</summary>
+    private async Task LoadIdentityAsync()
+    {
+        if (AuthStateTask is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var state = await AuthStateTask;
+
+            if (state.User.Identity?.IsAuthenticated == true)
+            {
+                IsLoggedIn = true;
+                CurrentMemberName = state.User.Identity.Name ?? "成员";
+                IsAdminMember = MemberAuth.IsAdmin(state.User);
+                CurrentMemberId = MemberAuth.MemberId(state.User);
+            }
+        }
+        catch (Exception)
+        {
+            // 拿不到身份就当没登录
+        }
+    }
+
+    /// <summary>归属说明：代批时明说「你现在是在代批」。</summary>
+    private string AssigneeTitle(ApprovalDto approval)
+    {
+        if (IsAdminMember && IsOnBehalfOf(approval.Id))
+        {
+            return "这条审批归这个人批。你现在是在代批 —— 必须写理由。";
+        }
+
+        return "这条审批归这个人批。";
+    }
+
+    /// <summary>这条审批是不是「替别人批」（管理员批别人的单子）。</summary>
+    private bool IsOnBehalfOf(Guid approvalId)
+    {
+        var approval = Items.FirstOrDefault(a => a.Id == approvalId);
+
+        if (approval?.AssigneeMemberId is null || CurrentMemberId is null)
+        {
+            return false;
+        }
+
+        return approval.AssigneeMemberId != CurrentMemberId.Value;
+    }
+
     /// <summary>自动取凭证：拿到就放行，拿不到就让人粘贴。</summary>
     private async Task AcquireTokenAsync()
     {
@@ -640,7 +720,7 @@ else
             return;
         }
 
-        if (!Gate.Authorized)
+        if (!CanDecideNow)
         {
             ActionError = PageError.Simple(ApprovalUiGuard.MissingTokenMessage);
             return;
@@ -650,6 +730,14 @@ else
         if (!approve && string.IsNullOrWhiteSpace(reason))
         {
             ActionError = PageError.Simple("驳回必须填写理由 —— 发起方要靠它知道哪里不行。");
+            return;
+        }
+
+        // 代批（管理员批别人的单子）必须写理由 ——
+        // 谁替谁批的要看得见，服务层也会再拦一道。
+        if (IsAdminMember && IsOnBehalfOf(approvalId) && string.IsNullOrWhiteSpace(reason))
+        {
+            ActionError = PageError.Simple("这是代批 —— 必须写理由：谁替谁批的要看得见。");
             return;
         }
 
@@ -677,9 +765,10 @@ else
             var fingerprint = HumanTokenPolicy.Fingerprint(Tokens.Token);
 
             await InScopeAsync(a => a.DecideAsync(
-                approvalId, approve, "human",
+                approvalId, approve,
+                IsLoggedIn ? CurrentMemberName : "human",
                 string.IsNullOrWhiteSpace(reason) ? null : reason,
-                decidedByCredential: fingerprint));
+                decidedByCredential: IsLoggedIn ? null : fingerprint));
             _reasons.Remove(approvalId);
             _selected.Remove(approvalId);
             ActionError = null;

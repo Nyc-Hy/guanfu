@@ -143,6 +143,7 @@ public sealed class GuanfuDbContext(DbContextOptions<GuanfuDbContext> options) :
 
             e.HasIndex(t => t.ProjectId);
             e.HasIndex(t => t.Status);
+            e.HasIndex(t => t.AssigneeMemberId);
             e.HasIndex(t => t.ParentTaskId);
             e.HasIndex(t => t.MilestoneId);
             e.HasIndex(t => t.Branch);
@@ -152,6 +153,13 @@ public sealed class GuanfuDbContext(DbContextOptions<GuanfuDbContext> options) :
             // 内存里的 check-then-act 挡不住两个并发请求算出同一个号。
             // Key 可空，SQLite 的唯一索引不约束多个 NULL，老数据不受影响。
             e.HasIndex(t => new { t.ProjectId, t.Key }).IsUnique();
+
+            // 负责人是成员：可见性按它算（普通成员只看自己的活）。
+            // 成员被删了，任务不能跟着删 —— 置空即可（回到「未分派」）。
+            e.HasOne(x => x.AssigneeMember)
+                .WithMany()
+                .HasForeignKey(x => x.AssigneeMemberId)
+                .OnDelete(DeleteBehavior.SetNull);
 
             // 归一化编号的唯一索引：把「req-001」和「REQ-001」也当成同一个号。
             // 上一条索引按原字符串比，拦不住大小写不同的重号；
@@ -446,6 +454,20 @@ public sealed class GuanfuDbContext(DbContextOptions<GuanfuDbContext> options) :
             e.ToTable("approvals");
             e.HasKey(x => x.Id);
             e.Property(x => x.ToolName).HasMaxLength(200).IsRequired();
+
+            // 审批归谁批 / 代批时被代的人。
+            // 成员被删了不影响审批 —— 置空即可（回到「没人认领」）。
+            e.HasOne(x => x.AssigneeMember)
+                .WithMany()
+                .HasForeignKey(x => x.AssigneeMemberId)
+                .OnDelete(DeleteBehavior.SetNull);
+
+            e.HasOne(x => x.OnBehalfOfMember)
+                .WithMany()
+                .HasForeignKey(x => x.OnBehalfOfMemberId)
+                .OnDelete(DeleteBehavior.SetNull);
+
+            e.HasIndex(x => x.AssigneeMemberId);
             e.Property(x => x.Kind).HasMaxLength(100).IsRequired();
             e.Property(x => x.Payload).HasMaxLength(16000);
             e.Property(x => x.PayloadHash).HasMaxLength(64);

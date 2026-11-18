@@ -42,6 +42,8 @@ public sealed record TaskSummaryDto(
     bool IsArchived = false,
     /// <summary>负责人（人名或 agent id）。</summary>
     string? Assignee = null,
+    /// <summary>负责人是哪个成员（可见性按它算）。</summary>
+    Guid? AssigneeMemberId = null,
     /// <summary>优先级。</summary>
     TaskPriority Priority = TaskPriority.Normal,
     /// <summary>截止日。</summary>
@@ -240,6 +242,14 @@ public sealed record ApprovalDto(
     string? TaskTitle = null,
     /// <summary>关联项目名。同理：项目给名字，给不出名字就空着。</summary>
     string? ProjectName = null,
+    /// <summary>这条审批归谁批（成员 id）。</summary>
+    Guid? AssigneeMemberId = null,
+    /// <summary>归谁批 —— 显示名。</summary>
+    string? AssigneeMemberName = null,
+    /// <summary>代批时被代的人（成员 id）。</summary>
+    Guid? OnBehalfOfMemberId = null,
+    /// <summary>代批时被代的人 —— 显示名。</summary>
+    string? OnBehalfOfMemberName = null,
     /// <summary>
     /// 执行结果未知（服务重启导致执行中断，那次写操作可能已经生效）。
     /// 跟「执行失败」不是一回事：失败的可以重试，未知的要先人工确认。

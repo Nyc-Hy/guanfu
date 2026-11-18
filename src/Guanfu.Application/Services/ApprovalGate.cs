@@ -30,7 +30,14 @@ public interface IApprovalGate
         Guid projectId,
         Guid? approvalId,
         int waitSeconds,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        /// <summary>
+        /// 这条审批归谁批（成员 id）。
+        ///
+        /// 「审批只能个人审批」—— agent 的写操作要人点头，
+        /// 点的是**这把钥匙背后的人**。传 null = 还没归到人身上。
+        /// </summary>
+        Guid? requesterMemberId = null);
 
     /// <summary>收尾：把审批标记为已执行（成功或失败都算消费掉了）。</summary>
     Task CompleteAsync(Guid approvalId, string? resultSummary, CancellationToken cancellationToken = default);
@@ -54,7 +61,8 @@ public sealed class ApprovalGate(IApprovalService approvals) : IApprovalGate
         Guid projectId,
         Guid? approvalId,
         int waitSeconds,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Guid? requesterMemberId = null)
     {
         if (approvalId is not null)
         {
@@ -63,7 +71,7 @@ public sealed class ApprovalGate(IApprovalService approvals) : IApprovalGate
 
         var approval = await approvals.RequestAsync(
             toolName, kind, payload, summary, requestedBy, taskId, projectId,
-            ApprovalService.DefaultTtlMinutes, cancellationToken);
+            ApprovalService.DefaultTtlMinutes, cancellationToken, requesterMemberId);
 
         var decided = await approvals.AwaitAsync(approval.Id, Math.Clamp(waitSeconds, 1, 300), cancellationToken);
 

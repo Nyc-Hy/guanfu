@@ -2,6 +2,7 @@
 @inherits LayoutComponentBase
 @implements IAsyncDisposable
 @inject IServiceScopeFactory ScopeFactory
+@inject CurrentMemberScope CurrentScope
 @inject IJSRuntime JS
 @inject NavigationManager Nav
 
@@ -217,6 +218,11 @@
                 CurrentUser = user.Identity.Name;
                 IsAdmin = MemberAuth.IsAdmin(user);
             }
+
+            // 把身份回填给服务层 —— 电路里拿不到 HttpContext，
+            // 「普通成员只看自己的东西」这条规则要靠它才生效。
+            CurrentScope.SetFallback(
+                CurrentMemberScope.FromPrincipal(user));
         }
         catch (Exception)
         {

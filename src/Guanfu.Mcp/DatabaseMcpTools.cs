@@ -64,7 +64,8 @@ public sealed class DatabaseMcpTools(
     IToolAuditService audit,
     IClock clock,
     IProjectScopeResolver? scopeResolver = null,
-    IDbCallService? dbCalls = null)
+    IDbCallService? dbCalls = null,
+    IAgentSessionAccessor? sessions = null)
 {
     /// <summary>
     /// 算出这次调用算在哪个项目上。
@@ -399,7 +400,8 @@ public sealed class DatabaseMcpTools(
             var gate = await approvalGate.AcquireAsync(
                 "db_execute", "db.write", payload,
                 BuildSummary(config, sql, analysis),
-                requestedBy, taskId, scope.ProjectId, approvalId, waitSeconds, cancellationToken);
+                requestedBy, taskId, scope.ProjectId, approvalId, waitSeconds, cancellationToken,
+                sessions?.CurrentCredential?.MemberId);
 
             if (!gate.Approved)
             {

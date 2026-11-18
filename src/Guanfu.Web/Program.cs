@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Extensions.Options;
 using Guanfu.Application;
+using Guanfu.Application.Services;
 using Guanfu.Infrastructure;
 using Guanfu.Mcp;
 using Guanfu.Web;
@@ -58,6 +59,10 @@ builder.Services.AddAuthorization();
 
 // 让界面能拿到「现在是谁在操作」。
 builder.Services.AddCascadingAuthenticationState();
+
+// 当前身份：REST 从认证结果读，Blazor 电路由布局回填。
+builder.Services.AddScoped<CurrentMemberScope>();
+builder.Services.AddScoped<ICurrentMemberScope>(sp => sp.GetRequiredService<CurrentMemberScope>());
 
 // 枚举一律输出成字符串（"DocsReady" 而不是 1），
 // agent 与 CLI 读到的字段才有意义

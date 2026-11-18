@@ -246,7 +246,8 @@ public static class GuanfuApi
             }
 
             return Results.Ok(await tasks.SetAssignmentAsync(
-                taskId, request.Assignee, priority, request.DueAt, request.Weight, ct));
+                taskId, request.Assignee, priority, request.DueAt, request.Weight, ct,
+                request.AssigneeMemberId, request.ClearAssigneeMember));
         });
 
         // ---- 任务依赖 ----
@@ -1229,7 +1230,11 @@ public sealed record AssignTaskRequest(
     string? Assignee = null,
     string? Priority = null,
     DateTimeOffset? DueAt = null,
-    double? Weight = null);
+    double? Weight = null,
+    /// <summary>负责人是哪个成员（可见性按它算）。</summary>
+    Guid? AssigneeMemberId = null,
+    /// <summary>取消归属（放回「未分派」）。</summary>
+    bool ClearAssigneeMember = false);
 
 /// <summary>加一条任务依赖。</summary>
 public sealed record AddDependencyRequest(
