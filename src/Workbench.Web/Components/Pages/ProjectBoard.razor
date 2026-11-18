@@ -71,6 +71,10 @@ else
                 aria-selected="@(ActiveTab == "dispatch")" @onclick='() => SwitchTabAsync("dispatch")'>
             现在能干 <span class="wb-count">@Dispatch.ReadyCount</span>
         </button>
+        <button class="wb-tab @(ActiveTab == "stations" ? "wb-tab-active" : "")" role="tab"
+                aria-selected="@(ActiveTab == "stations")" @onclick='() => SwitchTabAsync("stations")'>
+            工位 <span class="wb-count">@Stations.Count</span>
+        </button>
         <button class="wb-tab @(ActiveTab == "milestones" ? "wb-tab-active" : "")" role="tab"
                 aria-selected="@(ActiveTab == "milestones")" @onclick='() => SwitchTabAsync("milestones")'>
             迭代版本 <span class="wb-count">@MilestoneItems.Count</span>
@@ -225,6 +229,98 @@ else
                     </tbody>
                 </table>
             </div>
+        }
+    </section>
+    }
+
+    @if (ActiveTab == "stations")
+    {
+    <section class="wb-panel">
+        <div class="wb-card-head">
+            <h3>工位</h3>
+            <span class="wb-muted">@Stations.Count 个 · 谁在哪个目录干活</span>
+        </div>
+        @if (Stations.Count == 0)
+        {
+            <p class="wb-muted">
+                这个项目还没有工位。项目绑了仓库之后，agent 领活时会登记自己的工位。
+            </p>
+        }
+        else
+        {
+            <div class="wb-table-scroll">
+                <table class="wb-table">
+                    <thead>
+                    <tr>
+                        <th>工位</th>
+                        <th>谁在用</th>
+                        <th>哪个活</th>
+                        <th>状态</th>
+                        <th>清理</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    @foreach (var station in Stations)
+                    {
+                        <tr>
+                            <td>
+                                <code>@StationName(station)</code>
+                                <div class="wb-muted">@station.WorkPath</div>
+                            </td>
+                            <td>
+                                @if (!string.IsNullOrWhiteSpace(station.AgentId))
+                                {
+                                    <span class="wb-chip wb-chip-agent">@station.AgentId</span>
+                                }
+                                else
+                                {
+                                    <span class="wb-muted">没人</span>
+                                }
+                            </td>
+                            <td>
+                                @if (!string.IsNullOrWhiteSpace(station.TaskKey))
+                                {
+                                    <a href="/tasks/@station.TaskId">@station.TaskKey</a>
+                                    <div class="wb-muted">@station.TaskTitle</div>
+                                }
+                                else
+                                {
+                                    <span class="wb-muted">没有活认领它</span>
+                                }
+                            </td>
+                            <td>
+                                @if (station.Orphaned)
+                                {
+                                    <span class="wb-chip wb-chip-warn">没人管了</span>
+                                }
+                                else if (station.LeaseAlive)
+                                {
+                                    <span class="wb-chip wb-chip-ok">在用</span>
+                                }
+                                else
+                                {
+                                    <span class="wb-chip">已收工</span>
+                                }
+                                @if (!station.PathExists)
+                                {
+                                    <div class="wb-muted">目录已经没了</div>
+                                }
+                            </td>
+                            <td>
+                                @if (!string.IsNullOrWhiteSpace(station.CleanupCommand))
+                                {
+                                    <pre class="wb-pre">@station.CleanupCommand</pre>
+                                }
+                            </td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+            <p class="wb-hint">
+                「没人管了」= 活干完了 / 租约过期了，但那个目录还在磁盘上。
+                工作台不替 agent 删目录 —— 那是它自己仓库里的事，这里只给清理的确切命令。
+            </p>
         }
     </section>
     }
@@ -524,6 +620,9 @@ else
     /// <summary>调度板：现在什么能干、什么卡着、谁在干。</summary>
     private DispatchBoardDto Dispatch { get; set; } = new(Guid.Empty, [], [], [], 0, 0, 0);
 
+    /// <summary>工位：谁在哪个目录干活，有没有没人管的。</summary>
+    private IReadOnlyList<WorkstationDto> Stations { get; set; } = [];
+
     // ---- 筛选 ----
     private string KeywordFilter { get; set; } = string.Empty;
     private string AssigneeFilter { get; set; } = string.Empty;
@@ -601,6 +700,17 @@ else
         {
             PageIndex++;
         }
+    }
+
+    /// <summary>工位目录名（给人看的短名字）。</summary>
+    private static string StationName(WorkstationDto station)
+    {
+        if (string.IsNullOrWhiteSpace(station.WorkPath))
+        {
+            return "(主工作区)";
+        }
+
+        return System.IO.Path.GetFileName(station.WorkPath);
     }
 
     private Task SwitchTabAsync(string tab)
@@ -783,6 +893,7 @@ else
             var milestones = scope.ServiceProvider.GetRequiredService<IMilestoneService>();
             var tasks = scope.ServiceProvider.GetRequiredService<ITaskService>();
             var dispatch = scope.ServiceProvider.GetRequiredService<IDispatchService>();
+            var stations = scope.ServiceProvider.GetRequiredService<IWorkstationService>();
             var suggestions = await dispatch.SuggestAsync(ProjectId, 10);
 
             Project = await projects.GetAsync(ProjectId);
@@ -793,6 +904,7 @@ else
             // 一次最多拉 500 条。表格翻页兜着渲染，但拉取这步也不能没上限。
             Items = await tasks.ListAsync(ProjectId, null, null, milestoneId, includeArchived: IncludeArchived, limit: MaxTasks);
             Dispatch = await dispatch.GetAsync(ProjectId, 50);
+            Stations = await stations.ListAsync(ProjectId);
             Suggestions = suggestions;
             LoadError = null;
 

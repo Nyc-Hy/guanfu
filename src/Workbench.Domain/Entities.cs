@@ -194,6 +194,15 @@ public class WorkspaceSpec
     /// <summary>红线 / 禁忌（所有项目通用）。</summary>
     public string? Guardrails { get; set; }
 
+    /// <summary>
+    /// 整个工作区的并行上限（同时干活的 agent 数）。0 = 不限。
+    ///
+    /// 项目级也有一个（<see cref="Project.MaxConcurrentAgents"/>）——
+    /// 那个管「这个项目里别挤」，这个管「这个工作区里别挤」。
+    /// 两个都是**节流阀**，拦的是并发过头，不是越权。
+    /// </summary>
+    public int MaxConcurrentAgents { get; set; }
+
     public DateTimeOffset? UpdatedAt { get; set; }
     public string? UpdatedBy { get; set; }
 }

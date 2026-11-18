@@ -343,6 +343,26 @@ def main() -> int:
         f"未来的时间不该收下（实际：{future}）",
     )
 
+    print("\n-- 交回活 + 交接链 --")
+    released = mcp.call(
+        "workbench_release_task",
+        {"taskId": task_id, "agentId": "e2e-agent", "reason": "先让另一位熟悉这块的接"},
+    )
+    expect(released.get("ok"), f"放掉认领应成功（实际：{released}）")
+
+    chain = mcp.call("workbench_get_handoff_pack", {"taskId": task_id}).get("pack") or {}
+    steps = chain.get("handoffChain") or []
+    expect(len(steps) >= 1, f"交接链应看得到转手记录（实际：{steps}）")
+    expect(
+        any(step.get("reason") == "先让另一位熟悉这块的接" for step in steps),
+        f"交接链上要带着放手的理由（实际：{steps}）",
+    )
+
+    # 放掉之后得能再领回来
+    reclaimed = mcp.call("workbench_claim_task", {"taskId": task_id, "agentId": "e2e-agent-2"})
+    expect(reclaimed.get("ok"), f"放掉之后应能再领（实际：{reclaimed}）")
+    mcp.call("workbench_release_task", {"taskId": task_id, "agentId": "e2e-agent-2", "reason": "e2e 收尾"})
+
     print("\n-- 工位：agent 该去哪儿干活 --")
     station = mcp.call("workbench_get_workstation", {"taskId": task_id})
     expect(station.get("ok"), "应能问到工位现状")
@@ -376,6 +396,11 @@ def main() -> int:
         bool(handoff_pack.get("allowedTransitions")),
         "交接包要带上「现在能去哪」（不用再问一次状态机）",
     )
+
+    print("\n-- 工位清单：worktree 建了没人收 --")
+    stations = mcp.call("workbench_list_workstations", {})
+    expect(stations.get("ok"), f"应能列工位（实际：{stations}）")
+    expect(isinstance(stations.get("workstations"), list), "工位清单要是个列表")
 
     print("\n-- 批量导入文档 --")
     batch = mcp.call(

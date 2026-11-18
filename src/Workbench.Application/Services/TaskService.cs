@@ -824,30 +824,81 @@ public sealed class TaskService(
     /// 所以这里读一下当前活跃数就够了，不必跟认领放在同一条 UPDATE 里。
     /// （工位独占才是必须原子的那个 —— 那是会踩文件的事。）
     /// </summary>
+    /// <summary>
+    /// 并行上限：项目级的（这个项目里别挤）+ 工作区级的（整个工作区别挤）。
+    ///
+    /// 两个都是**节流阀**，拦的是并发过头，不是越权 ——
+    /// 所以错了不致命，消息里要说清现在有几个在干、上限是多少。
+    /// </summary>
     private async Task EnsureCapacityAsync(Project? project, string agentId, CancellationToken cancellationToken)
     {
-        var cap = project?.MaxConcurrentAgents ?? 0;
-        if (cap <= 0 || project is null)
+        if (project is null)
         {
             return;
         }
 
         var now = clock.UtcNow;
 
-        // 不算自己的租约 —— 同一个 agent 手上多个活不算「并发过头」
-        var active = await db.Tasks.AsNoTracking()
-            .CountAsync(t => t.ProjectId == project.Id &&
+        // 项目级
+        var projectCap = project.MaxConcurrentAgents;
+        if (projectCap > 0)
+        {
+            // 不算自己的租约 —— 同一个 agent 手上多个活不算「并发过头」
+            var active = await db.Tasks.AsNoTracking()
+                .CountAsync(t => t.ProjectId == project.Id &&
+                                 t.ClaimedByAgentId != null &&
+                                 t.ClaimedByAgentId != agentId &&
+                                 t.LeaseExpiresAt != null &&
+                                 t.LeaseExpiresAt > now, cancellationToken);
+
+            if (active >= projectCap)
+            {
+                throw new WorkbenchException(
+                    $"这个项目的并行上限是 {projectCap} 个 agent，现在已经有 {active} 个在领活（不含你自己的）。" +
+                    "等一个做完再来领，或让人把上限调高。");
+            }
+        }
+
+        // 工作区级：跨项目一起算 —— 人在工作区里铺了十个项目时，
+        // 每个项目都能自己开满，加起来就把机器压垮了。
+        var workspaceCap = await GetWorkspaceCapAsync(project.WorkspaceId, cancellationToken);
+        if (workspaceCap <= 0)
+        {
+            return;
+        }
+
+        var workspaceProjectIds = await db.Projects.AsNoTracking()
+            .Where(p => p.WorkspaceId == project.WorkspaceId)
+            .Select(p => p.Id)
+            .ToListAsync(cancellationToken);
+
+        var workspaceActive = await db.Tasks.AsNoTracking()
+            .CountAsync(t => workspaceProjectIds.Contains(t.ProjectId) &&
                              t.ClaimedByAgentId != null &&
                              t.ClaimedByAgentId != agentId &&
                              t.LeaseExpiresAt != null &&
                              t.LeaseExpiresAt > now, cancellationToken);
 
-        if (active >= cap)
+        if (workspaceActive >= workspaceCap)
         {
             throw new WorkbenchException(
-                $"这个项目的并行上限是 {cap} 个 agent，现在已经有 {active} 个在领活（不含你自己的）。" +
+                $"这个工作区的并行上限是 {workspaceCap} 个 agent，现在已经有 {workspaceActive} 个在领活（不含你自己的）。" +
                 "等一个做完再来领，或让人把上限调高。");
         }
+    }
+
+    /// <summary>工作区级的并行上限（0 = 不限）。</summary>
+    private async Task<int> GetWorkspaceCapAsync(Guid workspaceId, CancellationToken cancellationToken)
+    {
+        if (workspaceId == Guid.Empty)
+        {
+            return 0;
+        }
+
+        return await db.WorkspaceSpecs.AsNoTracking()
+            .Where(s => s.WorkspaceId == workspaceId)
+            .Select(s => (int?)s.MaxConcurrentAgents)
+            .FirstOrDefaultAsync(cancellationToken) ?? 0;
     }
 
     /// <summary>

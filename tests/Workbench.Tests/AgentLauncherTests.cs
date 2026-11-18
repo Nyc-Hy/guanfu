@@ -202,5 +202,7 @@ public class AgentLauncherTests : IDisposable
         public IReadOnlyList<GitFileChange> GetWorkingTreeFileChanges(string repoPath) => [];
 
         public string? GetHeadSha(string repoPath) => null;
+
+        public IReadOnlyList<GitWorktree> ListWorktrees(string repoPath) => [];
     }
 }

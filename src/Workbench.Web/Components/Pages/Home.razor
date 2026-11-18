@@ -52,7 +52,7 @@ else
             <span class="wb-chip">所有项目通用</span>
         </div>
         <p class="wb-hint">
-            公司 / 团队的规矩写在这里，**每个项目都继承**。
+            公司 / 团队的规矩写在这里，<strong>每个项目都继承</strong>。
             项目级与里程碑级的规约在它之上叠加（越具体的越优先，完成定义是三层相加）。
             不然每个项目抄一遍 —— 抄一遍就会抄漏、改一处就忘了另一处。
         </p>
@@ -67,24 +67,33 @@ else
                 <label class="wb-label">完成定义（DoD）</label>
                 <textarea class="wb-input wb-textarea" rows="6"
                           placeholder="一行一条，例如&#10;有单测覆盖新增逻辑&#10;文档里的用法同步更新&#10;接口错误码与文档一致"
-                          @bind="WorkspaceDoD" @bind:event="oninput"></textarea>
+                          @bind="WorkspaceDoD" @bind:event="oninput" @bind:after="MarkSpecDirty"></textarea>
             </div>
             <div class="wb-form-row">
                 <label class="wb-label">提交信息约定</label>
                 <input class="wb-input" placeholder="例如：feat(登录): 补上会话续期；带 REQ-001 编号"
-                       @bind="WorkspaceCommitConvention" @bind:event="oninput" />
+                       @bind="WorkspaceCommitConvention" @bind:event="oninput" @bind:after="MarkSpecDirty" />
             </div>
             <div class="wb-form-row">
                 <label class="wb-label">测试命令</label>
                 <input class="wb-input" placeholder="例如：dotnet test Workbench.sln"
-                       @bind="WorkspaceTestCommand" @bind:event="oninput" />
+                       @bind="WorkspaceTestCommand" @bind:event="oninput" @bind:after="MarkSpecDirty" />
             </div>
             <div class="wb-form-row">
                 <label class="wb-label">红线与禁忌</label>
                 <textarea class="wb-input wb-textarea" rows="3"
                           placeholder="不许碰的东西、要人工确认的动作 —— 一行一条"
-                          @bind="WorkspaceGuardrails" @bind:event="oninput"></textarea>
+                          @bind="WorkspaceGuardrails" @bind:event="oninput" @bind:after="MarkSpecDirty"></textarea>
             </div>
+            <div class="wb-field-row">
+                <label class="wb-label">并行上限</label>
+                <input class="wb-input" type="number" min="0" placeholder="0 = 不限"
+                       @bind="WorkspaceMaxAgents" @bind:event="oninput" @bind:after="MarkSpecDirty" />
+            </div>
+            <p class="wb-hint">
+                整个工作区里同时干活的 agent 上限（跨项目一起算）。0 = 不限。
+                这是<strong>节流阀</strong>，拦的是并发过头，不是越权。
+            </p>
             @if (!CanWrite)
             {
                 <p class="wb-muted">
@@ -524,7 +533,13 @@ else
     private string WorkspaceCommitConvention { get; set; } = string.Empty;
     private string WorkspaceTestCommand { get; set; } = string.Empty;
     private string WorkspaceGuardrails { get; set; } = string.Empty;
+    private int WorkspaceMaxAgents { get; set; }
     private DateTimeOffset? WorkspaceSpecUpdatedAt { get; set; }
+
+    /// <summary>规约被编辑过 —— 自动刷新就别冲掉了。</summary>
+    private bool _specDirty;
+
+    private void MarkSpecDirty() => _specDirty = true;
     private bool SavingSpec { get; set; }
 
     /// <summary>
@@ -633,6 +648,7 @@ else
             WorkspaceCommitConvention = spec.CommitConvention ?? string.Empty;
             WorkspaceTestCommand = spec.TestCommand ?? string.Empty;
             WorkspaceGuardrails = spec.Guardrails ?? string.Empty;
+            WorkspaceMaxAgents = spec.MaxConcurrentAgents;
             WorkspaceSpecUpdatedAt = spec.UpdatedAt;
         }
         catch (Exception ex)
@@ -670,11 +686,13 @@ else
                     .ToList(),
                 CommitConvention: WorkspaceCommitConvention,
                 TestCommand: WorkspaceTestCommand,
-                Guardrails: WorkspaceGuardrails);
+                Guardrails: WorkspaceGuardrails,
+                MaxConcurrentAgents: WorkspaceMaxAgents);
 
             var saved = await SpecService.UpdateForWorkspaceAsync(WorkspaceId, input, "human");
 
             WorkspaceSpecUpdatedAt = saved.UpdatedAt;
+            _specDirty = false;
             CreateError = PageError.Notice("标准规约已保存 —— 所有项目都会继承。");
         }
         catch (Exception ex)
@@ -700,6 +718,13 @@ else
             // 度量是每个项目一行的体检，跟项目清单放一起看。
             var metrics = scope.ServiceProvider.GetRequiredService<IMetricsService>();
             Metrics = await metrics.GetAllAsync();
+
+            // 工作区标准规约（那一页要编辑它 —— 不加载的话那一页永远是空的）。
+            // 编辑中就别自动刷新了 —— 15 秒一次的重载会把手上的字冲掉。
+            if (ActiveTab == "spec" && !_specDirty)
+            {
+                await LoadWorkspaceSpecAsync();
+            }
 
             LoadError = null;
         }

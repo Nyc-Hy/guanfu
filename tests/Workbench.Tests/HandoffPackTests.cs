@@ -111,6 +111,58 @@ public sealed class HandoffPackTests
     }
 
     [Fact]
+    public async Task 交接链看得见每次转手()
+    {
+        using var host = new WorkbenchTestHost();
+        var project = await host.Projects.CreateAsync("测试项目");
+        var task = await host.Tasks.CreateAsync(project.Id, "转手多次的活");
+
+        await host.Tasks.ClaimAsync(task.Id, "agent-a");
+        await host.Tasks.ReleaseAsync(task.Id, "agent-a", "第一段做完了");
+
+        await host.Tasks.ClaimAsync(task.Id, "agent-b");
+        await host.Tasks.ReleaseAsync(task.Id, "agent-b", "第二段也做完了");
+
+        await host.Tasks.ClaimAsync(task.Id, "agent-c");
+
+        var pack = await Service(host).GetAsync(task.Id);
+
+        Assert.Equal(3, pack.HandoffChain.Count);
+
+        // 第一次：a 接手
+        Assert.Null(pack.HandoffChain[0].From);
+        Assert.Equal("agent-a", pack.HandoffChain[0].To);
+
+        // 第二次：a 交给 b，理由是 a 写的那句
+        Assert.Equal("agent-a", pack.HandoffChain[1].From);
+        Assert.Equal("agent-b", pack.HandoffChain[1].To);
+        Assert.Equal("第一段做完了", pack.HandoffChain[1].Reason);
+
+        // 第三次：b 交给 c
+        Assert.Equal("agent-b", pack.HandoffChain[2].From);
+        Assert.Equal("agent-c", pack.HandoffChain[2].To);
+        Assert.Equal("第二段也做完了", pack.HandoffChain[2].Reason);
+    }
+
+    [Fact]
+    public async Task 放下了还没人接手链上看得见()
+    {
+        using var host = new WorkbenchTestHost();
+        var project = await host.Projects.CreateAsync("测试项目");
+        var task = await host.Tasks.CreateAsync(project.Id, "放下就没接的活");
+
+        await host.Tasks.ClaimAsync(task.Id, "agent-a");
+        await host.Tasks.ReleaseAsync(task.Id, "agent-a", "我去干别的了");
+
+        var pack = await Service(host).GetAsync(task.Id);
+
+        var last = pack.HandoffChain[^1];
+        Assert.Equal("agent-a", last.From);
+        Assert.Null(last.To);
+        Assert.Equal("我去干别的了", last.Reason);
+    }
+
+    [Fact]
     public async Task MCP工具能取交接包()
     {
         using var host = new WorkbenchTestHost();

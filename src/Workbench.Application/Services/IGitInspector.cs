@@ -22,6 +22,17 @@ public sealed record GitState(
     public IReadOnlyList<string> ChangedFilePaths { get; init; } = [];
 }
 
+/// <summary>仓库里的一个 worktree。</summary>
+public sealed record GitWorktree(
+    /// <summary>目录的绝对路径。</summary>
+    string Path,
+    /// <summary>检出的分支（detached 时为 null）。</summary>
+    string? Branch,
+    /// <summary>是不是主 checkout。</summary>
+    bool IsMain,
+    /// <summary>git 认为它已经失效了（目录被删了之类）。</summary>
+    bool Prunable = false);
+
 /// <summary>
 /// 只读 Git 检视。P3 会扩展出 commit/push（写操作走审批）。
 /// 这里刻意只做只读：任何写操作都不能出现在这条通路上。
@@ -45,4 +56,13 @@ public interface IGitInspector
 
     /// <summary>当前 HEAD 的 commit sha。读不到返回 null。</summary>
     string? GetHeadSha(string repoPath);
+
+    /// <summary>
+    /// 仓库里的所有 worktree（含主 checkout）。
+    ///
+    /// 用来找**没人管的工位**：agent 建了 worktree，活干完忘了收，
+    /// 目录就一直在那儿 —— git 自己知道有哪些，工位列表得把它们露出来。
+    /// 读不到返回空列表（读不到就当没有，别把流程带崩）。
+    /// </summary>
+    IReadOnlyList<GitWorktree> ListWorktrees(string repoPath);
 }

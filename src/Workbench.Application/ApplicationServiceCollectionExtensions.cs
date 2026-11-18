@@ -22,6 +22,9 @@ public static class ApplicationServiceCollectionExtensions
 
         // 工位解析：文件 / git / shell 工具按任务登记的工位走
         services.AddScoped<IWorkstationResolver, WorkstationResolver>();
+
+        // 工位清单与放行：worktree 建了没人收 —— 得有人能看见、能放掉
+        services.AddScoped<IWorkstationService, WorkstationService>();
         services.AddScoped<IReviewService, ReviewService>();
         // 评审服务同时是门禁的实现 —— 注册同一个实例，别造两份
         services.AddScoped<IReviewGate>(sp => sp.GetRequiredService<IReviewService>());

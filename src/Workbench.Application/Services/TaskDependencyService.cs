@@ -385,6 +385,9 @@ public static class TaskEventTypes
     /// <summary>项目规约（DoD）某一条的判定结果。</summary>
     public const string SpecVerdictResult = "review.spec_verdict";
 
+    /// <summary>放掉工位（worktree 登记被清掉，等着清理）。</summary>
+    public const string StationReleased = "task.station_released";
+
     /// <summary>某个评审维度被认领（多 agent 分工）。</summary>
     public const string ReviewDimensionClaimed = "review.dimension_claimed";
 

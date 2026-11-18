@@ -44,6 +44,16 @@ public interface IProjectSpecService
         Guid taskId,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// 生效的完成定义，**带来源层级**（工作区 / 项目 / 里程碑）。
+    ///
+    /// 判的时候该知道这条是谁的要求：里程碑特有的只对这个版本里的活成立。
+    /// 重复的条目按**最外层**算 —— 项目里已经写过的，里程碑再写一遍也是项目级的要求。
+    /// </summary>
+    Task<IReadOnlyList<EffectiveDoDItem>> GetEffectiveDefinitionOfDoneWithSourceAsync(
+        Guid taskId,
+        CancellationToken cancellationToken = default);
+
     /// <summary>读工作区标准规约（所有项目通用）。没填过就返回空的。</summary>
     Task<ProjectSpecDto> GetForWorkspaceAsync(
         Guid workspaceId,
@@ -145,7 +155,9 @@ public sealed class ProjectSpecService(IAppDbContext db, IClock clock) : IProjec
             Pick(project?.BranchConvention, workspace?.BranchConvention),
             Pick(milestone?.Guardrails, Pick(project?.Guardrails, workspace?.Guardrails)),
             milestone?.UpdatedAt ?? project?.UpdatedAt ?? workspace?.UpdatedAt,
-            milestone?.UpdatedBy ?? project?.UpdatedBy ?? workspace?.UpdatedBy);
+            milestone?.UpdatedBy ?? project?.UpdatedBy ?? workspace?.UpdatedBy,
+            // 并行上限只有工作区那一层有 —— agent 看到它就知道这个工作区总共能同时干几个
+            workspace?.MaxConcurrentAgents ?? 0);
     }
 
     /// <summary>里程碑的那层优先，没填的用项目级的。</summary>
@@ -153,6 +165,14 @@ public sealed class ProjectSpecService(IAppDbContext db, IClock clock) : IProjec
         string.IsNullOrWhiteSpace(milestoneValue) ? projectValue : milestoneValue;
 
     public async Task<IReadOnlyList<string>> GetEffectiveDefinitionOfDoneAsync(
+        Guid taskId,
+        CancellationToken cancellationToken = default)
+    {
+        var items = await GetEffectiveDefinitionOfDoneWithSourceAsync(taskId, cancellationToken);
+        return items.Select(i => i.Text).ToList();
+    }
+
+    public async Task<IReadOnlyList<EffectiveDoDItem>> GetEffectiveDefinitionOfDoneWithSourceAsync(
         Guid taskId,
         CancellationToken cancellationToken = default)
     {
@@ -179,12 +199,27 @@ public sealed class ProjectSpecService(IAppDbContext db, IClock clock) : IProjec
                 .FirstOrDefaultAsync(cancellationToken)
             : null;
 
-        // 工作区 → 项目 → 里程碑：越具体的越靠后，顺序稳定，agent 与人看到的一样
-        return SplitLines(workspaceDoD)
-            .Concat(SplitLines(projectDoD))
-            .Concat(SplitLines(milestoneDoD))
-            .Distinct(StringComparer.Ordinal)
-            .ToList();
+        // 工作区 → 项目 → 里程碑：越具体的越靠后，顺序稳定，agent 与人看到的一样。
+        // 重复的按**最外层**算 —— 项目里已经要求的，里程碑再写一遍也是项目级的要求。
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var items = new List<EffectiveDoDItem>();
+
+        void Add(string? text, string source)
+        {
+            foreach (var line in SplitLines(text))
+            {
+                if (seen.Add(line))
+                {
+                    items.Add(new EffectiveDoDItem(line, source));
+                }
+            }
+        }
+
+        Add(workspaceDoD, SpecSource.Workspace);
+        Add(projectDoD, SpecSource.Project);
+        Add(milestoneDoD, SpecSource.Milestone);
+
+        return items;
     }
 
     public async Task<ProjectSpecDto> GetForWorkspaceAsync(
@@ -227,6 +262,8 @@ public sealed class ProjectSpecService(IAppDbContext db, IClock clock) : IProjec
         spec.TestCommand = Trim(input.TestCommand);
         spec.BranchConvention = Trim(input.BranchConvention);
         spec.Guardrails = Trim(input.Guardrails);
+        // 工作区级的并行上限（项目级与里程碑级没有这个字段）
+        spec.MaxConcurrentAgents = Math.Max(0, input.MaxConcurrentAgents);
         spec.UpdatedAt = clock.UtcNow;
         spec.UpdatedBy = string.IsNullOrWhiteSpace(updatedBy) ? null : updatedBy.Trim();
 
@@ -374,7 +411,8 @@ public sealed class ProjectSpecService(IAppDbContext db, IClock clock) : IProjec
         spec.BranchConvention,
         spec.Guardrails,
         spec.UpdatedAt,
-        spec.UpdatedBy);
+        spec.UpdatedBy,
+        spec.MaxConcurrentAgents);
 
     private static ProjectSpecDto ToDto(MilestoneSpec spec) => new(
         spec.Milestone?.ProjectId ?? Guid.Empty,

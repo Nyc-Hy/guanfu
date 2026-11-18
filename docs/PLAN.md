@@ -111,6 +111,21 @@
 | **评审的多 agent 分工** | `workbench_claim_review_dimension` / `workbench_claim_spec_item`：维度与完成定义都能**认领**（带租约，到期可接手）；别人持有时不能替他交结论。结论按维度独立，**不需要合并** |
 | **交接包** | `workbench_get_handoff_pack` / `GET /api/tasks/{id}/handoff-pack` / 任务页「交接」页签：一次给全 —— 上一个是谁 / 为什么交出来 / 什么时候交的，加上规约、计划、文档、产物、测试、评审轮、工位、允许的迁移。只放结构化事实，不生成自然语言 |
 
+### v0.18 做了什么
+
+| 能力 | 落地 |
+|---|---|
+| **跨项目的并行总量** | 工作区级并行上限（`WorkspaceSpec.MaxConcurrentAgents`，0 = 不限），跨项目一起算活跃租约。项目级那个管「这个项目里别挤」，这个管「这个工作区里别挤」。两个都是节流阀，上限管的是「几个 **agent**」不是「几个活」 |
+| **交接链** | 交接包多给一条 `handoffChain`：每次转手谁交给谁、为什么、什么时候。链从账本的认领 / 放手事件拼出来（不另存一列），顶部的「上一个是谁」也从链上摘 |
+| **完成定义的来源可见** | 每条完成定义带来源层级（工作区通用 / 项目通用 / 本版本特有），评审时知道该谁负责。重复的按最外层算；里程碑编辑器把项目级那几条只读摆出来（不用重抄） |
+| **工位的清理** | `workbench_list_workstations`（谁在用、目录还在不在、**有没有人管**）+ `workbench_release_workstation`（清登记 + 给出 `git worktree remove` 的确切命令）；项目页多一个「工位」页签。**工作台不替 agent 删目录** |
+
+顺带修掉两个真问题：
+- 工作区标准规约那一页**从来没加载过**（`LoadWorkspaceSpecAsync` 定义了但没人调）——
+  界面上永远是「还没有项目」。现在会加载，而且**编辑中不会被 15 秒的自动刷新冲掉**；
+- `workbench_release_task` 拿任务 id 就能放活，不必先绑会话（任务自己知道属于哪个项目），
+  并且可以显式带 `agentId`。
+
 ### 接下来该往哪儿长
 
 1. **成本不做** —— 工作台不知道 agent 用什么模型什么套餐，自报的数字在审计上站不住；
@@ -487,6 +502,7 @@ MCP 端点**不带**这个门槛 —— agent 走的就是它，它不能有裁�
 | DTO 的位置记录给 `Guid` 加默认值 | `Guid WorkspaceId = default` → SDK 生成 JSON Schema 时默认值转不回 `Guid` → **整个服务起不来**，而单测全绿 | 别给值类型加默认值（或写 `Guid?`）；`McpToolContractTests` 加一条「每个工具的 Schema 都能生成」 |
 | CLI 的 multipart 走了 JSON 通道 | `wb doc upload` 把 `MultipartFormDataContent` 塞进 JSON 序列化 → 服务端收到一坨 JSON，上传必坏 | 用 `PostMultipartAsync`；端到端补一条 CLI 批量上传的断言 |
 | 建议的工位路径用了规范化后的仓库根 | 给 agent 的命令里是 `/private/var/...`，人填的是 `/var/...` —— agent 敲了命令跟人看到的不是一个地方 | 命令与建议都用**人填的路径**，规范化后的根只用于比较 |
+| 比对工位时直接比路径字符串 | 登记的是 `/tmp/...`，git 报的是 `/private/tmp/...` —— 同一个工位被算成两个 | 比对前**归一化**（解软链），两边都用解析过的路径比 |
 | shell 白名单是命令串前缀 | `git` 一勾就放行 `git push --force`、`npm` 放行 `npm publish` | 白名单按**词**比较，条目可写子命令（`git status`） |
 | `git status --porcelain` 中文路径 | 输出 `\346\226\207...`，按路径读文件必然找不到 | 调用加 `core.quotePath=false` + 自写 C 转义解码兜底 |
 | `GitInspector` 先同步读完再等退出 | 10 秒超时根本走不到，git 挂住就永久占住线程；父子互等死锁 | 并发读两个流 + `WaitForExitAsync(token)`，超时杀整棵进程树 |

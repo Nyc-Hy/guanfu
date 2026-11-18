@@ -245,7 +245,20 @@ public sealed record HandoffPackDto(
     IReadOnlyList<StatusEventDto> RecentEvents,
     IReadOnlyList<string> AllowedTransitions,
     HandoffInfoDto? Handoff,
+    /// <summary>交接链：这个活转过几次手，每次谁交给谁、为什么。</summary>
+    IReadOnlyList<HandoffStepDto> HandoffChain,
     DateTimeOffset GeneratedAt);
+
+/// <summary>交接链的一步：谁交给谁、为什么、什么时候。</summary>
+public sealed record HandoffStepDto(
+    /// <summary>什么时候发生的。</summary>
+    DateTimeOffset At,
+    /// <summary>谁交出去的（null = 第一次接手，前面没人）。</summary>
+    string? From,
+    /// <summary>谁接手的（null = 放下了，还没别人接手）。</summary>
+    string? To,
+    /// <summary>为什么交出来。</summary>
+    string? Reason);
 
 /// <summary>上一个是谁、为什么交出来、现在在谁手上。</summary>
 public sealed record HandoffInfoDto(
@@ -362,7 +375,38 @@ public sealed record SpecItemDto(
     /// <summary>谁认领了这条的判定（多 agent 分工）。为空 = 没人认领。</summary>
     string? ClaimedBy = null,
     /// <summary>认领的租约到期时间。</summary>
-    DateTimeOffset? ClaimedUntil = null);
+    DateTimeOffset? ClaimedUntil = null,
+    /// <summary>
+    /// 这条要求是哪一层来的：<see cref="SpecSource.Workspace"/>（所有项目通用）/
+    /// <see cref="SpecSource.Project"/>（这个项目通用）/<see cref="SpecSource.Milestone"/>（这个版本特有）。
+    /// 判的时候该知道：里程碑特有的要求只对这个版本里的活成立。
+    /// </summary>
+    string? Source = null);
+
+/// <summary>生效的完成定义里的一条，带来源层级。</summary>
+public sealed record EffectiveDoDItem(string Text, string Source);
+
+/// <summary>完成定义的来源层级。</summary>
+public static class SpecSource
+{
+    /// <summary>工作区级：所有项目通用的底线。</summary>
+    public const string Workspace = "workspace";
+
+    /// <summary>项目级：这个项目里所有活都适用。</summary>
+    public const string Project = "project";
+
+    /// <summary>里程碑级：只对这个版本里的活成立。</summary>
+    public const string Milestone = "milestone";
+
+    /// <summary>界面上怎么写（人话，不露内部标识）。</summary>
+    public static string Label(string? source) => source switch
+    {
+        Workspace => "工作区通用",
+        Project => "项目通用",
+        Milestone => "本版本特有",
+        _ => "未标注"
+    };
+}
 
 /// <summary>一条 DoD 判定。</summary>
 public sealed record SpecVerdictDto(
@@ -494,7 +538,9 @@ public sealed record ProjectSpecInput(
     /// <summary>分支命名约定。</summary>
     string? BranchConvention = null,
     /// <summary>红线 / 禁忌。</summary>
-    string? Guardrails = null);
+    string? Guardrails = null,
+    /// <summary>并行上限（同时干活的 agent 数）。0 = 不限。**只有工作区级规约用得上**。</summary>
+    int MaxConcurrentAgents = 0);
 
 /// <summary>规约的对外形状。</summary>
 public sealed record ProjectSpecDto(
@@ -506,7 +552,9 @@ public sealed record ProjectSpecDto(
     string? BranchConvention,
     string? Guardrails,
     DateTimeOffset? UpdatedAt,
-    string? UpdatedBy)
+    string? UpdatedBy,
+    /// <summary>并行上限（同时干活的 agent 数）。0 = 不限。**只有工作区级规约用得上**。</summary>
+    int MaxConcurrentAgents = 0)
 {
     /// <summary>空规约（还没填过）。</summary>
     public static ProjectSpecDto Empty(Guid projectId) =>

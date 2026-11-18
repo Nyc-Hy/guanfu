@@ -151,6 +151,11 @@ public sealed class WorkbenchTestHost : IDisposable
             WorkingTreeFileChanges;
 
         public string? GetHeadSha(string repoPath) => HeadSha;
+
+        /// <summary>仓库里的 worktree（默认只有主 checkout）。</summary>
+        public List<GitWorktree> Worktrees { get; set; } = [];
+
+        public IReadOnlyList<GitWorktree> ListWorktrees(string repoPath) => Worktrees;
     }
 
     /// <summary>假连接探活器：默认连通，可以设成抛异常来验证失败路径。</summary>

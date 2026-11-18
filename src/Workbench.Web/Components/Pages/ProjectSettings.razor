@@ -304,8 +304,24 @@ else
                                 }
                             </select>
                         </div>
+                        @if (ProjectDoD.Count > 0)
+                        {
+                            <div class="wb-form-row">
+                                <label class="wb-label">项目级的完成定义</label>
+                                <ul class="wb-plain-list">
+                                    @foreach (var item in ProjectDoD)
+                                    {
+                                        <li>@item</li>
+                                    }
+                                </ul>
+                            </div>
+                            <p class="wb-hint">
+                                上面这些是<strong>项目级</strong>的：这个项目里所有活都要满足，已经自动继承 ——
+                                下面只填这个版本<strong>额外</strong>要的，不用把上面再抄一遍。
+                            </p>
+                        }
                         <div class="wb-form-row">
-                            <label class="wb-label">这个版本的完成定义</label>
+                            <label class="wb-label">这个版本额外的完成定义</label>
                             <textarea class="wb-input wb-textarea" rows="4"
                                       placeholder="一行一条，只对这个版本生效（会叠加在项目级规约之上）"
                                       @bind="EditMilestoneDoD" @bind:event="oninput"></textarea>
@@ -412,6 +428,9 @@ else
 
     /// <summary>正在编辑的里程碑的完成定义（这个版本额外的那层）。</summary>
     private string EditMilestoneDoD { get; set; } = string.Empty;
+
+    /// <summary>项目级的完成定义（只读展示 —— 里程碑那层是叠加，不是重抄）。</summary>
+    private List<string> ProjectDoD { get; set; } = [];
 
     private MilestoneDto? EditingMilestone =>
         Guid.TryParse(EditMilestoneId, out var id)
@@ -712,6 +731,11 @@ else
             var spec = await Specs.GetForMilestoneAsync(ProjectId, milestoneId);
 
             EditMilestoneDoD = string.Join(Environment.NewLine, spec.DefinitionOfDone);
+
+            // 项目级那几条是继承来的 —— 得让人看得见，才不会重抄一遍
+            var projectSpec = await Specs.GetAsync(ProjectId);
+            ProjectDoD = projectSpec.DefinitionOfDone.ToList();
+
             StateHasChanged();
         }
         catch (Exception ex)

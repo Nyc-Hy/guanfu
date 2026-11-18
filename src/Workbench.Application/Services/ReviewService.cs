@@ -315,9 +315,9 @@ public sealed class ReviewService(
                 Note = note,
                 Reviewer = reviewer ?? current.Reviewer,
                 DecidedAt = clock.UtcNow,
-                ClaimedBy = existing.ClaimedBy,
-                ClaimedAt = existing.ClaimedAt,
-                ClaimedUntil = existing.ClaimedUntil
+                ClaimedBy = verdict.ClaimedBy,
+                ClaimedAt = verdict.ClaimedAt,
+                ClaimedUntil = verdict.ClaimedUntil
             };
             db.SpecVerdicts.Add(revised);
             verdict = revised;
@@ -376,6 +376,47 @@ public sealed class ReviewService(
     /// 走规约服务那一份（同一个口径）—— 评审判的与 agent 读的必须是同一份，
     /// 不能各算各的。
     /// </summary>
+    /// <summary>
+    /// 生效的完成定义，**带来源层级**（工作区 / 项目 / 里程碑）。
+    ///
+    /// 判的时候该知道这条是谁的要求 —— 里程碑特有的只对这个版本里的活成立。
+    /// </summary>
+    private async Task<IReadOnlyList<EffectiveDoDItem>> LoadDefinitionOfDoneWithSourceAsync(
+        Guid taskId,
+        CancellationToken cancellationToken)
+    {
+        if (specs is not null)
+        {
+            return await specs.GetEffectiveDefinitionOfDoneWithSourceAsync(taskId, cancellationToken);
+        }
+
+        // 没有规约服务时的退路：项目级的算项目级，里程碑级的算里程碑级
+        var texts = await LoadDefinitionOfDoneAsync(taskId, cancellationToken);
+
+        var task = await db.Tasks.AsNoTracking()
+            .Where(t => t.Id == taskId)
+            .Select(t => new { t.ProjectId, t.MilestoneId })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        var milestone = task?.MilestoneId is Guid milestoneId
+            ? await db.MilestoneSpecs.AsNoTracking()
+                .FirstOrDefaultAsync(s => s.MilestoneId == milestoneId, cancellationToken)
+            : null;
+
+        var items = new List<EffectiveDoDItem>();
+
+        foreach (var text in texts)
+        {
+            var source = milestone?.DefinitionOfDone?.Contains(text, StringComparison.Ordinal) == true
+                ? SpecSource.Milestone
+                : SpecSource.Project;
+
+            items.Add(new EffectiveDoDItem(text, source));
+        }
+
+        return items;
+    }
+
     private async Task<IReadOnlyList<string>> LoadDefinitionOfDoneAsync(
         Guid taskId,
         CancellationToken cancellationToken)
@@ -420,7 +461,7 @@ public sealed class ReviewService(
         ReviewRound current,
         CancellationToken cancellationToken)
     {
-        var dod = await LoadDefinitionOfDoneAsync(current.TaskId, cancellationToken);
+        var dod = await LoadDefinitionOfDoneWithSourceAsync(current.TaskId, cancellationToken);
         if (dod.Count == 0)
         {
             return [];
@@ -435,20 +476,21 @@ public sealed class ReviewService(
             .Select(g => g.OrderByDescending(v => v.DecidedAt ?? DateTimeOffset.MinValue).First())
             .ToDictionary(v => v.ItemKey, v => v, StringComparer.Ordinal);
 
-        return dod.Select(text =>
+        return dod.Select(item =>
         {
-            var key = TaskKeys.Normalize(text);
+            var key = TaskKeys.Normalize(item.Text);
             var verdict = latest.TryGetValue(key, out var found) ? found : null;
 
             return new SpecItemDto(
                 key,
-                text,
+                item.Text,
                 (verdict?.Status ?? ReviewStatus.Pending).ToString(),
                 verdict?.Note,
                 verdict?.Reviewer,
                 verdict?.DecidedAt,
                 verdict?.ClaimedBy,
-                verdict?.ClaimedUntil);
+                verdict?.ClaimedUntil,
+                item.Source);
         }).ToList();
     }
 

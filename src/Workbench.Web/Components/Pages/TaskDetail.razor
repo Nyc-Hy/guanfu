@@ -434,7 +434,13 @@ else
                                 @foreach (var item in SpecItems)
                                 {
                                     <tr>
-                                        <td>@item.Text</td>
+                                        <td>
+                                            @item.Text
+                                            @if (!string.IsNullOrWhiteSpace(item.Source))
+                                            {
+                                                <div class="wb-muted">@SpecSource.Label(item.Source)</div>
+                                            }
+                                        </td>
                                         <td>
                                             @switch (item.Status)
                                             {
@@ -787,6 +793,44 @@ else
                             </tbody>
                         </table>
                     </div>
+
+                    @if (Handoff.HandoffChain.Count > 0)
+                    {
+                        <h4>交接链</h4>
+                        <p class="wb-hint">这个活转过几次手 —— 每次谁交给谁、为什么。</p>
+                        <div class="wb-table-scroll">
+                            <table class="wb-table">
+                                <thead>
+                                <tr>
+                                    <th>时间</th>
+                                    <th>谁交出去</th>
+                                    <th>谁接手</th>
+                                    <th>为什么</th>
+                                </tr>
+                                </thead>
+                                <tbody>
+                                @foreach (var step in Handoff.HandoffChain)
+                                {
+                                    <tr>
+                                        <td class="wb-muted">@step.At.ToLocalTime().ToString("MM-dd HH:mm")</td>
+                                        <td>@(step.From ?? "—")</td>
+                                        <td>@(step.To ?? "还没人接手")</td>
+                                        <td class="wb-muted">
+                                            @if (!string.IsNullOrWhiteSpace(step.Reason))
+                                            {
+                                                @step.Reason
+                                            }
+                                            else
+                                            {
+                                                <text>没写理由</text>
+                                            }
+                                        </td>
+                                    </tr>
+                                }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
 
                     @if (Handoff.Plan is { } plan)
                     {

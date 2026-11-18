@@ -219,6 +219,109 @@ public sealed class GitInspector : IGitInspector
     }
 
     /// <summary>
+    /// 仓库里的所有 worktree。
+    ///
+    /// 用的是 <c>git worktree list --porcelain</c> —— git 自己知道有哪些，
+    /// 比扫目录准（也认得出被删掉的、已经失效的）。
+    /// </summary>
+    public IReadOnlyList<GitWorktree> ListWorktrees(string repoPath)
+    {
+        if (string.IsNullOrWhiteSpace(repoPath) || !Directory.Exists(repoPath))
+        {
+            return [];
+        }
+
+        try
+        {
+            var result = GitProcessRunner.RunAsync(
+                "git",
+                ["worktree", "list", "--porcelain"],
+                repoPath,
+                CommandTimeout,
+                CancellationToken.None).GetAwaiter().GetResult();
+
+            if (result.ExitCode != 0)
+            {
+                return [];
+            }
+
+            return ParseWorktrees(result.Stdout);
+        }
+        catch (Exception)
+        {
+            // 读不到就当没有 —— 别把主流程带崩
+            return [];
+        }
+    }
+
+    /// <summary>
+    /// 解析 <c>git worktree list --porcelain</c> 的输出。
+    ///
+    /// 格式是空行分隔的块，每块：
+    /// <code>
+    /// worktree /path/to/main
+    /// HEAD abc123
+    /// branch refs/heads/main
+    ///
+    /// worktree /path/to/wt
+    /// HEAD def456
+    /// detached
+    /// prunable gitdir file points to non-existent location
+    /// </code>
+    /// </summary>
+    internal static IReadOnlyList<GitWorktree> ParseWorktrees(string output)
+    {
+        var worktrees = new List<GitWorktree>();
+
+        string? path = null;
+        string? branch = null;
+        var prunable = false;
+
+        void Flush()
+        {
+            if (path is not null)
+            {
+                worktrees.Add(new GitWorktree(path, branch, worktrees.Count == 0, prunable));
+            }
+
+            path = null;
+            branch = null;
+            prunable = false;
+        }
+
+        foreach (var raw in output.Split('\n'))
+        {
+            var line = raw.TrimEnd('\r');
+
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                Flush();
+                continue;
+            }
+
+            if (line.StartsWith("worktree ", StringComparison.Ordinal))
+            {
+                path = line["worktree ".Length..].Trim();
+            }
+            else if (line.StartsWith("branch ", StringComparison.Ordinal))
+            {
+                var refName = line["branch ".Length..].Trim();
+                branch = refName.StartsWith("refs/heads/", StringComparison.Ordinal)
+                    ? refName["refs/heads/".Length..]
+                    : refName;
+            }
+            else if (line.StartsWith("prunable", StringComparison.Ordinal))
+            {
+                prunable = true;
+            }
+        }
+
+        Flush();
+
+        return worktrees;
+    }
+
+    /// <summary>
     /// 跑一条只读的 git 命令。成功返回 stdout，失败返回 null。
     ///
     /// 失败一律吞掉：产出文件采集是「锦上添花」的事，

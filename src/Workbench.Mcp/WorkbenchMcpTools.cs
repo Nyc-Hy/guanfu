@@ -29,7 +29,8 @@ public sealed class WorkbenchMcpTools(
     IAuditChainArchiveService? archive = null,
     IAgentSessionAccessor? sessionAccessor = null,
     ITaskUsageService? usage = null,
-    IHandoffService? handoff = null)
+    IHandoffService? handoff = null,
+    IWorkstationService? stations = null)
 {
     /// <summary>
     /// 算出这次调用算在哪个项目上。
@@ -54,6 +55,25 @@ public sealed class WorkbenchMcpTools(
 
         throw new WorkbenchException(
             "当前调用没有绑定项目，也没有传 projectId。请先调用 workbench_bind_session。");
+    }
+
+    /// <summary>
+    /// 这个活属于哪个项目。
+    ///
+    /// 工具只给了 taskId 时用 —— 活自己知道属于哪个项目，
+    /// 不必逼 agent 先绑会话才能放掉它。
+    /// </summary>
+    private async Task<Guid?> ResolveTaskProjectIdAsync(Guid taskId, CancellationToken cancellationToken)
+    {
+        if (db is null)
+        {
+            return null;
+        }
+
+        return await db.Tasks.AsNoTracking()
+            .Where(t => t.Id == taskId)
+            .Select(t => (Guid?)t.ProjectId)
+            .FirstOrDefaultAsync(cancellationToken);
     }
 
     /// <summary>
@@ -310,6 +330,73 @@ public sealed class WorkbenchMcpTools(
             .ToList();
     }
 
+    [McpServerTool(Name = "workbench_list_workstations")]
+    [Description(
+        "列工位：这个项目（或整个工作区）里登记着哪些工位、谁在用、目录还在不在、" +
+        "**有没有人管**（活干完了 / 租约过期了，但目录还躺在那儿）。" +
+        "没人管的工位会附上清理的确切命令（git worktree remove）—— " +
+        "工作台不替 agent 删目录，那是它自己仓库里的事。")]
+    public async Task<WorkstationsToolResult> ListWorkstationsAsync(
+        Guid? projectId = null,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (stations is null)
+            {
+                return WorkstationsToolResult.Fail("工位服务没注册。");
+            }
+
+            var resolvedProjectId = projectId;
+
+            if (resolvedProjectId is null)
+            {
+                var scope = scopeResolver is null
+                    ? null
+                    : await scopeResolver.ResolveOrNullAsync(null, cancellationToken);
+
+                resolvedProjectId = scope?.ProjectId;
+            }
+
+            var list = await stations.ListAsync(resolvedProjectId, cancellationToken);
+            return new WorkstationsToolResult(true, list);
+        }
+        catch (Exception ex) when (ex is WorkbenchException or InvalidOperationException or NotFoundException)
+        {
+            return WorkstationsToolResult.Fail(ex.Message);
+        }
+    }
+
+    [McpServerTool(Name = "workbench_release_workstation")]
+    [Description(
+        "放掉一个活登记的工位：把这个活占的工位还回去，并给出**清理目录的确切命令**。" +
+        "活干完了、工位不打算再用的时候调它 —— 否则 worktree 会一直躺在磁盘上，" +
+        "下一个 agent 不知道那个目录还在，人也不知道哪些能删。" +
+        "工作台只清登记、不删目录（那是 agent 自己仓库里的事）；" +
+        "真正删不删，命令给你了，你自己决定。")]
+    public async Task<StationReleaseToolResult> ReleaseWorkstationAsync(
+        Guid taskId,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (stations is null)
+            {
+                return StationReleaseToolResult.Fail("工位服务没注册。");
+            }
+
+            var result = await stations.ReleaseAsync(taskId, cancellationToken);
+
+            return result.Ok
+                ? new StationReleaseToolResult(true, result.WorkPath, result.CleanupCommand)
+                : StationReleaseToolResult.Fail(result.Error ?? "放掉工位失败。");
+        }
+        catch (Exception ex) when (ex is WorkbenchException or InvalidOperationException or NotFoundException)
+        {
+            return StationReleaseToolResult.Fail(ex.Message);
+        }
+    }
+
     [McpServerTool(Name = "workbench_get_handoff_pack")]
     [Description(
         "取交接包：这个活现在是什么样、上一位 agent 留下了什么。" +
@@ -324,6 +411,11 @@ public sealed class WorkbenchMcpTools(
     {
         try
         {
+            if (handoff is null)
+            {
+                return HandoffToolResult.Fail("交接包服务没注册。");
+            }
+
             var id = await ResolveTaskIdAsync(taskId, taskKey, cancellationToken);
             var pack = await handoff.GetAsync(id, cancellationToken);
 
@@ -429,24 +521,29 @@ public sealed class WorkbenchMcpTools(
         "放掉认领（把这个活交回去）。" +
         "卡住了就该交 —— 分支不对、缺上下文、跑不动、环境有问题，都比占着强：" +
         "占着别人就接不了这个活（主工作区同一时刻只允许一个 agent）。" +
-        "reason 写清楚为什么交（下一个 agent 看得见，它能少踩一遍坑）。")]
+        "reason 写清楚为什么交（下一个 agent 看得见，它能少踩一遍坑）。" +
+        "agentId 不给就用当前会话的 agent。")]
     public async Task<ReleaseTaskResult> ReleaseTaskAsync(
         Guid taskId,
         string? reason = null,
+        string? agentId = null,
         CancellationToken cancellationToken = default)
     {
         try
         {
-            var scope = await ResolveScopeAsync(null, cancellationToken);
-            var agentId = scope.AgentId;
+            // 任务自己知道属于哪个项目 —— 不必非要先绑会话
+            // （agent 拿着任务 id 就要能把它交回去）
+            var projectId = await ResolveTaskProjectIdAsync(taskId, cancellationToken);
+            var scope = await ResolveScopeAsync(projectId, cancellationToken);
+            var resolvedAgentId = agentId ?? scope.AgentId;
 
-            if (string.IsNullOrWhiteSpace(agentId))
+            if (string.IsNullOrWhiteSpace(resolvedAgentId))
             {
                 throw new WorkbenchException(
-                    "不知道是谁要放掉这个活（当前会话没有 agent 身份）。");
+                    "不知道是谁要放掉这个活（给 agentId，或让会话带上 agent 身份）。");
             }
 
-            await tasks.ReleaseAsync(taskId, agentId!, reason, cancellationToken);
+            await tasks.ReleaseAsync(taskId, resolvedAgentId!, reason, cancellationToken);
 
             return new ReleaseTaskResult { Ok = true };
         }
@@ -955,6 +1052,25 @@ public sealed record ClaimResult(
     string? PreviousHolder = null,
     /// <summary>为什么交出来（上一位说的，或上一位接活时留的上下文）。</summary>
     string? HandoffReason = null);
+
+/// <summary>工位清单。失败时 error 给出原因，不抛异常。</summary>
+public sealed record WorkstationsToolResult(
+    bool Ok,
+    IReadOnlyList<WorkstationDto>? Workstations = null,
+    string? Error = null)
+{
+    public static WorkstationsToolResult Fail(string error) => new(false, null, error);
+}
+
+/// <summary>放掉工位的结果。</summary>
+public sealed record StationReleaseToolResult(
+    bool Ok,
+    string? WorkPath = null,
+    string? CleanupCommand = null,
+    string? Error = null)
+{
+    public static StationReleaseToolResult Fail(string error) => new(false, null, null, error);
+}
 
 /// <summary>交接包。失败时 error 给出原因，不抛异常。</summary>
 public sealed record HandoffToolResult(

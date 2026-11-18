@@ -353,6 +353,11 @@ public static class WorkbenchApi
             Results.Ok(await tasks.PostEventAsync(
                 taskId, request.Message, TaskEventSource.Ci, request.Actor, request.OccurredAt, ct)));
 
+        // 工位：谁在哪个目录干活，有没有没人管的工位（worktree 建了没人收）。
+        api.MapGet("/projects/{projectId:guid}/stations", async (
+            Guid projectId, IWorkstationService stations, CancellationToken ct) =>
+            Results.Ok(await stations.ListAsync(projectId, ct)));
+
         // ---- 文档 ----
         api.MapGet("/tasks/{taskId:guid}/documents", async (
             Guid taskId, IDocumentService documents, CancellationToken ct) =>
@@ -624,7 +629,8 @@ public static class WorkbenchApi
                 request.CommitConvention,
                 request.TestCommand,
                 request.BranchConvention,
-                request.Guardrails);
+                request.Guardrails,
+                request.MaxConcurrentAgents ?? 0);
 
             return Results.Ok(await specs.UpdateForWorkspaceAsync(workspaceId, input, "human", ct));
         });
@@ -1086,7 +1092,9 @@ public sealed record UpdateProjectSpecRequest(
     string? CommitConvention = null,
     string? TestCommand = null,
     string? BranchConvention = null,
-    string? Guardrails = null);
+    string? Guardrails = null,
+    /// <summary>并行上限（同时干活的 agent 数）。0 = 不限。只有工作区级用得上。</summary>
+    int? MaxConcurrentAgents = null);
 
 public sealed record UpdateProjectConfigRequest(
     string? Name,
