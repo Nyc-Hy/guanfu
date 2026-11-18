@@ -66,11 +66,14 @@ public sealed class CredentialMiddleware
 
             if (owner is not null && HumanTokenPolicy.TokenMatches(token, owner.Token))
             {
+                // owner 的钥匙 = 全权（含管理员角色）。
                 identity = new CredentialIdentity(
                     CredentialKind.Member,
                     "owner",
                     [],
-                    HumanTokenPolicy.Fingerprint(owner.Token) ?? "owner");
+                    HumanTokenPolicy.Fingerprint(owner.Token) ?? "owner",
+                    MemberId: null,
+                    MemberRole: MemberRole.Admin);
             }
         }
 

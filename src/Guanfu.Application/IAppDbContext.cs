@@ -38,6 +38,7 @@ public interface IAppDbContext
     DbSet<SpecVerdict> SpecVerdicts { get; }
     DbSet<ArtifactRevision> ArtifactRevisions { get; }
     DbSet<DeliveryPackage> DeliveryPackages { get; }
+    DbSet<Member> Members { get; }
 
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
 

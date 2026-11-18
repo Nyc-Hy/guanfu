@@ -251,6 +251,58 @@ public class AccessCredential
 
     /// <summary>谁签发的。</summary>
     public string? CreatedBy { get; set; }
+
+    /// <summary>
+    /// 归属的成员。
+    ///
+    /// 一把 agent 凭证背后站着一个人 —— 「这台机器上的这个 agent 是谁的」
+    /// 就靠这一列。成员被停用，名下的凭证跟着失效。
+    /// </summary>
+    public Guid? MemberId { get; set; }
+
+    public Member? Member { get; set; }
+}
+
+/// <summary>
+/// 团队成员（人）。
+///
+/// 一个人用的时候不需要这张表 —— 那时「一个人 = 全部可见 = owner」。
+/// 团队用的时候必须有：**谁在操作必须是真的**，不能谁都能自称张三。
+/// </summary>
+public class Member
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+
+    /// <summary>登录名（人写的那一串）。</summary>
+    public string UserName { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 登录名的归一化形式（小写）。
+    ///
+    /// 唯一索引建在它上面 —— 「ZhangSan」与「zhangsan」是同一个登录名，
+    /// 只按原字符串比的话会漏掉重号。
+    /// </summary>
+    public string UserNameNormalized { get; set; } = string.Empty;
+
+    /// <summary>显示名（人看到的名字）。</summary>
+    public string DisplayName { get; set; } = string.Empty;
+
+    /// <summary>角色：普通成员还是管理员。</summary>
+    public MemberRole Role { get; set; } = MemberRole.Member;
+
+    /// <summary>
+    /// 密码哈希（<c>pbkdf2$迭代次数$盐$哈希</c>）。**不存明文**。
+    /// 为空 = 还没设密码 —— 这种成员只能靠人工凭证进，不能自己登录。
+    /// </summary>
+    public string? PasswordHash { get; set; }
+
+    /// <summary>停用后不能登录，名下的凭证也跟着失效。</summary>
+    public bool IsDisabled { get; set; }
+
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>上次登录时间。</summary>
+    public DateTimeOffset? LastLoginAt { get; set; }
 }
 
 /// <summary>凭证的种类。</summary>
@@ -261,6 +313,16 @@ public enum CredentialKind
 
     /// <summary>agent —— 走 MCP 干活。</summary>
     Agent = 1
+}
+
+/// <summary>成员角色。</summary>
+public enum MemberRole
+{
+    /// <summary>普通成员：只看自己的东西，批自己的活。</summary>
+    Member = 0,
+
+    /// <summary>管理员：看全部；能分配任务；能代别人批（要写理由）。</summary>
+    Admin = 1
 }
 
 /// <summary>

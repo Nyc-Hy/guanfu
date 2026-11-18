@@ -32,7 +32,11 @@
        布局的 Body 是 RenderFragment，跨渲染模式边界时框架直接拒绝
        （"Cannot pass the parameter 'Body' ... arbitrary code and cannot be serialized"）。
        正确做法是在这里给 Routes 标模式，布局与页面一并继承。 *@
-    <Routes @rendermode="InteractiveServer" />
+    @* CascadingAuthenticationState：把「现在是谁在操作」传给页面与布局。
+       没有它，导航栏就没法显示当前用户、也没法按角色收权限。 *@
+    <CascadingAuthenticationState>
+        <Routes @rendermode="InteractiveServer" />
+    </CascadingAuthenticationState>
     <script src="guanfu.js?v=@Assets.Value"></script>
     <script src="_framework/blazor.web.js"></script>
 </body>

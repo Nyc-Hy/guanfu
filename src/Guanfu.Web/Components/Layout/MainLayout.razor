@@ -1,4 +1,5 @@
-﻿@inherits LayoutComponentBase
+﻿@using Microsoft.AspNetCore.Components.Authorization
+@inherits LayoutComponentBase
 @implements IAsyncDisposable
 @inject IServiceScopeFactory ScopeFactory
 @inject IJSRuntime JS
@@ -105,6 +106,16 @@
             </div>
 
             <div class="wb-side-group">
+                <div class="wb-side-group-label">团队</div>
+                <a class="wb-side-link @(IsCurrent("/members") ? "active" : "")" href="/members">
+                    <span class="wb-side-text">
+                        <span class="wb-side-link-name">成员</span>
+                        <span class="wb-side-link-sub">谁在这个部署里</span>
+                    </span>
+                </a>
+            </div>
+
+            <div class="wb-side-group">
                 <div class="wb-side-group-label">运维</div>
                 <a class="wb-side-link @(IsCurrent("/workspace") ? "active" : "")" href="/workspace">
                     <span class="wb-side-text">
@@ -130,6 +141,17 @@
                 <kbd>/</kbd>
             </a>
             <span class="wb-topbar-spacer"></span>
+            @if (!string.IsNullOrWhiteSpace(CurrentUser))
+            {
+                <span class="wb-chip wb-chip-muted" title="@(IsAdmin ? "管理员" : "成员")">
+                    @CurrentUser@(IsAdmin ? " · 管理员" : "")
+                </span>
+                <button class="wb-btn wb-btn-ghost wb-btn-sm" @onclick="LogoutAsync">退出登录</button>
+            }
+            else
+            {
+                <a class="wb-btn wb-btn-ghost wb-btn-sm" href="/login">登录</a>
+            }
             <button class="wb-btn wb-btn-ghost wb-btn-sm" @onclick="ToggleThemeAsync"
                     title="@(Theme == "light" ? "切换到深色" : "切换到浅色")">
                 @(Theme == "light" ? "☾" : "☀")
@@ -160,12 +182,65 @@
     private PageError? LoadError { get; set; }
     private CancellationTokenSource? _timerCts;
 
+    /// <summary>当前登录的成员（没登录就是 null）。</summary>
+    private string? CurrentUser { get; set; }
+
+    private bool IsAdmin { get; set; }
+
+    /// <summary>登录身份（由 CascadingAuthenticationState 提供）。</summary>
+    [CascadingParameter] private Task<AuthenticationState>? AuthStateTask { get; set; }
+
     protected override async Task OnInitializedAsync()
     {
         // 路由变了要重画侧边栏的高亮项
         Nav.LocationChanged += OnLocationChanged;
 
+        await LoadIdentityAsync();
         await RefreshAsync();
+    }
+
+    /// <summary>读一次登录身份（显示「现在是谁在操作」）。</summary>
+    private async Task LoadIdentityAsync()
+    {
+        if (AuthStateTask is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var state = await AuthStateTask;
+            var user = state.User;
+
+            if (user.Identity?.IsAuthenticated == true)
+            {
+                CurrentUser = user.Identity.Name;
+                IsAdmin = MemberAuth.IsAdmin(user);
+            }
+        }
+        catch (Exception)
+        {
+            // 拿不到身份就当没登录 —— 不因为显示不出名字把页面搞挂
+        }
+    }
+
+    /// <summary>退出登录：清掉会话 Cookie，再整页重载（新的电路才认）。</summary>
+    private async Task LogoutAsync()
+    {
+        try
+        {
+            await JS.InvokeAsync<string>(
+                "eval",
+                "fetch('/api/auth/logout',{method:'POST',credentials:'same-origin'})"
+                    + ".then(function(){return '';})"
+                    + ".catch(function(){return '';})");
+        }
+        catch (Exception)
+        {
+            // 拿不到就照样重载 —— Cookie 还在就再登一次
+        }
+
+        Nav.NavigateTo("/", forceLoad: true);
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)

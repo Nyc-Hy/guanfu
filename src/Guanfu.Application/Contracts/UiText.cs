@@ -390,6 +390,15 @@ public static class UiText
         null or "" => "其它",
         _ => kind
     };
+
+    /// <summary>成员角色的中文说法。</summary>
+    public static string MemberRole(string? role) => role switch
+    {
+        "Admin" => "管理员",
+        "Member" => "成员",
+        null or "" => "成员",
+        _ => role
+    };
 }
 
 /// <summary>

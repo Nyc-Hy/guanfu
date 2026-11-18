@@ -1,5 +1,6 @@
 using System.Net;
 using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Http.Features;
@@ -33,6 +34,30 @@ builder.Services.AddSingleton(new StaticAssetsVersion(
 // 会话绑定要读 HTTP 头（X-Guanfu-Session / X-Guanfu-Repo），
 // 才知道这次 MCP 调用是哪个 agent、哪个仓库发出来的。
 builder.Services.AddHttpContextAccessor();
+
+// 成员登录：账号 + 密码 → 签名 Cookie。
+//
+// **人工凭证没有作废** —— 它是 owner 的万能钥匙，也是「本机引导 / 紧急恢复」用的：
+// 第一个管理员账号就是拿它建出来的。
+// 团队里每个人走自己的账号，Cookie 里装的是成员身份与角色 —— 事后查得到是谁点的。
+builder.Services
+    .AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
+    .AddCookie(options =>
+    {
+        options.Cookie.Name = MemberAuth.CookieName;
+        options.Cookie.HttpOnly = true;
+        // 同站才带 —— 跨站的请求不该自动带上「已经登录」的凭据。
+        options.Cookie.SameSite = SameSiteMode.Strict;
+        options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
+        options.ExpireTimeSpan = MemberAuth.SessionLifetime;
+        options.SlidingExpiration = true;
+        options.LoginPath = "/login";
+    });
+
+builder.Services.AddAuthorization();
+
+// 让界面能拿到「现在是谁在操作」。
+builder.Services.AddCascadingAuthenticationState();
 
 // 枚举一律输出成字符串（"DocsReady" 而不是 1），
 // agent 与 CLI 读到的字段才有意义
@@ -145,6 +170,11 @@ app.UseMiddleware<OriginHostGuardMiddleware>(OriginHostAllowedHosts.Read(builder
 
 app.UseRateLimiter();
 
+// 成员会话：Cookie 里的身份。排在静态文件之后即可 ——
+// 静态资源不需要知道是谁在看，只有页面与 API 需要。
+app.UseAuthentication();
+app.UseAuthorization();
+
 // 开发时静态文件别缓存：改完 CSS / JS 刷新就该看到新的。
 // 默认中间件会带 Last-Modified，浏览器拿到 304 就继续用本地副本 ——
 // 人会以为「改了没生效」，其实拿的是旧文件。
@@ -185,6 +215,9 @@ app.MapRazorComponents<App>()
 
 // REST API：给 CI / webhook / 脚本
 app.MapGuanfuApi();
+
+// 成员的登录与成员管理
+app.MapMemberApi();
 
 // MCP 端点：给外部 agent（Streamable HTTP）
 app.MapMcp("/mcp");

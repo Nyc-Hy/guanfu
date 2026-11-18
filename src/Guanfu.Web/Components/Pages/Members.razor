@@ -1,0 +1,380 @@
+@page "/members"
+@rendermode InteractiveServer
+@using Microsoft.AspNetCore.Components.Authorization
+@inject IServiceScopeFactory ScopeFactory
+@inject HumanTokenAccessor Tokens
+@inject NavigationManager Nav
+
+<PageTitle>成员 · 观复</PageTitle>
+
+<div class="wb-page-head">
+    <div>
+        <h1>成员</h1>
+        <p class="wb-muted">
+            一个部署 = 一个团队。这里是团队里的人：谁有账号、谁是管理员、谁停用了。
+            停用一个人，他名下 agent 的凭证立刻失效。
+        </p>
+    </div>
+</div>
+
+@if (!CanManage)
+{
+    <section class="wb-panel">
+        <h3>要先有人在旁边</h3>
+        <p class="wb-muted">
+            改「谁能进、谁能看」是同权的事 —— 要么用**管理员账号**登录，
+            要么用启动观复的控制台里那把人工凭证。
+        </p>
+        <div class="wb-form-row">
+            <a class="wb-btn wb-btn-primary" href="/login?returnUrl=/members">去登录</a>
+        </div>
+    </section>
+
+    <PageTokenGate @bind-Authorized="TokenAuthorized" />
+
+    @if (!TokenAuthorized)
+    {
+        <p class="wb-muted">人工凭证验证通过后，这一页就能用了。</p>
+    }
+}
+else
+{
+    <ErrorNotice Error="Error" />
+
+    <section class="wb-panel">
+        <div class="wb-card-head">
+            <h3>成员</h3>
+            <span class="wb-muted">@MemberItems.Count 人</span>
+        </div>
+
+        @if (MemberItems.Count == 0)
+        {
+            <p class="wb-muted">
+                还没有成员。第一个成员就建成管理员 —— 建完就能用账号登录了。
+            </p>
+        }
+        else
+        {
+            <div class="wb-table-scroll">
+                <table class="wb-table">
+                    <thead>
+                        <tr>
+                            <th>登录名</th>
+                            <th>显示名</th>
+                            <th>角色</th>
+                            <th>状态</th>
+                            <th>上次登录</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var member in MemberItems)
+                        {
+                            <tr>
+                                <td><code>@member.UserName</code></td>
+                                <td>@member.DisplayName</td>
+                                <td><span class="wb-chip">@UiText.MemberRole(member.Role)</span></td>
+                                <td>
+                                    @if (member.IsDisabled)
+                                    {
+                                        <span class="wb-tag wb-tag-danger">已停用</span>
+                                    }
+                                    else
+                                    {
+                                        <span class="wb-tag wb-tag-ok">正常</span>
+                                    }
+                                </td>
+                                <td class="wb-muted">
+                                    @(member.LastLoginAt is null
+                                        ? "还没登录过"
+                                        : member.LastLoginAt.Value.ToLocalTime().ToString("MM-dd HH:mm"))
+                                </td>
+                                <td>
+                                    <button class="wb-btn wb-btn-link" @onclick="() => ToggleRoleAsync(member)">
+                                        @(member.Role == "Admin" ? "降为成员" : "升为管理员")
+                                    </button>
+                                    <button class="wb-btn wb-btn-link" @onclick="() => ToggleDisabledAsync(member)">
+                                        @(member.IsDisabled ? "启用" : "停用")
+                                    </button>
+                                    <button class="wb-btn wb-btn-link" @onclick="() => StartResetPassword(member)">
+                                        重置密码
+                                    </button>
+                                </td>
+                            </tr>
+                            @if (IsResetting(member.Id))
+                            {
+                                <tr>
+                                    <td colspan="6">
+                                        <div class="wb-field-row">
+                                            <label class="wb-label" for="pwd-@member.Id">新密码</label>
+                                            <input id="pwd-@member.Id" class="wb-input" type="password"
+                                                   @bind="NewPassword" @bind:event="oninput" />
+                                        </div>
+                                        <div class="wb-form-row wb-mt-2">
+                                            <button class="wb-btn wb-btn-primary" disabled="@Busy"
+                                                    @onclick="() => ResetPasswordAsync(member.Id)">保存</button>
+                                            <button class="wb-btn" @onclick="() => CancelResetPassword(member.Id)">取消</button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            }
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </section>
+
+    <section class="wb-panel">
+        <div class="wb-card-head">
+            <h3>加一个人</h3>
+        </div>
+
+        <div class="wb-field-row">
+            <label class="wb-label" for="member-user">登录名</label>
+            <input id="member-user" class="wb-input" placeholder="例如 zhangsan" @bind="NewUserName" @bind:event="oninput" />
+        </div>
+
+        <div class="wb-field-row">
+            <label class="wb-label" for="member-name">显示名</label>
+            <input id="member-name" class="wb-input" placeholder="例如 张三" @bind="NewDisplayName" @bind:event="oninput" />
+        </div>
+
+        <div class="wb-field-row">
+            <label class="wb-label" for="member-pass">初始密码</label>
+            <input id="member-pass" class="wb-input" type="password" placeholder="至少 8 位；留空则只能靠人工凭证进"
+                   @bind="NewPassword" @bind:event="oninput" />
+        </div>
+
+        <div class="wb-field-row">
+            <label class="wb-label" for="member-role">角色</label>
+            <select id="member-role" class="wb-input" @bind="NewRole">
+                <option value="Member">成员（只看自己的东西）</option>
+                <option value="Admin">管理员（看全部、能分配、能代批）</option>
+            </select>
+        </div>
+
+        <div class="wb-form-row wb-mt-3">
+            <button class="wb-btn wb-btn-primary" disabled="@(Busy || string.IsNullOrWhiteSpace(NewUserName))"
+                    @onclick="CreateAsync">建成员</button>
+            <button class="wb-btn" disabled="@Busy" @onclick="FillRandomPassword">随机密码</button>
+            <span class="wb-muted">建完把登录名与密码告诉本人，让他自己改。</span>
+        </div>
+    </section>
+}
+
+@code {
+    [CascadingParameter] private Task<AuthenticationState>? AuthStateTask { get; set; }
+
+    private IReadOnlyList<MemberDto> MemberItems { get; set; } = [];
+    private bool CanManage { get; set; }
+    private bool Busy { get; set; }
+    private PageError? Error { get; set; }
+
+    private bool _tokenAuthorized;
+
+    /// <summary>
+    /// 人工凭证验证通过 —— 也就是 owner 本人在场。
+    /// 通过之后这一页就能用了（owner 能管成员，跟管理员一样）。
+    /// </summary>
+    private bool TokenAuthorized
+    {
+        get => _tokenAuthorized;
+        set
+        {
+            _tokenAuthorized = value;
+
+            if (value && !CanManage)
+            {
+                CanManage = true;
+                _ = LoadAsync();
+                StateHasChanged();
+            }
+        }
+    }
+
+    private string NewUserName { get; set; } = string.Empty;
+    private string NewDisplayName { get; set; } = string.Empty;
+    private string NewPassword { get; set; } = string.Empty;
+    private string NewRole { get; set; } = "Member";
+
+    private readonly HashSet<Guid> _resetting = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await ResolveAccessAsync();
+
+        if (CanManage)
+        {
+            await LoadAsync();
+        }
+    }
+
+    /// <summary>能不能管成员：管理员会话，或 owner 的人工凭证。</summary>
+    private async Task ResolveAccessAsync()
+    {
+        if (AuthStateTask is not null)
+        {
+            try
+            {
+                var state = await AuthStateTask;
+
+                if (MemberAuth.IsAdmin(state.User))
+                {
+                    CanManage = true;
+                }
+            }
+            catch (Exception)
+            {
+                // 拿不到身份就当没登录
+            }
+        }
+    }
+
+    private async Task LoadAsync()
+    {
+        try
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var members = scope.ServiceProvider.GetRequiredService<IMemberService>();
+            MemberItems = await members.ListAsync();
+        }
+        catch (Exception ex)
+        {
+            Error = PageError.From(ex, "读成员名单");
+        }
+    }
+
+    private async Task CreateAsync()
+    {
+        if (Busy)
+        {
+            return;
+        }
+
+        Busy = true;
+        Error = null;
+
+        try
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var members = scope.ServiceProvider.GetRequiredService<IMemberService>();
+
+            var role = string.Equals(NewRole, "Admin", StringComparison.OrdinalIgnoreCase)
+                ? MemberRole.Admin
+                : MemberRole.Member;
+
+            await members.CreateAsync(
+                NewUserName,
+                NewDisplayName,
+                string.IsNullOrWhiteSpace(NewPassword) ? null : NewPassword,
+                role);
+
+            NewUserName = string.Empty;
+            NewDisplayName = string.Empty;
+            NewPassword = string.Empty;
+
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            Error = PageError.From(ex, "建成员");
+        }
+        finally
+        {
+            Busy = false;
+        }
+    }
+
+    private async Task ToggleRoleAsync(MemberDto member)
+    {
+        Busy = true;
+        Error = null;
+
+        try
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var members = scope.ServiceProvider.GetRequiredService<IMemberService>();
+
+            await members.SetRoleAsync(
+                member.Id,
+                member.Role == "Admin" ? MemberRole.Member : MemberRole.Admin);
+
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            Error = PageError.From(ex, "改角色");
+        }
+        finally
+        {
+            Busy = false;
+        }
+    }
+
+    private async Task ToggleDisabledAsync(MemberDto member)
+    {
+        Busy = true;
+        Error = null;
+
+        try
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var members = scope.ServiceProvider.GetRequiredService<IMemberService>();
+
+            await members.SetDisabledAsync(member.Id, !member.IsDisabled);
+
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            Error = PageError.From(ex, member.IsDisabled ? "启用成员" : "停用成员");
+        }
+        finally
+        {
+            Busy = false;
+        }
+    }
+
+    private bool IsResetting(Guid id) => _resetting.Contains(id);
+
+    private void StartResetPassword(MemberDto member)
+    {
+        NewPassword = string.Empty;
+        _resetting.Add(member.Id);
+    }
+
+    private void CancelResetPassword(Guid id) => _resetting.Remove(id);
+
+    private async Task ResetPasswordAsync(Guid id)
+    {
+        Busy = true;
+        Error = null;
+
+        try
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var members = scope.ServiceProvider.GetRequiredService<IMemberService>();
+
+            await members.ResetPasswordAsync(id, NewPassword);
+
+            _resetting.Remove(id);
+            NewPassword = string.Empty;
+
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            Error = PageError.From(ex, "重置密码");
+        }
+        finally
+        {
+            Busy = false;
+        }
+    }
+
+    private void FillRandomPassword()
+    {
+        NewPassword = PasswordHasher.GenerateInitialPassword();
+    }
+}

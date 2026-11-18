@@ -56,6 +56,26 @@ public class EndpointClassificationTests
         "POST /api/projects/{projectId:guid}/milestones",
         "PUT /api/milestones/{milestoneId:guid}",
         "DELETE /api/milestones/{milestoneId:guid}",
+        // 登录与登出不需要凭证 —— 登录本身就是「拿到凭证」的那一步
+        "POST /api/auth/login",
+        "POST /api/auth/logout",
+    };
+
+    /// <summary>
+    /// **角色门禁**的写端点：改的是「谁能进、谁能看」，
+    /// 靠**成员会话里的管理员角色**（或 owner 的人工凭证）放行，
+    /// 不走共享人工凭证那一道。
+    ///
+    /// 为什么单独一档：团队部署时管理员是用自己的账号登录的，
+    /// 手里没有共享 token —— 把这些端点归到「敏感」会把管理员挡在外面。
+    /// 判定在端点里自己做（MemberApi.CanManageMembers）。
+    /// </summary>
+    private static readonly HashSet<string> RoleGatedWriteEndpoints = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "POST /api/members",
+        "PUT /api/members/{memberId:guid}/role",
+        "PUT /api/members/{memberId:guid}/status",
+        "POST /api/members/{memberId:guid}/password",
     };
 
     /// <summary>
@@ -98,7 +118,9 @@ public class EndpointClassificationTests
             var sensitive = HumanTokenPolicy.IsSensitiveEndpoint(method, samplePath);
             var key = $"{method} {template}";
 
-            if (!sensitive && !OpenWriteEndpoints.Contains(key))
+            if (!sensitive
+                && !OpenWriteEndpoints.Contains(key)
+                && !RoleGatedWriteEndpoints.Contains(key))
             {
                 unclassified.Add(key);
             }
@@ -106,7 +128,8 @@ public class EndpointClassificationTests
 
         Assert.True(
             unclassified.Count == 0,
-            "这些写端点既没被判为敏感、也不在开放清单里，必须当场归类：\n" + string.Join("\n", unclassified));
+            "这些写端点既没被判为敏感、也不在开放清单或角色门禁清单里，必须当场归类：\n"
+            + string.Join("\n", unclassified));
     }
 
     [Fact]
@@ -149,6 +172,39 @@ public class EndpointClassificationTests
     }
 
     [Fact]
+    public void 角色门禁清单没有腐烂条目()
+    {
+        var actualKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (method, template, _) in EnumerateWriteEndpoints())
+        {
+            actualKeys.Add($"{method} {template}");
+        }
+
+        var stale = RoleGatedWriteEndpoints.Except(actualKeys).ToList();
+
+        Assert.True(
+            stale.Count == 0,
+            "角色门禁清单里这些条目已经没有对应的真实端点了：\n" + string.Join("\n", stale));
+    }
+
+    [Fact]
+    public void 角色门禁的端点不该同时被人工凭证拦()
+    {
+        // 两道门各管各的：人工凭证管「owner 的万能钥匙」，
+        // 角色门禁管「团队里的管理员」。混在一起会把管理员挡在外面。
+        foreach (var (method, template, samplePath) in EnumerateWriteEndpoints())
+        {
+            var key = $"{method} {template}";
+            if (RoleGatedWriteEndpoints.Contains(key))
+            {
+                Assert.False(
+                    HumanTokenPolicy.IsSensitiveEndpoint(method, samplePath),
+                    $"角色门禁的 {key} 被判成了人工凭证敏感端点 —— 两道门混了。");
+            }
+        }
+    }
+
+    [Fact]
     public void 开放清单里的端点确实不敏感()
     {
         // 防止有人把同一个端点既写进开放清单、又让它被判敏感 —— 口径必须自洽
@@ -184,6 +240,7 @@ public class EndpointClassificationTests
 
         using var app = builder.Build();
         app.MapGuanfuApi();
+        app.MapMemberApi();
 
         var endpoints = ((IEndpointRouteBuilder)app).DataSources
             .SelectMany(ds => ds.Endpoints)

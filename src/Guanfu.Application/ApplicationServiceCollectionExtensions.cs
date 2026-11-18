@@ -68,6 +68,9 @@ public static class ApplicationServiceCollectionExtensions
         // 凭证：团队部署时「谁在操作」必须是真的 —— 签发时绑身份与可见范围
         services.AddScoped<ICredentialService, CredentialService>();
 
+        // 成员：一个人用的时候是空表，团队用的时候「谁在操作」靠它
+        services.AddScoped<IMemberService, MemberService>();
+
         // 产物：人能改 AI 写出来的东西，改完留版本。
         services.AddScoped<IArtifactService, ArtifactService>();
 

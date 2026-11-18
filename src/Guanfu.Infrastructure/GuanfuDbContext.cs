@@ -36,6 +36,7 @@ public sealed class GuanfuDbContext(DbContextOptions<GuanfuDbContext> options) :
     public DbSet<SpecVerdict> SpecVerdicts => Set<SpecVerdict>();
     public DbSet<ArtifactRevision> ArtifactRevisions => Set<ArtifactRevision>();
     public DbSet<DeliveryPackage> DeliveryPackages => Set<DeliveryPackage>();
+    public DbSet<Member> Members => Set<Member>();
 
     /// <inheritdoc />
     public void ClearTracking() => ChangeTracker.Clear();
@@ -278,6 +279,36 @@ public sealed class GuanfuDbContext(DbContextOptions<GuanfuDbContext> options) :
             e.Property(x => x.CreatedBy).HasMaxLength(200);
 
             e.HasIndex(x => new { x.MilestoneId, x.CreatedAt });
+        });
+
+        // 团队成员：一个人用的时候这张表是空的，团队用的时候「谁在操作」靠它。
+        modelBuilder.Entity<Member>(e =>
+        {
+            e.ToTable("members");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.UserName).HasMaxLength(100).IsRequired();
+            e.Property(x => x.UserNameNormalized).HasMaxLength(100).IsRequired();
+            e.Property(x => x.DisplayName).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Role).HasConversion<string>().HasMaxLength(32);
+            e.Property(x => x.PasswordHash).HasMaxLength(500);
+
+            // 登录名唯一 —— 建在**归一化**的那一列上：
+            // 「ZhangSan」与「zhangsan」是同一个登录名。
+            e.HasIndex(x => x.UserNameNormalized).IsUnique();
+        });
+
+        // 凭证归属成员：成员被停用，名下的凭证跟着作废。
+        // 表名沿用约定（AccessCredentials）—— 改名会让老库多出一张空表。
+        modelBuilder.Entity<AccessCredential>(e =>
+        {
+            e.HasKey(x => x.Id);
+
+            e.HasOne(x => x.Member)
+                .WithMany()
+                .HasForeignKey(x => x.MemberId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            e.HasIndex(x => x.MemberId);
         });
 
         // 项目级规约：项目与规约是一对一。规约是「人定的规矩」，

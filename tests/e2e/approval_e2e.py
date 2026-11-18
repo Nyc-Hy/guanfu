@@ -67,6 +67,48 @@ def rest_status(
         return error.code, error.read().decode()
 
 
+def rest_login(rest: str, user_name: str, password: str) -> tuple[int, str, str | None]:
+    """登录并拿会话 Cookie。返回 (状态码, 正文, Cookie 头)。"""
+    data = json.dumps({"userName": user_name, "password": password}).encode()
+    request = urllib.request.Request(
+        rest.rstrip("/") + "/api/auth/login",
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.status, response.read().decode(), response.headers.get("Set-Cookie")
+    except urllib.error.HTTPError as error:
+        return error.code, error.read().decode(), None
+
+
+def rest_with_cookie(
+    rest: str,
+    method: str,
+    path: str,
+    cookie: str | None,
+    body: dict | None = None,
+) -> tuple[int, str]:
+    """带会话 Cookie 发一个请求（不带人工凭证）。"""
+    data = json.dumps(body).encode() if body is not None else None
+    headers = {"Content-Type": "application/json"}
+
+    if cookie:
+        headers["Cookie"] = cookie.split(";")[0]
+
+    request = urllib.request.Request(
+        rest.rstrip("/") + path, data=data, headers=headers, method=method
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.status, response.read().decode()
+    except urllib.error.HTTPError as error:
+        return error.code, error.read().decode()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", default="http://127.0.0.1:5191")
@@ -444,6 +486,55 @@ def main() -> int:
         expect(
             ".zip" in body,
             "交付包应带一个 zip 文件名",
+        )
+
+        # ── D13 成员的账号与登录 ───────────────────────────────────────
+        # 团队部署时「谁在操作必须是真的」：
+        # 成员用账号密码登录，管理员会话能管成员，没会话就管不了。
+        print("\n-- D13 成员登录与成员管理 --")
+        member_user = f"e2e-admin-{suffix}"
+        member_password = "e2e-password-1"
+
+        create_status, _ = rest_status(
+            rest,
+            "POST",
+            "/api/members",
+            {
+                "userName": member_user,
+                "displayName": "e2e 管理员",
+                "password": member_password,
+                "role": "Admin",
+            },
+        )
+        expect(
+            create_status in (200, 201),
+            f"owner 该能建成员（实际 {create_status}）",
+        )
+
+        login_status, _, cookie = rest_login(rest, member_user, member_password)
+        expect(login_status == 200, f"成员该能登录（实际 {login_status}）")
+        expect(cookie is not None, "登录后该拿到会话 Cookie")
+
+        bad_status, _, _ = rest_login(rest, member_user, "wrong-password")
+        expect(bad_status == 401, f"密码不对该是 401（实际 {bad_status}）")
+
+        if cookie:
+            members_status, members_body = rest_with_cookie(
+                rest, "GET", "/api/members", cookie
+            )
+            expect(
+                members_status == 200,
+                f"管理员会话该能看成员名单（实际 {members_status}）",
+            )
+            expect(
+                member_user in members_body,
+                "成员名单里该有刚建的那个",
+            )
+
+        no_session_status, _ = rest_with_cookie(rest, "GET", "/api/members", None)
+        expect(
+            no_session_status == 403,
+            f"没登录不该能看成员名单（实际 {no_session_status}）",
         )
 
         section("结果")
