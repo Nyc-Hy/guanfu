@@ -168,6 +168,14 @@ public sealed record DeliveryCandidatesDto(
     string ProjectName,
     IReadOnlyList<DeliveryCandidateDto> Candidates);
 
+/// <summary>一次交付打包的分享链接。明文只在签发那一次出现。</summary>
+public sealed record DeliveryShareDto(
+    Guid PackageId,
+    /// <summary>分享令牌（明文，只此一次）。</summary>
+    string Token,
+    DateTimeOffset? ExpiresAt,
+    string FileName);
+
 /// <summary>一次交付打包。</summary>
 public sealed record DeliveryPackageDto(
     Guid Id,
@@ -179,7 +187,11 @@ public sealed record DeliveryPackageDto(
     IReadOnlyList<DeliveryPackageItemDto> Items,
     string? Manifest,
     string CreatedBy,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    /// <summary>分享链接的有效期。为空 = 没签发过。</summary>
+    DateTimeOffset? ShareExpiresAt = null,
+    /// <summary>分享链接被撤销的时刻。非空 = 链接已作废。</summary>
+    DateTimeOffset? ShareRevokedAt = null);
 
 /// <summary>清单里的一条。</summary>
 public sealed record DeliveryPackageItemDto(

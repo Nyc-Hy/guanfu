@@ -678,6 +678,21 @@ public class DeliveryPackage
 
     public string CreatedBy { get; set; } = "human";
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>
+    /// 分享链接的哈希。
+    ///
+    /// **交付的最后一公里**：包打好了，项管没有观复账号 ——
+    /// 他要的是一个能点的链接。链接本身是一把钥匙，所以库里只存哈希，
+    /// 明文只在签发那一次出现。
+    /// </summary>
+    public string? ShareTokenHash { get; set; }
+
+    /// <summary>分享链接的有效期。到点就失效。</summary>
+    public DateTimeOffset? ShareExpiresAt { get; set; }
+
+    /// <summary>分享链接被撤销的时刻。非空 = 链接已作废。</summary>
+    public DateTimeOffset? ShareRevokedAt { get; set; }
 }
 
 /// <summary>审批请求。写操作、git 写操作等必须先过这里。</summary>

@@ -219,6 +219,15 @@ public static class HumanTokenPolicy
             return IsDelete(method);
         }
 
+        // /api/delivery-packages/{id}/share —— 把包递到观复外面（项管没有账号，
+        // 靠链接下载）。跟导出同级：要人工在场。
+        if (segments.Length == 4
+            && segments[1].Equals("delivery-packages", StringComparison.OrdinalIgnoreCase)
+            && segments[3].Equals("share", StringComparison.OrdinalIgnoreCase))
+        {
+            return IsPost(method) || IsDelete(method);
+        }
+
         // PUT /api/projects/{id}/spec —— 改项目级规约（DoD / 提交约定 / 测试命令）。
         // 规矩是**人的决定**：agent 读它、照着做，但不该自己改「什么算做完」。
         if (segments.Length == 4

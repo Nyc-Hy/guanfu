@@ -67,6 +67,17 @@ def rest_status(
         return error.code, error.read().decode()
 
 
+def rest_bytes(rest: str, path: str) -> tuple[int, bytes]:
+    """取二进制内容（下载 zip 用 —— 按文本解会炸）。"""
+    request = urllib.request.Request(rest.rstrip("/") + path, method="GET")
+
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.status, response.read()
+    except urllib.error.HTTPError as error:
+        return error.code, error.read()
+
+
 def rest_login(rest: str, user_name: str, password: str) -> tuple[int, str, str | None]:
     """登录并拿会话 Cookie。返回 (状态码, 正文, Cookie 头)。"""
     data = json.dumps({"userName": user_name, "password": password}).encode()
@@ -487,6 +498,59 @@ def main() -> int:
             ".zip" in body,
             "交付包应带一个 zip 文件名",
         )
+
+        # 交付的最后一公里：项管没有观复账号，他要的是一个能点的链接。
+        package_id = None
+        try:
+            package_id = json.loads(body).get("id")
+        except Exception:
+            package_id = None
+
+        if package_id:
+            share_status, share_body = rest_status(
+                rest,
+                "POST",
+                f"/api/delivery-packages/{package_id}/share",
+                {},
+            )
+            expect(
+                share_status == 200,
+                f"有人在场就该签得出分享链接（实际 {share_status}）",
+            )
+
+            token = None
+            try:
+                token = json.loads(share_body).get("token")
+            except Exception:
+                token = None
+
+            if token:
+                # 拿链接的人**没有凭证**也能下载
+                download_status, download_body = rest_bytes(rest, f"/delivery/{token}")
+                expect(
+                    download_status == 200,
+                    f"拿分享链接的人该能直接下载（实际 {download_status}）",
+                )
+                expect(
+                    download_body.startswith(b"PK"),
+                    "下载到的该是 zip 文件",
+                )
+
+                # 撤销之后链接就失效了
+                revoke_status, _ = rest_status(
+                    rest,
+                    "DELETE",
+                    f"/api/delivery-packages/{package_id}/share",
+                )
+                expect(revoke_status in (200, 204), f"该能撤销分享链接（实际 {revoke_status}）")
+
+                after_status, _ = rest_status(rest, "GET", f"/delivery/{token}")
+                expect(
+                    after_status == 404,
+                    f"撤销之后链接该失效（实际 {after_status}）",
+                )
+            else:
+                print("  ⚠ 没签发出分享链接，跳过分享下载断言")
 
         # ── D13 成员的账号与登录 ───────────────────────────────────────
         # 团队部署时「谁在操作必须是真的」：

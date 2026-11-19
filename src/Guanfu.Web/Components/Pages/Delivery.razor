@@ -5,6 +5,7 @@
 @inject IMilestoneService Milestones
 @inject IServiceScopeFactory ScopeFactory
 @inject NavigationManager Nav
+@inject IJSRuntime JS
 
 <PageTitle>打包交付 · 观复</PageTitle>
 
@@ -104,6 +105,30 @@ else
         }
     </section>
 
+    @if (ShareUrl is not null)
+    {
+        <section class="wb-panel">
+            <div class="wb-card-head">
+                <h3>分享链接（只显示这一次）</h3>
+                <span class="wb-chip wb-chip-ok">复制走</span>
+            </div>
+            <p class="wb-muted">
+                拿这个链接的人没有观复账号也能下载 —— 链接本身就是那把钥匙。
+                有效期 @ShareExpiresAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm")，到期自动失效；
+                发错了可以随时撤销。
+            </p>
+            <pre class="wb-doc-code">@ShareUrl</pre>
+            <div class="wb-form-row">
+                <button class="wb-btn" @onclick="() => CopyAsync(ShareUrl)">复制</button>
+                <button class="wb-btn" @onclick="() => RevokeShareAsync(SharePackageId)">撤销这个链接</button>
+                @if (Copied)
+                {
+                    <span class="wb-chip wb-chip-ok">已复制</span>
+                }
+            </div>
+        </section>
+    }
+
     <section class="wb-panel">
         <div class="wb-card-head">
             <h3>打过的包</h3>
@@ -142,6 +167,13 @@ else
                                     <button class="wb-btn wb-btn-link" @onclick="() => ToggleManifest(package.Id)">
                                         @(IsManifestExpanded(package.Id) ? "收起清单" : "看清单")
                                     </button>
+                                    <button class="wb-btn wb-btn-link" @onclick="() => CreateShareAsync(package.Id)">
+                                        分享链接
+                                    </button>
+                                    @if (package.ShareExpiresAt is { } expiry && package.ShareRevokedAt is null)
+                                    {
+                                        <div class="wb-muted">链接有效到 @expiry.ToLocalTime().ToString("MM-dd HH:mm")</div>
+                                    }
                                 </td>
                             </tr>
                             @if (IsManifestExpanded(package.Id))
@@ -178,6 +210,16 @@ else
     private IReadOnlyList<DeliveryPackageDto> Packages { get; set; } = [];
     private readonly HashSet<Guid> _selected = new();
     private readonly HashSet<Guid> _expandedManifests = new();
+
+    /// <summary>刚签发的分享链接（只显示这一次）。</summary>
+    private string? ShareUrl { get; set; }
+
+    private DateTimeOffset? ShareExpiresAt { get; set; }
+
+    private Guid SharePackageId { get; set; }
+
+    /// <summary>链接有没有复制成功。</summary>
+    private bool Copied { get; set; }
     private bool Loading { get; set; } = true;
     private bool Busy { get; set; }
     private bool Authorized { get; set; }
@@ -241,6 +283,90 @@ else
         if (!_expandedManifests.Add(id))
         {
             _expandedManifests.Remove(id);
+        }
+    }
+
+    /// <summary>签发一个分享链接 —— 项管没有观复账号，他要的是一个能点的链接。</summary>
+    private async Task CreateShareAsync(Guid packageId)
+    {
+        if (Busy)
+        {
+            return;
+        }
+
+        Busy = true;
+        Error = null;
+
+        try
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var delivery = scope.ServiceProvider.GetRequiredService<IDeliveryPackageService>();
+
+            var share = await delivery.CreateShareAsync(packageId);
+
+            SharePackageId = packageId;
+            ShareUrl = $"{ShareBaseUrl()}/delivery/{share.Token}";
+            ShareExpiresAt = share.ExpiresAt;
+            Copied = false;
+
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            Error = PageError.From(ex, "签发分享链接");
+        }
+        finally
+        {
+            Busy = false;
+        }
+    }
+
+    /// <summary>撤销分享链接。</summary>
+    private async Task RevokeShareAsync(Guid packageId)
+    {
+        if (Busy)
+        {
+            return;
+        }
+
+        Busy = true;
+        Error = null;
+
+        try
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var delivery = scope.ServiceProvider.GetRequiredService<IDeliveryPackageService>();
+
+            await delivery.RevokeShareAsync(packageId);
+
+            ShareUrl = null;
+            ShareExpiresAt = null;
+
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            Error = PageError.From(ex, "撤销分享链接");
+        }
+        finally
+        {
+            Busy = false;
+        }
+    }
+
+    /// <summary>观复自己的地址（分享链接要能点开）。</summary>
+    private string ShareBaseUrl() => Nav.BaseUri.TrimEnd('/');
+
+    private async Task CopyAsync(string value)
+    {
+        try
+        {
+            await JS.InvokeAsync<string>("navigator.clipboard.writeText", value);
+            Copied = true;
+        }
+        catch (Exception)
+        {
+            Copied = false;
         }
     }
 

@@ -107,6 +107,8 @@ public class EndpointClassificationTests
         "POST /api/workspace/import",
         "POST /api/audit/archive",
         "POST /api/credentials",
+        "POST /api/delivery-packages/{packageId:guid}/share",
+        "DELETE /api/delivery-packages/{packageId:guid}/share",
         "DELETE /api/credentials/{credentialId:guid}",
     };
 

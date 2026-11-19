@@ -49,6 +49,27 @@ public interface IDeliveryPackageService
 
     Task<DeliveryPackageDto> GetAsync(Guid id, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// 签发一个分享链接（交付的最后一公里）。
+    ///
+    /// 包打好了，项管没有观复账号 —— 他要的是一个能点的链接。
+    /// 明文链接**只在这里返回一次**（库里只存哈希）。
+    /// </summary>
+    Task<DeliveryShareDto> CreateShareAsync(
+        Guid id,
+        int validDays = 7,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>撤销分享链接（发错了、或者东西不该外传）。</summary>
+    Task<bool> RevokeShareAsync(Guid id, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 用分享令牌找到包（公开下载用）。
+    ///
+    /// 令牌认不出、过期、被撤销 —— 都返回 null（不解释是哪一种）。
+    /// </summary>
+    Task<DeliveryPackageDto?> ResolveShareAsync(string? token, CancellationToken cancellationToken = default);
+
     /// <summary>包在磁盘上的绝对路径。</summary>
     Task<string> ResolvePathAsync(DeliveryPackageDto package, CancellationToken cancellationToken = default);
 }
@@ -350,6 +371,74 @@ public sealed class DeliveryPackageService(
         return ToDto(row, ParseItems(row.Items));
     }
 
+    public async Task<DeliveryShareDto> CreateShareAsync(
+        Guid id,
+        int validDays = 7,
+        CancellationToken cancellationToken = default)
+    {
+        var package = await db.DeliveryPackages
+            .FirstOrDefaultAsync(p => p.Id == id, cancellationToken)
+            ?? throw new NotFoundException("交付包", id);
+
+        var token = GenerateToken();
+        var now = clock.UtcNow;
+
+        package.ShareTokenHash = Hash(token);
+        package.ShareExpiresAt = now.AddDays(Math.Clamp(validDays, 1, 90));
+        package.ShareRevokedAt = null;
+
+        await db.SaveChangesAsync(cancellationToken);
+
+        return new DeliveryShareDto(
+            package.Id,
+            token,
+            package.ShareExpiresAt,
+            package.FileName);
+    }
+
+    public async Task<bool> RevokeShareAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        var package = await db.DeliveryPackages
+            .FirstOrDefaultAsync(p => p.Id == id, cancellationToken);
+
+        if (package is null || package.ShareTokenHash is null)
+        {
+            return false;
+        }
+
+        package.ShareRevokedAt = clock.UtcNow;
+        await db.SaveChangesAsync(cancellationToken);
+
+        return true;
+    }
+
+    public async Task<DeliveryPackageDto?> ResolveShareAsync(
+        string? token,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            return null;
+        }
+
+        var presented = Hash(token.Trim());
+
+        var package = await db.DeliveryPackages.AsNoTracking()
+            .FirstOrDefaultAsync(p => p.ShareTokenHash == presented, cancellationToken);
+
+        if (package is null || package.ShareRevokedAt is not null)
+        {
+            return null;
+        }
+
+        if (package.ShareExpiresAt is DateTimeOffset expires && expires <= clock.UtcNow)
+        {
+            return null;
+        }
+
+        return ToDto(package, ParseItems(package.Items));
+    }
+
     public async Task<string> ResolvePathAsync(
         DeliveryPackageDto package,
         CancellationToken cancellationToken = default)
@@ -529,6 +618,22 @@ public sealed class DeliveryPackageService(
         }
     }
 
+    /// <summary>生成分享令牌（32 字节随机 → base64url）。</summary>
+    private static string GenerateToken()
+    {
+        var bytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
+
+        return Convert.ToBase64String(bytes)
+            .Replace('+', '-')
+            .Replace('/', '_')
+            .TrimEnd('=');
+    }
+
+    /// <summary>分享令牌的哈希（库里只存它）。</summary>
+    private static string Hash(string token) =>
+        Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(token)));
+
     private static DeliveryPackageDto ToDto(
         DeliveryPackage package,
         IReadOnlyList<DeliveryPackageItemDto> items) => new(
@@ -541,5 +646,7 @@ public sealed class DeliveryPackageService(
         items,
         package.Manifest,
         package.CreatedBy,
-        package.CreatedAt);
+        package.CreatedAt,
+        package.ShareExpiresAt,
+        package.ShareRevokedAt);
 }

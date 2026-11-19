@@ -773,6 +773,46 @@ public static class GuanfuApi
             return Results.File(path, "application/zip", package.FileName);
         });
 
+        // 分享链接：把包给没有观复账号的人（项管）。
+        // 发链接 = 把东西递到观复外面 —— 与导出同级，要人工凭证。
+        api.MapPost("/delivery-packages/{packageId:guid}/share", async (
+            Guid packageId, IDeliveryPackageService delivery, CancellationToken ct) =>
+        {
+            var share = await delivery.CreateShareAsync(packageId);
+            return Results.Ok(share);
+        });
+
+        api.MapDelete("/delivery-packages/{packageId:guid}/share", async (
+            Guid packageId, IDeliveryPackageService delivery, CancellationToken ct) =>
+        {
+            var revoked = await delivery.RevokeShareAsync(packageId);
+            return revoked ? Results.NoContent() : Results.NotFound(new { error = "没有分享链接可撤销。" });
+        });
+
+        // ---- 交付包的公开下载 ----
+        // 拿链接的人（项管）没有观复账号 —— 链接本身就是那把钥匙。
+        // 所以它**不在 /api 下**（人工凭证门禁只管 /api），也不用登录。
+        // 令牌认不出 / 过期 / 被撤销，一律 404（不解释是哪一种）。
+        app.MapGet("/delivery/{token}", async (
+            string token, IDeliveryPackageService delivery, CancellationToken ct) =>
+        {
+            var package = await delivery.ResolveShareAsync(token, ct);
+
+            if (package is null)
+            {
+                return Results.NotFound(new { error = "链接无效、已过期或已被撤销。" });
+            }
+
+            var path = await delivery.ResolvePathAsync(package, ct);
+
+            if (!File.Exists(path))
+            {
+                return Results.NotFound(new { error = "交付包文件不在了（数据目录被清理过？）。" });
+            }
+
+            return Results.File(path, "application/zip", package.FileName);
+        });
+
         // ---- 度量 ----
         api.MapGet("/metrics", async (IMetricsService metrics, CancellationToken ct) =>
             Results.Ok(await metrics.GetAllAsync(ct)));
