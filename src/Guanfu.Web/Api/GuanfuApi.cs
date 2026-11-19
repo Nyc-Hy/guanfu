@@ -1102,6 +1102,56 @@ public static class GuanfuApi
         });
 
         // 验哈希链：审计有没有被人在库文件层面改过。改一条、删一条，链都会断。
+        // 审计导出：企业客户要的是「一份能交出去的账」。
+        // 账里带**验链结论** —— 没验过的账只是一堆日志。
+        api.MapGet("/audit/export", async (
+            IExportService exports, string? format, string? toolName, Guid? taskId, Guid? projectId,
+            int? limit, CancellationToken ct) =>
+        {
+            var kind = (format ?? "markdown").Trim().ToLowerInvariant();
+
+            if (kind is not ("markdown" or "csv" or "json"))
+            {
+                return Results.BadRequest("format 只能是 markdown / csv / json。");
+            }
+
+            var take = limit ?? 1000;
+            if (take is < 1 or > 10000)
+            {
+                return Results.BadRequest("limit 必须在 1~10000 之间。");
+            }
+
+            var content = await exports.ExportAuditAsync(
+                toolName, taskId, projectId, take, kind, ct);
+
+            var stamp = DateTimeOffset.Now.ToString("yyyyMMdd-HHmm");
+            var fileName = kind switch
+            {
+                "csv" => $"guanfu-audit-{stamp}.csv",
+                "json" => $"guanfu-audit-{stamp}.json",
+                _ => $"guanfu-audit-{stamp}.md"
+            };
+
+            var contentType = kind switch
+            {
+                "csv" => "text/csv; charset=utf-8",
+                "json" => "application/json; charset=utf-8",
+                _ => "text/markdown; charset=utf-8"
+            };
+
+            // CSV 加 BOM：Excel 靠它认 UTF-8，否则中文全是乱码。
+            // 其它格式不加 —— JSON 带 BOM 有些解析器会挑刺。
+            var bytes = System.Text.Encoding.UTF8.GetBytes(content);
+
+            if (kind == "csv")
+            {
+                bytes = new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: true)
+                    .GetPreamble().Concat(bytes).ToArray();
+            }
+
+            return Results.File(bytes, contentType, fileName);
+        });
+
         api.MapGet("/audit/verify", async (IToolAuditService audit, CancellationToken ct) =>
             Results.Ok(await audit.VerifyChainAsync(ct)));
 

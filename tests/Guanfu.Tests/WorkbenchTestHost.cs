@@ -90,7 +90,7 @@ public sealed class GuanfuTestHost : IDisposable
 
     /// <summary>会话服务（绑定链路）。</summary>
     public AgentSessionService Sessions => new(_db, Clock);
-    public ExportService Exports => new(_db, Reviews);
+    public ExportService Exports => new(_db, Reviews, Audit);
 
     /// <summary>数据库连接服务。密码保护器用假的 —— 测试里不需要真的加密。</summary>
     public DbConnectionService DbConnections => new(_db, new FakeSecretProtector(), DbProbe);

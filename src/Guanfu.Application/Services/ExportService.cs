@@ -27,9 +27,26 @@ public interface IExportService
         int? round = null,
         string format = "markdown",
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 导出审计账。格式：markdown / csv / json。
+    ///
+    /// 企业客户要的是「一份能交出去的账」—— 里面还得写明**这条链验过没有**：
+    /// 没验过的账只是一堆日志。
+    /// </summary>
+    Task<string> ExportAuditAsync(
+        string? toolName = null,
+        Guid? taskId = null,
+        Guid? projectId = null,
+        int limit = 1000,
+        string format = "markdown",
+        CancellationToken cancellationToken = default);
 }
 
-public sealed class ExportService(IAppDbContext db, IReviewService reviews) : IExportService
+public sealed class ExportService(
+    IAppDbContext db,
+    IReviewService reviews,
+    IToolAuditService audit) : IExportService
 {
     public async Task<string> ExportTaskEventsAsync(
         Guid taskId,
@@ -53,6 +70,116 @@ public sealed class ExportService(IAppDbContext db, IReviewService reviews) : IE
             "csv" => ToCsv(events),
             _ => ToMarkdown(task, events)
         };
+    }
+
+    public async Task<string> ExportAuditAsync(
+        string? toolName = null,
+        Guid? taskId = null,
+        Guid? projectId = null,
+        int limit = 1000,
+        string format = "markdown",
+        CancellationToken cancellationToken = default)
+    {
+        var rows = await audit.ListAsync(toolName, taskId, projectId, limit, cancellationToken);
+
+        if (rows.Count == 0)
+        {
+            throw new GuanfuException("这个范围里没有审计记录。");
+        }
+
+        // 账导出时必须带上**验链结论** —— 没验过的账只是一堆日志。
+        var chain = await audit.VerifyChainAsync(cancellationToken);
+
+        return format.ToLowerInvariant() switch
+        {
+            "json" => GuanfuJson.Serialize(new
+            {
+                exportedAt = DateTimeOffset.UtcNow,
+                filters = new { toolName, taskId, projectId },
+                chainIntact = chain.Intact,
+                chainTotal = chain.Total,
+                chainChained = chain.Chained,
+                chainReason = chain.Reason,
+                records = rows
+            }),
+            "csv" => ToAuditCsv(rows),
+            _ => ToAuditMarkdown(rows, chain)
+        };
+    }
+
+    private static string ToAuditCsv(IReadOnlyList<ToolAuditDto> rows)
+    {
+        var sb = new StringBuilder();
+
+        sb.AppendLine("时间,工具,调用方,谁的人,项目,任务,结果,耗时毫秒,审批号,摘要");
+
+        foreach (var row in rows)
+        {
+            sb.AppendLine(string.Join(',',
+                Csv(row.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")),
+                Csv(row.ToolName),
+                Csv(row.CallerId ?? string.Empty),
+                Csv(row.MemberName ?? string.Empty),
+                Csv(row.ProjectId?.ToString() ?? string.Empty),
+                Csv(row.TaskKey ?? row.TaskId?.ToString() ?? string.Empty),
+                Csv(row.Outcome),
+                Csv(row.DurationMs.ToString()),
+                Csv(row.ApprovalId?.ToString() ?? string.Empty),
+                Csv(row.ResultSummary ?? string.Empty)));
+        }
+
+        return sb.ToString();
+    }
+
+    /// <summary>摘要压成一行（表格里换行会破版）。</summary>
+    private static string OneLine(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "—";
+        }
+
+        var flat = value.Replace("\r", " ").Replace("\n", " ");
+
+        return flat.Length <= 120 ? flat : flat[..120] + "…";
+    }
+
+    private static string ToAuditMarkdown(IReadOnlyList<ToolAuditDto> rows, AuditChainReport chain)
+    {
+        var sb = new StringBuilder();
+
+        sb.AppendLine("# 工具调用审计");
+        sb.AppendLine();
+        sb.AppendLine($"- 导出时间：{DateTimeOffset.UtcNow.ToLocalTime():yyyy-MM-dd HH:mm}");
+        sb.AppendLine($"- 条数：{rows.Count}");
+        sb.AppendLine($"- 哈希链：{(chain.Intact ? "完整" : "**已断裂**")}"
+            + $"（{chain.Chained}/{chain.Total} 条在链上）");
+        if (!chain.Intact && chain.Reason is not null)
+        {
+            sb.AppendLine($"- 断点：{chain.Reason}");
+        }
+        sb.AppendLine();
+        sb.AppendLine("| 时间 | 工具 | 调用方 | 谁的人 | 项目 / 任务 | 结果 | 摘要 | 耗时 | 审批 |");
+        sb.AppendLine("|---|---|---|---|---|---|---|---|---|");
+
+        foreach (var row in rows)
+        {
+            sb.AppendLine($"| {row.CreatedAt.ToLocalTime():yyyy-MM-dd HH:mm:ss} "
+                + $"| {row.ToolName} "
+                + $"| {row.CallerId ?? "—"} "
+                + $"| {row.MemberName ?? "—"} "
+                + $"| {row.TaskKey ?? row.ProjectId?.ToString() ?? "—"} "
+                + $"| {row.Outcome} "
+                + $"| {OneLine(row.ResultSummary)} "
+                + $"| {row.DurationMs} ms "
+                + $"| {(row.ApprovalId is null ? "—" : row.ApprovalId.ToString()[..8])} |");
+        }
+
+        sb.AppendLine();
+        sb.AppendLine("> 本账只追加不修改。哈希链能验出「有人直接改了库文件」—— "
+            + "但链头归档不在观复手里时，那份对照物得由部署方保管。");
+
+        return sb.ToString();
     }
 
     public async Task<string> ExportReviewReportAsync(

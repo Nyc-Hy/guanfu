@@ -6,6 +6,7 @@
 @inject IProjectService Projects
 @inject IAuditChainArchiveService Archive
 @inject IOptions<GuanfuOptions> Options
+@inject IJSRuntime JS
 
 <PageTitle>工具调用记录 · 观复</PageTitle>
 
@@ -95,7 +96,18 @@
 
 <ErrorNotice Error="LoadError" />
 
+@if (ExportMessage is not null)
+{
+    <p class="wb-hint">@ExportMessage</p>
+}
+
 <div class="wb-filter-bar">
+    <select class="wb-input" @bind="ExportFormat" title="导出账的格式">
+        <option value="markdown">Markdown 报告</option>
+        <option value="csv">CSV</option>
+        <option value="json">JSON</option>
+    </select>
+    <button class="wb-btn" disabled="@Loading" @onclick="ExportAsync">导出这段账</button>
     <select class="wb-input" @bind="ToolFilter" @bind:after="() => ReloadAsync(resetPage: true)">
         <option value="">全部操作</option>
         <option value="__approval__">需要人工审批的</option>
@@ -325,6 +337,58 @@ else
         // 归档对账是只读的，顺手把现状摆出来 —— 不用等人点。
         await VerifyArchiveAsync();
     }
+
+    /// <summary>导出格式。</summary>
+    private string ExportFormat { get; set; } = "markdown";
+
+    /// <summary>
+    /// 导出这段账 —— 企业客户要的是「一份能交出去的账」。
+    /// 导出的内容带**验链结论**：没验过的账只是一堆日志。
+    /// </summary>
+    private async Task ExportAsync()
+    {
+        if (Loading)
+        {
+            return;
+        }
+
+        Loading = true;
+        LoadError = null;
+
+        try
+        {
+            var url = $"/api/audit/export?format={Uri.EscapeDataString(ExportFormat)}"
+                + $"&limit={ExportLimit}";
+
+            if (!string.IsNullOrWhiteSpace(ToolFilter))
+            {
+                url += $"&toolName={Uri.EscapeDataString(ToolFilter)}";
+            }
+
+            if (ProjectFilter is not null && Guid.TryParse(ProjectFilter, out var projectId))
+            {
+                url += $"&projectId={projectId}";
+            }
+
+            await JS.InvokeAsync<string>("eval",
+                "var a=document.createElement('a');a.href='" + url + "';a.download='';document.body.appendChild(a);a.click();a.remove();''");
+
+            ExportMessage = "已导出（下载的文件里带验链结论）。";
+        }
+        catch (Exception ex)
+        {
+            LoadError = PageError.From(ex, "导出审计");
+        }
+        finally
+        {
+            Loading = false;
+        }
+    }
+
+    /// <summary>一次导出多少条。</summary>
+    private const int ExportLimit = 1000;
+
+    private string? ExportMessage { get; set; }
 
     private async Task ReloadAsync(bool resetPage)
     {

@@ -70,7 +70,10 @@ public sealed record ToolAuditDto(
     string? MemberName = null);
 
 /// <summary>工具调用审计。append-only：只追加，不修改不删除。</summary>
-public sealed class ToolAuditService(IAppDbContext db, IClock clock) : IToolAuditService
+public sealed class ToolAuditService(
+    IAppDbContext db,
+    IClock clock,
+    ICurrentMemberScope? currentMember = null) : IToolAuditService
 {
     /// <summary>
     /// ResultSummary 的长度上限（4 KB，与列宽 HasMaxLength(4000) 一致）。
@@ -308,6 +311,20 @@ public sealed class ToolAuditService(IAppDbContext db, IClock clock) : IToolAudi
         if (projectId is not null)
         {
             query = query.Where(a => a.ProjectId == projectId);
+        }
+
+        // 可见性：普通成员只看得到**自己任务**下的记录。
+        // 没挂任务的记录（列项目之类的环境调用）谁都能看 —— 那不是谁家的私事。
+        var scope = currentMember?.Current;
+
+        if (scope is not null && !scope.IsAdmin)
+        {
+            var visibleTaskIds = db.Tasks
+                .AsNoTracking()
+                .VisibleTo(scope)
+                .Select(t => t.Id);
+
+            query = query.Where(a => a.TaskId == null || visibleTaskIds.Contains(a.TaskId.Value));
         }
 
         var rows = await query
