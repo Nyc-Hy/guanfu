@@ -12,7 +12,7 @@
     <div>
         <h1>全局搜索</h1>
         <p class="wb-muted">
-            搜任务（编号 + 标题）、项目、文档与 SQL 执行记录。
+            搜任务（编号 + 标题）、项目、文档、**产物**与 SQL 执行记录。
             编号不认写法差异：<code>req001</code> 和 <code>REQ-001</code> 是同一个。
         </p>
     </div>
@@ -211,7 +211,7 @@ else
     }
 
     <p class="wb-hint">
-        结果上限：任务 @TaskLimit 条、项目 @ProjectLimit 条、文档 @DocLimit 条、
+        结果上限：任务 @TaskLimit 条、项目 @ProjectLimit 条、文档 @DocLimit 条、产物 @ArtifactLimit 条、
         SQL 执行记录 @DbCallLimit 条。
         文档最多扫描 @DocScanTaskLimit 个任务下的文件，内容匹配最多解析 @DocContentScanLimit 个文档。
         @if (SkippedDocs > 0)

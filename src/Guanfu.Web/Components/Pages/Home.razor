@@ -185,6 +185,36 @@ else
                 </div>
             }
 
+            @* ①.5「我负责的」—— 人打开观复最先要看的：哪些活归我、哪些还没人认领。 *@
+            @if (Data.MyTasks.Count > 0)
+            {
+                <section class="wb-panel">
+                    <div class="wb-card-head">
+                        <h3>我负责的</h3>
+                        <span class="wb-muted">分派给你的，加上还没人认领的</span>
+                    </div>
+                    <div class="wb-table-scroll">
+                        <table class="wb-table">
+                            <thead>
+                            <tr><th>任务</th><th>项目</th><th>状态</th><th>负责人</th><th>最后动静</th></tr>
+                            </thead>
+                            <tbody>
+                            @foreach (var t in Data.MyTasks)
+                            {
+                                <tr>
+                                    <td><a class="wb-link-title" href="/tasks/@t.Id">@UiText.TaskRef(t.Key, t.Title)</a></td>
+                                    <td class="wb-muted">@t.ProjectName</td>
+                                    <td><span class="wb-chip @UiText.StatusClass(t.Status)">@UiText.Status(t.Status)</span></td>
+                                    <td class="wb-muted">@(string.IsNullOrWhiteSpace(t.Assignee) ? "还没人领" : t.Assignee)</td>
+                                    <td class="wb-muted" title="@(t.LastActivityAt is null ? "" : Absolute(t.LastActivityAt.Value))">@(t.LastActivityAt is null ? "—" : Relative(t.LastActivityAt.Value))</td>
+                                </tr>
+                            }
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+            }
+
             <!-- ② 正在发生的 -->
             @if (Data.ActiveTasks.Count == 0 && Data.ActiveSessions.Count == 0)
             {
@@ -216,7 +246,7 @@ else
                         <div class="wb-table-scroll">
                             <table class="wb-table">
                                 <thead>
-                                <tr><th>任务</th><th>项目</th><th>状态</th><th>在谁手上</th><th>最后动静</th></tr>
+                                <tr><th>任务</th><th>项目</th><th>状态</th><th>负责人</th><th>在谁手上</th><th>最后动静</th></tr>
                                 </thead>
                                 <tbody>
                                 @foreach (var t in Data.ActiveTasks)
@@ -225,6 +255,7 @@ else
                                         <td><a class="wb-link-title" href="/tasks/@t.Id">@UiText.TaskRef(t.Key, t.Title)</a></td>
                                         <td class="wb-muted">@t.ProjectName</td>
                                         <td><span class="wb-chip @UiText.StatusClass(t.Status)">@UiText.Status(t.Status)</span></td>
+                                        <td class="wb-muted">@(string.IsNullOrWhiteSpace(t.Assignee) ? "—" : t.Assignee)</td>
                                         <td>
                                             @if (!string.IsNullOrWhiteSpace(t.AgentId))
                                             {

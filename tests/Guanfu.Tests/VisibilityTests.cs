@@ -211,7 +211,8 @@ public sealed class VisibilityTests
         var alice = await members.CreateAsync("alice", "爱丽丝", "password-1");
         await members.SetDisabledAsync(alice.Id, true);
 
-        var scope = new Web.CurrentMemberScope(
+        var scope = new Web.CurrentMemberScope();
+        var resolver = new Web.MemberIdentityResolver(
             new Microsoft.AspNetCore.Http.HttpContextAccessor { HttpContext = null },
             host.Db);
 
@@ -225,7 +226,7 @@ public sealed class VisibilityTests
                 "test"));
 
         // 停用之后，老 Cookie 不该继续算数
-        Assert.Null(await scope.ResolveAsync(principal));
+        Assert.Null(await resolver.ResolveAsync(principal));
         Assert.Null(scope.Current);
     }
 
@@ -237,7 +238,8 @@ public sealed class VisibilityTests
 
         var alice = await members.CreateAsync("alice", "爱丽丝", "password-1");
 
-        var scope = new Web.CurrentMemberScope(
+        var scope = new Web.CurrentMemberScope();
+        var resolver = new Web.MemberIdentityResolver(
             new Microsoft.AspNetCore.Http.HttpContextAccessor { HttpContext = null },
             host.Db);
 
@@ -250,7 +252,8 @@ public sealed class VisibilityTests
                 ],
                 "test"));
 
-        var resolved = await scope.ResolveAsync(principal);
+        var resolved = await resolver.ResolveAsync(principal);
+        scope.Set(resolved);
 
         Assert.NotNull(resolved);
         Assert.Equal(alice.Id, resolved!.MemberId);

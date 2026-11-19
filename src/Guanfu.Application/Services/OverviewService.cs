@@ -20,7 +20,9 @@ public sealed record OverviewTaskDto(
     string ProjectName,
     string Status,
     string? AgentId,
-    DateTimeOffset? LastActivityAt);
+    DateTimeOffset? LastActivityAt,
+    /// <summary>负责人（人名或 agent id）。</summary>
+    string? Assignee = null);
 
 /// <summary>总览里的最近数据库调用。</summary>
 public sealed record OverviewDbCallDto(
@@ -52,6 +54,8 @@ public sealed record OverviewSessionDto(
 public sealed record OverviewDto(
     IReadOnlyList<OverviewApprovalDto> PendingApprovals,
     IReadOnlyList<OverviewTaskDto> ActiveTasks,
+    /// <summary>「我负责的」—— 分派给我、以及还没人认领的。</summary>
+    IReadOnlyList<OverviewTaskDto> MyTasks,
     IReadOnlyList<OverviewDbCallDto> RecentDbCalls,
     IReadOnlyList<OverviewSessionDto> ActiveSessions,
     IReadOnlyList<ProjectSummaryDto> Projects);
@@ -61,7 +65,8 @@ public interface IOverviewService
     Task<OverviewDto> GetAsync(CancellationToken cancellationToken = default);
 }
 
-public sealed class OverviewService(IAppDbContext db, IClock clock) : IOverviewService
+public sealed class OverviewService(IAppDbContext db, IClock clock,
+    ICurrentMemberScope? currentMember = null) : IOverviewService
 {
     /// <summary>会话多久没动静就算「不在活跃」。</summary>
     private static readonly TimeSpan SessionIdleAfter = TimeSpan.FromHours(2);
@@ -95,8 +100,13 @@ public sealed class OverviewService(IAppDbContext db, IClock clock) : IOverviewS
                 a.CreatedAt))
             .ToList();
 
+        // 可见性：普通成员在总览里也只该看见自己的活 ——
+        // 隔离不能只在列表页生效（总览也是一条看的路）。
+        var scope = currentMember?.Current;
+
         var activeTasks = await db.Tasks
             .AsNoTracking()
+            .VisibleTo(scope)
             .Where(t => !t.IsArchived &&
                         t.Status != TaskStatus.Done &&
                         t.Status != TaskStatus.Blocked &&
@@ -113,8 +123,38 @@ public sealed class OverviewService(IAppDbContext db, IClock clock) : IOverviewS
                 projectNames.TryGetValue(t.ProjectId, out var pname) ? pname : "—",
                 t.Status.ToString(),
                 t.ClaimedByAgentId,
-                t.LastActivityAt))
+                t.LastActivityAt,
+                t.Assignee))
             .ToList();
+
+        // 「我负责的」：分派给我的 + 还没人认领的（别人不领，我得能看见它）。
+        List<OverviewTaskDto> myTasks = [];
+
+        if (scope is not null)
+        {
+            var myRows = await db.Tasks
+                .AsNoTracking()
+                .Where(t => !t.IsArchived &&
+                            t.Status != TaskStatus.Done &&
+                            t.Status != TaskStatus.Cancelled &&
+                            (t.AssigneeMemberId == scope.MemberId ||
+                             (t.AssigneeMemberId == null && string.IsNullOrWhiteSpace(t.Assignee))))
+                .OrderByDescending(t => t.LastActivityAt ?? t.UpdatedAt)
+                .Take(12)
+                .ToListAsync(cancellationToken);
+
+            myTasks = myRows
+                .Select(t => new OverviewTaskDto(
+                    t.Id,
+                    t.Key,
+                    t.Title,
+                    projectNames.TryGetValue(t.ProjectId, out var pname) ? pname : "—",
+                    t.Status.ToString(),
+                    t.ClaimedByAgentId,
+                    t.LastActivityAt,
+                    t.Assignee))
+                .ToList();
+        }
 
         var recentCalls = await db.DbCallRecords
             .AsNoTracking()
@@ -204,6 +244,7 @@ public sealed class OverviewService(IAppDbContext db, IClock clock) : IOverviewS
         return new OverviewDto(
             approvals,
             tasks,
+            myTasks,
             calls,
             activeSessions,
             projectSummaries);

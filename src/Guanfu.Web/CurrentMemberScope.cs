@@ -21,19 +21,30 @@ namespace Guanfu.Web;
 /// （调度板、依赖关系都要看）。隔离是给**人**的：普通成员只看自己的东西。
 /// 这一点是已知的边界，写在这里，别以后当成漏洞。
 /// </summary>
-public sealed class CurrentMemberScope(
-    IHttpContextAccessor http,
-    IAppDbContext db) : ICurrentMemberScope
+public sealed class CurrentMemberScope : ICurrentMemberScope
 {
-    private MemberScope? _resolved;
-
-    private MemberScope? _fallback;
+    /// <summary>
+    /// 身份是**环境里的**（ambient），不是某个 scope 的私有字段。
+    ///
+    /// 为什么：Blazor 的页面为了避开电路级 DbContext 的冲突，会
+    /// `ScopeFactory.CreateScope()` 开新的 scope —— **新的 scope 里就没有身份了**。
+    /// 那样一来：成员在界面上看到的活**没经过可见性过滤**（REST 过滤了，界面没过滤）——
+    /// 隔离在界面上是漏的。
+    ///
+    /// AsyncLocal 跟着**执行上下文**走：新 scope 仍在同一个上下文里，
+    /// 所以身份跟得过去。ASP.NET Core 每个请求一个 ExecutionContext，
+    /// 所以请求之间不会串。
+    /// </summary>
+    private static readonly AsyncLocal<MemberScope?> Ambient = new();
 
     /// <summary>当前身份。没人登录 = 单人本机模式（不过滤）。</summary>
-    public MemberScope? Current => _resolved ?? _fallback;
+    public MemberScope? Current => Ambient.Value;
 
-    /// <summary>Blazor 电路里的身份回填（由 MainLayout 调用）。</summary>
-    public void SetFallback(MemberScope? scope) => _fallback = scope;
+    /// <summary>把身份写进当前执行上下文（Blazor 电路里由 MainLayout 调用）。</summary>
+    public void SetFallback(MemberScope? scope) => Ambient.Value = scope;
+
+    /// <summary>把身份写进当前执行上下文（REST 请求里由中间件调用）。</summary>
+    public void Set(MemberScope? scope) => Ambient.Value = scope;
 
     /// <summary>
     /// 解析当前身份并**到库里核对一遍**。
@@ -41,28 +52,25 @@ public sealed class CurrentMemberScope(
     /// REST 请求：由中间件在请求进来时调一次（之后 <see cref="Current"/> 是同步读）。
     /// Blazor 电路：由布局在初始化时调（传 <c>AuthenticationState</c> 里的身份）。
     /// </summary>
+}
+
+/// <summary>
+/// 把登录身份解析成成员范围 —— **查库核对**。
+///
+/// 人还在、没停用，才算数；名字与角色也以库里的为准
+/// （Cookie 里的可能是旧的）。
+///
+/// 这个类是 scoped（要用库），身份本身由 <see cref="CurrentMemberScope"/>
+/// 那个单例存着（AsyncLocal）。
+/// </summary>
+public sealed class MemberIdentityResolver(
+    IHttpContextAccessor http,
+    IAppDbContext db)
+{
     public async Task<MemberScope?> ResolveAsync(ClaimsPrincipal? principal = null)
     {
         principal ??= http.HttpContext?.User;
 
-        var scope = await FromPrincipalAsync(principal);
-
-        if (scope is not null)
-        {
-            _resolved = scope;
-        }
-
-        return scope;
-    }
-
-    /// <summary>
-    /// 登录身份 → 成员范围，**查库核对**。
-    ///
-    /// 人还在、没停用，才算数；名字与角色也以库里的为准
-    /// （Cookie 里的可能是旧的）。
-    /// </summary>
-    private async Task<MemberScope?> FromPrincipalAsync(ClaimsPrincipal? principal)
-    {
         if (principal?.Identity?.IsAuthenticated != true)
         {
             return null;
@@ -101,9 +109,18 @@ public sealed class CurrentMemberScope(
 /// </summary>
 public sealed class MemberScopeMiddleware(RequestDelegate next)
 {
-    public async Task InvokeAsync(HttpContext context, CurrentMemberScope scope)
+    public async Task InvokeAsync(
+        HttpContext context,
+        CurrentMemberScope scope,
+        MemberIdentityResolver resolver)
     {
-        await scope.ResolveAsync();
+        var resolved = await resolver.ResolveAsync(context.User);
+
+        if (resolved is not null)
+        {
+            scope.Set(resolved);
+        }
+
         await next(context);
     }
 }

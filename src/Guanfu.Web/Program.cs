@@ -61,8 +61,11 @@ builder.Services.AddAuthorization();
 builder.Services.AddCascadingAuthenticationState();
 
 // 当前身份：REST 从认证结果读，Blazor 电路由布局回填。
-builder.Services.AddScoped<CurrentMemberScope>();
-builder.Services.AddScoped<ICurrentMemberScope>(sp => sp.GetRequiredService<CurrentMemberScope>());
+// 身份是**环境值**（AsyncLocal）：Blazor 页面开新 scope 时身份也得跟过去，
+// 否则界面上的读会绕过可见性过滤。单例 + AsyncLocal 才有这个性质。
+builder.Services.AddSingleton<CurrentMemberScope>();
+builder.Services.AddSingleton<ICurrentMemberScope>(sp => sp.GetRequiredService<CurrentMemberScope>());
+builder.Services.AddScoped<MemberIdentityResolver>();
 
 // 枚举一律输出成字符串（"DocsReady" 而不是 1），
 // agent 与 CLI 读到的字段才有意义

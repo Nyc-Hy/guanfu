@@ -19,6 +19,8 @@
 
 @if (!CanManage)
 {
+    @* 一个面板，两条路 —— 之前是两个面板叠着（登录一个、贴 token 一个），
+       看着像两件事，其实是同一件事的两个入口。 *@
     <section class="wb-panel">
         <h3>要先有人在旁边</h3>
         <p class="wb-muted">
@@ -26,16 +28,25 @@
             要么用启动观复的控制台里那把人工凭证。
         </p>
         <div class="wb-form-row">
-            <a class="wb-btn wb-btn-primary" href="/login?returnUrl=/members">去登录</a>
+            <a class="wb-btn wb-btn-primary" href="/login?returnUrl=/members">用管理员账号登录</a>
+            @if (!TokenAuthorized)
+            {
+                <input class="wb-input" type="password" placeholder="或粘贴人工 token（控制台里那串）"
+                       @oninput="OnTokenInputChanged" />
+                <button class="wb-btn"
+                        disabled="@string.IsNullOrWhiteSpace(TokenInput)"
+                        @onclick="VerifyTokenAsync">验证</button>
+            }
+            else
+            {
+                <span class="wb-chip wb-chip-ok">人工凭证已验证</span>
+            }
         </div>
+        @if (!string.IsNullOrWhiteSpace(TokenHint))
+        {
+            <p class="wb-hint">@TokenHint</p>
+        }
     </section>
-
-    <PageTokenGate @bind-Authorized="TokenAuthorized" />
-
-    @if (!TokenAuthorized)
-    {
-        <p class="wb-muted">人工凭证验证通过后，这一页就能用了。</p>
-    }
 }
 else
 {
@@ -191,6 +202,29 @@ else
                 StateHasChanged();
             }
         }
+    }
+
+    /// <summary>粘贴的人工凭证。</summary>
+    private string TokenInput { get; set; } = string.Empty;
+
+    /// <summary>凭证验证的提示。</summary>
+    private string? TokenHint { get; set; }
+
+    private void OnTokenInputChanged(ChangeEventArgs args) =>
+        TokenInput = args.Value?.ToString() ?? string.Empty;
+
+    /// <summary>验证粘贴的人工凭证（owner 本人在场）。</summary>
+    private void VerifyTokenAsync()
+    {
+        if (ApprovalUiGuard.CanDecide(TokenInput, Tokens.Token))
+        {
+            TokenInput = string.Empty;
+            TokenHint = null;
+            TokenAuthorized = true;
+            return;
+        }
+
+        TokenHint = ApprovalUiGuard.InvalidTokenMessage;
     }
 
     private string NewUserName { get; set; } = string.Empty;

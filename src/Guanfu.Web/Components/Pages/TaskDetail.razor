@@ -70,8 +70,9 @@ else
         </div>
         <div class="wb-form-row">
             <button class="wb-btn" disabled="@Loading" @onclick="() => ReloadAsync(syncInputs: true)">刷新</button>
-            <button class="wb-btn wb-btn-primary" disabled="@(Launching || Launched || !Gate.Authorized)"
-                    @onclick="LaunchAgentAsync">
+            <button class="wb-btn wb-btn-primary" disabled="@(Launching || Launched)"
+                    @onclick="LaunchAgentAsync"
+                    title="@(Gate.Authorized ? "执行项目里配好的外部命令" : "需要人工凭证 —— 这是执行外部命令的入口")">
                 @(Launching ? "启动中…" : Launched ? "已启动" : "启动 agent")
             </button>
         </div>
@@ -80,7 +81,9 @@ else
     <ErrorNotice Error="LoadError" />
     <ErrorNotice Error="Error" />
 
-    @if (!Gate.Authorized)
+    @* 凭证面板**只在用户真的要启动 agent 时**才出现 ——
+       挂在页面顶上会让每个任务页都顶着一块红字，看着像出错了。 *@
+    @if (ShowTokenPrompt && !Gate.Authorized)
     {
         <div class="wb-panel">
             <p class="wb-error">启动 agent 需要人工凭证 —— 这是执行外部命令的入口。</p>
@@ -1199,6 +1202,9 @@ else
     private UiTokenGate Gate { get; set; } = default!;
     private string TokenInput { get; set; } = string.Empty;
 
+    /// <summary>要不要把凭证面板亮出来（用户点了「启动 agent」但没凭证时）。</summary>
+    private bool ShowTokenPrompt { get; set; }
+
     [CascadingParameter] public HttpContext? RequestContext { get; set; }
 
     // 防重复：agent 不重复拉起，同一个文件不重复传
@@ -2014,7 +2020,9 @@ else
         // 启动 agent = 执行外部命令，必须有人在场
         if (!Gate.Authorized)
         {
-            Error = PageError.Simple(ApprovalUiGuard.MissingTokenMessage);
+            // 面板亮出来，让人把 token 贴进来 —— 不用先滚到页面顶上找说明
+            ShowTokenPrompt = true;
+            StateHasChanged();
             return;
         }
 
