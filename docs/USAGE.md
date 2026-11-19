@@ -522,7 +522,16 @@ guanfu delivery list "12 月版本"
 
 # 接 agent 的配置片段
 guanfu agent-config --client http         # 或 --client stdio
+
+# 账号验证：命令行也能换个身份（会话存在本地，0600）
+guanfu login <用户名> [--password 密码]   # 不给密码就从标准输入读一行
+guanfu whoami                              # 现在是谁（显示名 · 登录名 · 角色）
+guanfu logout                              # 退出登录
 ```
+
+> **命令行按登录的身份说话**：登录后可见范围按**那个人**算
+> （跟他在网页上看到的一致），不是 owner 视角。
+> `GUANFU_CLI_HOME` 可以把本地会话放到别处（多人共用一台机器时）。
 
 > 编号与名字处处能认：`REQ-001`、`12 月版本` 不用去翻 GUID。
 

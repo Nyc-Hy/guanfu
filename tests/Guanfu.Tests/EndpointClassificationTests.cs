@@ -70,13 +70,7 @@ public class EndpointClassificationTests
     /// 手里没有共享 token —— 把这些端点归到「敏感」会把管理员挡在外面。
     /// 判定在端点里自己做（MemberApi.CanManageMembers）。
     /// </summary>
-    private static readonly HashSet<string> RoleGatedWriteEndpoints = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "POST /api/members",
-        "PUT /api/members/{memberId:guid}/role",
-        "PUT /api/members/{memberId:guid}/status",
-        "POST /api/members/{memberId:guid}/password",
-    };
+    private static readonly HashSet<string> RoleGatedWriteEndpoints = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// 必须有人在场（敏感）的写端点。改的是「哪条写操作能执行 / agent 能力面 /
@@ -107,6 +101,10 @@ public class EndpointClassificationTests
         "POST /api/workspace/import",
         "POST /api/audit/archive",
         "POST /api/credentials",
+        "POST /api/members",
+        "PUT /api/members/{memberId:guid}/role",
+        "PUT /api/members/{memberId:guid}/status",
+        "POST /api/members/{memberId:guid}/password",
         "POST /api/delivery-packages/{packageId:guid}/share",
         "DELETE /api/delivery-packages/{packageId:guid}/share",
         "DELETE /api/credentials/{credentialId:guid}",

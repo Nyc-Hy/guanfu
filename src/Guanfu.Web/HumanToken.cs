@@ -205,6 +205,20 @@ public static class HumanTokenPolicy
             return IsPost(method);
         }
 
+        // /api/members —— 改「谁能进、谁能看」是同权的事：
+        // 要 owner 的钥匙，或管理员的账号。
+        if (segments.Length == 2
+            && segments[1].Equals("members", StringComparison.OrdinalIgnoreCase))
+        {
+            return IsPost(method) || IsPut(method) || IsDelete(method);
+        }
+
+        if (segments.Length == 4
+            && segments[1].Equals("members", StringComparison.OrdinalIgnoreCase))
+        {
+            return IsPost(method) || IsPut(method) || IsDelete(method);
+        }
+
         // /api/credentials —— 发钥匙 = 给身份。拿到钥匙的人能顶替身份操作，
         // 与裁决审批同权：没有人工凭证不许签发。
         if (segments.Length == 2
@@ -469,6 +483,111 @@ public sealed class HumanTokenStore
 /// Web UI（razor）可以直接注入它做自己的门禁 —— UI 那条路是直接调应用服务的，
 /// 不经过 REST，REST 上的门禁管不到它，所以 UI 必须自己判一次。
 /// </summary>
+/// <summary>
+/// 成员会话的权限口径。
+///
+/// 人工凭证是 **owner 的万能钥匙**；但观复是一个团队用的 ——
+/// 成员各有各的账号。团队成员在自己电脑上用命令行（或脚本）时，
+/// 他们手里的是**自己的会话**，不是 owner 的钥匙 ——
+/// 所以敏感端点不能只认人工凭证。
+///
+/// 两档：
+/// - **成员本人就能做**：裁决审批（自己的单子自己批）；
+/// - **管理员才能做**：成员管理、发钥匙、打包交付。
+///
+/// 具体「这个人能不能做这个动作」由**服务层**再判一遍
+/// （例如只能批自己的审批）—— 这里只管「这类端点认不认会话」。
+/// </summary>
+public static class MemberSessionPolicy
+{
+    /// <summary>成员本人就能做的端点。</summary>
+    public static bool AllowsMember(string? method, string? path)
+    {
+        var segments = Split(path);
+
+        // /api/approvals/{id}/decide 与 /api/approvals/batch-decide ——
+        // 审批是「自己的单子自己批」；能不能批**这一条**由服务层判。
+        if (segments.Length == 4
+            && segments[1].Equals("approvals", StringComparison.OrdinalIgnoreCase)
+            && segments[3].Equals("decide", StringComparison.OrdinalIgnoreCase))
+        {
+            return IsPost(method);
+        }
+
+        if (segments.Length == 3
+            && segments[1].Equals("approvals", StringComparison.OrdinalIgnoreCase)
+            && segments[2].Equals("batch-decide", StringComparison.OrdinalIgnoreCase))
+        {
+            return IsPost(method);
+        }
+
+        return false;
+    }
+
+    /// <summary>管理员才能做的端点（成员管理、发钥匙、打包交付）。</summary>
+    public static bool AllowsAdmin(string? method, string? path)
+    {
+        var segments = Split(path);
+
+        // /api/members ...
+        if (segments.Length >= 2 && segments[1].Equals("members", StringComparison.OrdinalIgnoreCase))
+        {
+            return IsPost(method) || IsPut(method) || IsDelete(method);
+        }
+
+        // /api/credentials ...
+        if (segments.Length >= 2 && segments[1].Equals("credentials", StringComparison.OrdinalIgnoreCase))
+        {
+            return IsPost(method) || IsDelete(method);
+        }
+
+        // /api/milestones/{id}/delivery/packages
+        if (segments.Length == 5
+            && segments[1].Equals("milestones", StringComparison.OrdinalIgnoreCase)
+            && segments[3].Equals("delivery", StringComparison.OrdinalIgnoreCase)
+            && segments[4].Equals("packages", StringComparison.OrdinalIgnoreCase))
+        {
+            return IsPost(method);
+        }
+
+        // /api/delivery-packages/{id}/share
+        if (segments.Length == 4
+            && segments[1].Equals("delivery-packages", StringComparison.OrdinalIgnoreCase)
+            && segments[3].Equals("share", StringComparison.OrdinalIgnoreCase))
+        {
+            return IsPost(method) || IsDelete(method);
+        }
+
+        return false;
+    }
+
+    private static bool IsPost(string? method) =>
+        method?.Equals("POST", StringComparison.OrdinalIgnoreCase) == true;
+
+    private static bool IsPut(string? method) =>
+        method?.Equals("PUT", StringComparison.OrdinalIgnoreCase) == true;
+
+    private static bool IsDelete(string? method) =>
+        method?.Equals("DELETE", StringComparison.OrdinalIgnoreCase) == true;
+
+    private static string[] Split(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return [];
+        }
+
+        var query = path.IndexOf('?');
+
+        if (query >= 0)
+        {
+            path = path[..query];
+        }
+
+        return path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+    }
+}
+
 public sealed class HumanTokenAccessor
 {
     private readonly string _token;

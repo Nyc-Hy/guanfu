@@ -96,6 +96,16 @@ public sealed class GuanfuClient(string baseUrl, string? token = null)
         return string.IsNullOrWhiteSpace(profile) ? null : Path.Combine(profile, ".workbench");
     }
 
+    /// <summary>
+    /// 本地会话的 Cookie（<c>guanfu login</c> 换来的身份）。
+    ///
+    /// **为什么命令行要认这个**：观复是一个团队用的，成员各有各的可见范围。
+    /// 命令行若只用 owner 的万能凭证，团队成员在笔记本上看到的就永远是
+    /// owner 视角 —— 跟他在网页上看到的不一样。
+    /// </summary>
+    private readonly string? _sessionCookie = CliSession
+        .Load(GuanfuClient.ResolveHomeDirectory())?.Cookie;
+
     private HttpRequestMessage CreateRequest(HttpMethod method, string path)
     {
         var request = new HttpRequestMessage(method, path);
@@ -105,6 +115,13 @@ public sealed class GuanfuClient(string baseUrl, string? token = null)
 
             // 旧的头也带上 —— 老服务端还认它
             request.Headers.TryAddWithoutValidation(LegacyHumanTokenHeader, _token);
+        }
+
+        // 成员会话（若有）—— 服务端据此认出「是谁」，可见性按他算。
+        if (!string.IsNullOrWhiteSpace(_sessionCookie))
+        {
+            request.Headers.TryAddWithoutValidation(
+                "Cookie", $"guanfu_session={_sessionCookie}");
         }
 
         return request;

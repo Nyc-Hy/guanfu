@@ -24,6 +24,9 @@ public static class MemberAuth
     /// <summary>角色声明（管理员 / 成员）。</summary>
     public const string RoleClaim = "guanfu-role";
 
+    /// <summary>登录名（Cookie 里带着，显示名之外的另一个身份）。</summary>
+    public const string UserNameClaim = "guanfu-username";
+
     /// <summary>成员 id 的声明。</summary>
     public const string MemberIdClaim = "guanfu-member";
 
@@ -40,6 +43,7 @@ public static class MemberAuth
                 ? member.UserName
                 : member.DisplayName),
             new(MemberIdClaim, member.Id.ToString()),
+            new(UserNameClaim, member.UserName),
             new(RoleClaim, member.Role.ToString())
         };
 

@@ -29,7 +29,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from mcp_e2e import Mcp, expect, section, FAILURES  # noqa: E402
+from mcp_e2e import Mcp, expect, section, FAILURES, rest_json  # noqa: E402
 
 
 def main() -> int:
@@ -193,6 +193,28 @@ def main() -> int:
                             "--type", "SqlScript", "--title", "本地脚本.sql")
         expect(code == 0, f"guanfu report artifact 应成功（输出：{out.strip()[:200]}）")
         expect("本地脚本.sql" in out, f"登记结果里该有那个产物（输出：{out.strip()[:200]}）")
+
+    print("\n-- E1.4d 命令行的账号验证（以成员身份说话）--")
+    member_user = f"e2e-cli-{suffix}"
+    member_password = "e2e-cli-password"
+
+    created = rest_json(args.url, "POST", "/api/members", {
+        "userName": member_user,
+        "displayName": "命令行成员",
+        "password": member_password,
+        "role": "Member",
+    })
+    expect(created is not None, "该能建一个成员（给命令行用）")
+
+    code, out = guanfu("login", member_user, "--password", member_password)
+    expect(code == 0, f"guanfu login 应成功（输出：{out.strip()[:200]}）")
+
+    code, out = guanfu("whoami")
+    expect(code == 0, "guanfu whoami 应成功")
+    expect(member_user in out, f"whoami 该报出当前身份（输出：{out.strip()[:200]}）")
+
+    code, out = guanfu("logout")
+    expect(code == 0, "guanfu logout 应成功")
 
     print("\n-- E1.5 认领、依赖、评审 --")
     code, out = guanfu("task", "claim", task_id, "--agent", "e2e-agent", "--lease", "30")

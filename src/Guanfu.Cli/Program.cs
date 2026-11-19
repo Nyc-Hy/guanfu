@@ -92,6 +92,12 @@ try
             return await McpCallCommand.RunAsync(url, cliArgs);
         case "tools":
             return await McpCallCommand.ListToolsAsync(url);
+        case "login":
+            return await AuthCommand.LoginAsync(url, cliArgs);
+        case "logout":
+            return await AuthCommand.LogoutAsync(url);
+        case "whoami":
+            return await AuthCommand.WhoamiAsync(url);
         case "delivery":
             return await DeliveryCommand.RunAsync(url, cliArgs);
         case "agent-config":
@@ -127,6 +133,9 @@ static void PrintUsage()
           guanfu mcp                                stdio ↔ HTTP 的 MCP 桥接
           guanfu call <工具名> [--arg 键=值 ...]     从 shell 调任意 MCP 工具
           guanfu tools                             观复现在暴露哪些工具
+          guanfu login <用户名> [--password 密码]  以某个成员的身份说话（存在本地）
+          guanfu whoami                            现在是谁
+          guanfu logout                            退出登录
           guanfu report artifact <任务> --file <本地文件>   把本地脚本/报告登记成产物
           guanfu report doc <任务> <本地文件...>           上传本地文档
           guanfu delivery                           交付打包与分享链接

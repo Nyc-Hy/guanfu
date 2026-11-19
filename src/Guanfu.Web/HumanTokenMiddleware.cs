@@ -27,10 +27,32 @@ public sealed class HumanTokenMiddleware
             return;
         }
 
+        // owner 的万能钥匙
         if (_tokens.IsAuthorized(context.Request))
         {
             await _next(context);
             return;
+        }
+
+        // 成员会话：团队成员在自己电脑上用的是**自己的账号**，
+        // 不是 owner 的钥匙 —— 敏感端点不能只认人工凭证。
+        if (context.User.Identity?.IsAuthenticated == true)
+        {
+            var method = context.Request.Method;
+            var path = context.Request.Path.Value;
+
+            if (MemberSessionPolicy.AllowsMember(method, path))
+            {
+                await _next(context);
+                return;
+            }
+
+            if (MemberSessionPolicy.AllowsAdmin(method, path) &&
+                MemberAuth.IsAdmin(context.User))
+            {
+                await _next(context);
+                return;
+            }
         }
 
         context.Response.StatusCode = StatusCodes.Status401Unauthorized;

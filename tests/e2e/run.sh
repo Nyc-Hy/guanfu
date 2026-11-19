@@ -56,6 +56,11 @@ fi
 WB_HUMAN_TOKEN="$(cat "$HOME_DIR/.human-token" 2>/dev/null || true)"
 export WB_HUMAN_TOKEN
 # CLI 认这个环境变量（--token > WORKBENCH_HUMAN_TOKEN > WORKBENCH_HOME/.human-token）。
+#
+# 命令行的**本地会话**（guanfu login）单独放一个临时目录 ——
+# 不然它会写进开发者自己的家目录。
+export GUANFU_CLI_HOME="$HOME_DIR/cli"
+
 export WORKBENCH_HUMAN_TOKEN="$WB_HUMAN_TOKEN"
 
 # CLI 要单独跑一遍：它是次要入口，但 `guanfu mcp` 的 stdio 桥接不可替代，

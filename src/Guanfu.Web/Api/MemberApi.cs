@@ -104,13 +104,16 @@ public static class MemberApi
                 return Results.Ok(new { ok = true, member = (object?)null });
             }
 
+            // 身份来自 Cookie 里的声明（签发时写的）。
+            // **可见性**不靠这里 —— 它每次都去库里核对（成员停用/改角色立刻生效）。
             return Results.Ok(new
             {
                 ok = true,
                 member = new
                 {
                     id = MemberAuth.MemberId(user),
-                    userName = user.Identity?.Name,
+                    userName = user.FindFirst(MemberAuth.UserNameClaim)?.Value ?? user.Identity?.Name,
+                    displayName = user.Identity?.Name,
                     role = user.FindFirst(MemberAuth.RoleClaim)?.Value,
                     isAdmin = MemberAuth.IsAdmin(user)
                 }
