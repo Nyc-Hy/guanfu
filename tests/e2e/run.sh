@@ -61,7 +61,12 @@ export WORKBENCH_HUMAN_TOKEN="$WB_HUMAN_TOKEN"
 # CLI 要单独跑一遍：它是次要入口，但 `guanfu mcp` 的 stdio 桥接不可替代，
 # 而且敏感命令在 CLI 上也得守同一条人工凭证门槛。
 "$DOTNET" build "$ROOT/src/Guanfu.Cli/Guanfu.Cli.csproj" -v quiet --nologo >/dev/null
-CLI_DLL="$(find "$ROOT/src/Guanfu.Cli/bin" -name 'Guanfu.Cli.dll' -path '*net8.0*' -print -quit)"
+# 要**框架依赖的 Debug 版**（不是 publish 出来的 RID 目录）——
+# find 碰上 RID 子目录会挑到旧的那份，冒烟就跑到过期二进制上去了。
+CLI_DLL="$ROOT/src/Guanfu.Cli/bin/Debug/net8.0/Guanfu.Cli.dll"
+if [ ! -f "$CLI_DLL" ]; then
+  CLI_DLL="$(find "$ROOT/src/Guanfu.Cli/bin" -name 'Guanfu.Cli.dll' -path '*/net8.0/*' ! -path '*/*/*/*' -print -quit)"
+fi
 if [[ -z "$CLI_DLL" ]]; then
   echo "找不到 Guanfu.Cli.dll —— CLI 冒烟跳过" >&2
 else

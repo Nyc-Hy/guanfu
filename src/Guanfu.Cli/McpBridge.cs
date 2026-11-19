@@ -41,7 +41,7 @@ public static class McpBridge
     ///
     /// 没有凭证也能连 —— 那把共享人工凭证兜着（本机单人用就是这么干的）。
     /// </summary>
-    private static string? ResolveToken(List<string> args)
+    internal static string? ResolveToken(List<string> args)
     {
         var flag = ReadOption(args, "--token");
         if (!string.IsNullOrWhiteSpace(flag))

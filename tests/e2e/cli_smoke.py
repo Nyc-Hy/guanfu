@@ -174,6 +174,26 @@ def main() -> int:
     code, out = guanfu("task", "events", task_id, "--format", "json")
     expect(code == 0, "guanfu task events --format json 应能导出事件流水")
 
+    print("\n-- E1.4c 从 shell 调 MCP 工具（guanfu call）与本地文件报入 --")
+    code, out = guanfu("tools")
+    expect(code == 0, "guanfu tools 应能列出观复的工具")
+    expect("guanfu_add_artifact" in out, "工具清单里该有产物登记工具")
+
+    code, out = guanfu("call", "guanfu_get_task_by_key", "--arg", "key=REQ-001",
+                        "--arg", f"projectId={project_id}")
+    expect(code == 0, f"guanfu call 应能调 MCP 工具（输出：{out.strip()[:200]}）")
+    expect("CLI 冒烟任务" in out, f"guanfu call 的结果里该有那个任务（输出：{out.strip()[:200]}）")
+
+    with tempfile.TemporaryDirectory(prefix="wb-e2e-local-") as local_dir:
+        local_file = os.path.join(local_dir, "本地脚本.sql")
+        with open(local_file, "w", encoding="utf-8") as handle:
+            handle.write("SELECT 1;")
+
+        code, out = guanfu("report", "artifact", task_id, "--file", local_file,
+                            "--type", "SqlScript", "--title", "本地脚本.sql")
+        expect(code == 0, f"guanfu report artifact 应成功（输出：{out.strip()[:200]}）")
+        expect("本地脚本.sql" in out, f"登记结果里该有那个产物（输出：{out.strip()[:200]}）")
+
     print("\n-- E1.5 认领、依赖、评审 --")
     code, out = guanfu("task", "claim", task_id, "--agent", "e2e-agent", "--lease", "30")
     expect("已认领" in out, "guanfu task claim 应成功")

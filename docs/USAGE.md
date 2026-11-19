@@ -503,11 +503,16 @@ AI 写的脚本能跑，但不一定合乎生产口径 —— **人改是常态*
 > 团队的 CI 与部署脚本也在自己的机器上。它们把结果报进来的口子就是这几个命令：
 
 ```bash
-# 把本地结果报进观复（CI、部署脚本、git 钩子都能用）
-guanfu report status   REQ-001 InDev --note "脚本推进的"
-guanfu report artifact REQ-001 --title "建表.sql" --type SqlScript --file dist/order.sql
-guanfu report plan     REQ-001 --understanding "..." --breakdown "..."
-guanfu report test     REQ-001 --total 10 --passed 9 --coverage 0.92
+# 观复现在暴露哪些工具
+guanfu tools
+
+# 从 shell 调任意 MCP 工具（与 agent 用的是同一套：同一套校验、同一套审计）
+guanfu call guanfu_update_status --arg taskId=REQ-001 --arg status=InDev
+guanfu call guanfu_set_plan --arg taskId=REQ-001 --arg understanding="..."
+guanfu call guanfu_report_test_result --arg taskId=REQ-001 --arg total=10 --arg passed=9
+
+# 把**本地文件**报进观复（MCP 的工具在服务端跑，够不到本地文件 —— 只有这条要本地读）
+guanfu report artifact REQ-001 --file dist/order.sql --type SqlScript
 guanfu report doc      REQ-001 ./发布说明.md --kind delivery
 
 # 交付打包（要人工凭证：--token 或 GUANFU_HUMAN_TOKEN）

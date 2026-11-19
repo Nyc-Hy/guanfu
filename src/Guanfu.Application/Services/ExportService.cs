@@ -172,7 +172,7 @@ public sealed class ExportService(
                 + $"| {row.Outcome} "
                 + $"| {OneLine(row.ResultSummary)} "
                 + $"| {row.DurationMs} ms "
-                + $"| {(row.ApprovalId is null ? "—" : row.ApprovalId.ToString()[..8])} |");
+                + $"| {(row.ApprovalId is null ? "—" : row.ApprovalId.Value.ToString()[..8])} |");
         }
 
         sb.AppendLine();

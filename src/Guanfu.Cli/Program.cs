@@ -88,6 +88,10 @@ try
             return await AuditCommandAsync(url, cliArgs);
         case "report":
             return await ReportCommand.RunAsync(url, cliArgs);
+        case "call":
+            return await McpCallCommand.RunAsync(url, cliArgs);
+        case "tools":
+            return await McpCallCommand.ListToolsAsync(url);
         case "delivery":
             return await DeliveryCommand.RunAsync(url, cliArgs);
         case "agent-config":
@@ -121,7 +125,10 @@ static void PrintUsage()
         用法:
           guanfu serve                              启动 Web（UI + REST + MCP 端点）
           guanfu mcp                                stdio ↔ HTTP 的 MCP 桥接
-          guanfu report                             把本地结果报进观复（状态/产出/计划/测试/文档）
+          guanfu call <工具名> [--arg 键=值 ...]     从 shell 调任意 MCP 工具
+          guanfu tools                             观复现在暴露哪些工具
+          guanfu report artifact <任务> --file <本地文件>   把本地脚本/报告登记成产物
+          guanfu report doc <任务> <本地文件...>           上传本地文档
           guanfu delivery                           交付打包与分享链接
           guanfu agent-config [--client http|stdio] 打印接 agent 的配置片段
           guanfu project list                       列出项目
