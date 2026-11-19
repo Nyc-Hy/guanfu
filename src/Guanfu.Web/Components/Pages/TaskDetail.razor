@@ -242,7 +242,7 @@ else
                                 <tr>
                                     <td>@doc.FileName</td>
                                     <td><span class="wb-chip">@UiText.DocumentKind(doc.Kind)</span></td>
-                                    <td>@(doc.SizeBytes / 1024) KB</td>
+                                    <td>@FileSize(doc.SizeBytes)</td>
                                     <td>
                                         @if (doc.Parsed)
                                         {
@@ -1178,9 +1178,16 @@ else
         && Context?.Task.AssigneeMemberId is null
         && string.IsNullOrWhiteSpace(Context?.Task.Assignee);
 
-    /// <summary>能选的人：管理员看全部，普通成员只有自己。</summary>
+    /// <summary>
+    /// 能选的人：管理员看全部，普通成员只有自己。
+    ///
+    /// 当前的归属者**永远在列表里** —— 就算我不是管理员，
+    /// 也不该看不见「这个活现在归谁」（下拉空着 = 界面在说假话）。
+    /// </summary>
     private IReadOnlyList<MemberDto> AssignableMembers =>
-        IsAdmin ? MemberItems : MemberItems.Where(m => m.Id == CurrentMemberId).ToList();
+        IsAdmin
+            ? MemberItems
+            : MemberItems.Where(m => m.Id == CurrentMemberId || m.Id == Context?.Task.AssigneeMemberId).ToList();
 
     [CascadingParameter] private Task<AuthenticationState>? AuthStateTask { get; set; }
     private string PriorityInput { get; set; } = "Normal";
@@ -1285,7 +1292,11 @@ else
             if (AuthStateTask is not null)
             {
                 var state = await AuthStateTask;
-                IsAdmin = MemberAuth.IsAdmin(state.User);
+
+                // 没人登录 = owner 在用（单人本机模式）—— 跟可见性一个口径：
+                // 不登录时不过滤，也不该比登录成员看得少。
+                IsAdmin = state.User.Identity?.IsAuthenticated != true
+                          || MemberAuth.IsAdmin(state.User);
                 CurrentMemberId = MemberAuth.MemberId(state.User);
             }
 
@@ -2198,6 +2209,13 @@ else
     }
 
     private sealed record UploadFailure(string FileName, string Error);
+
+    /// <summary>文件大小 —— 小文件报字节，别让 74 字节的文件显示成「0 KB」。</summary>
+    private static string FileSize(long bytes) => bytes < 1024
+        ? $"{bytes} B"
+        : bytes < 1024 * 1024
+            ? $"{bytes / 1024} KB"
+            : $"{bytes / 1024 / 1024} MB";
 
     private static string UploadKey(IBrowserFile file) => $"{file.Name}:{file.Size}";
 

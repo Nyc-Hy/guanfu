@@ -48,6 +48,21 @@ public sealed record OverviewSessionDto(
     string? TaskKey,
     DateTimeOffset LastSeenAt);
 
+/// <summary>总览里的最近事件（观复自己记下的事）。</summary>
+public sealed record OverviewEventDto(
+    Guid Id,
+    string? EventType,
+    string? Actor,
+    string? Source,
+    string? Note,
+    string? FromStatus,
+    string? ToStatus,
+    Guid TaskId,
+    string? TaskKey,
+    string? TaskTitle,
+    string ProjectName,
+    DateTimeOffset CreatedAt);
+
 /// <summary>
 /// 首页总览。观复是给人看「现在什么在动」的地方 —— 不是给人看一堆表的。
 /// </summary>
@@ -57,6 +72,8 @@ public sealed record OverviewDto(
     /// <summary>「我负责的」—— 分派给我、以及还没人认领的。</summary>
     IReadOnlyList<OverviewTaskDto> MyTasks,
     IReadOnlyList<OverviewDbCallDto> RecentDbCalls,
+    /// <summary>最近事件 —— 「观复记下的事」。</summary>
+    IReadOnlyList<OverviewEventDto> RecentEvents,
     IReadOnlyList<OverviewSessionDto> ActiveSessions,
     IReadOnlyList<ProjectSummaryDto> Projects);
 
@@ -84,6 +101,7 @@ public sealed class OverviewService(IAppDbContext db, IClock clock,
 
         var pendingApprovals = await db.Approvals
             .AsNoTracking()
+            .VisibleTo(currentMember?.Current)
             .Where(a => a.Status == ApprovalStatus.Pending)
             .OrderByDescending(a => a.CreatedAt)
             .Take(10)
@@ -156,8 +174,22 @@ public sealed class OverviewService(IAppDbContext db, IClock clock,
                 .ToList();
         }
 
+        // 可见的任务集合：普通成员的「最近活动」只该有自己看得见的活。
+        List<Guid>? visibleTaskIds = null;
+
+        if (scope is not null && !scope.IsAdmin)
+        {
+            visibleTaskIds = await db.Tasks
+                .AsNoTracking()
+                .VisibleTo(scope)
+                .Select(t => t.Id)
+                .ToListAsync(cancellationToken);
+        }
+
         var recentCalls = await db.DbCallRecords
             .AsNoTracking()
+            .Where(c => visibleTaskIds == null ||
+                        (c.TaskId != null && visibleTaskIds.Contains(c.TaskId.Value)))
             .OrderByDescending(c => c.CreatedAt)
             .Take(12)
             .ToListAsync(cancellationToken);
@@ -187,8 +219,49 @@ public sealed class OverviewService(IAppDbContext db, IClock clock,
                 c.CreatedAt))
             .ToList();
 
-        var since = clock.UtcNow - SessionIdleAfter;
+        // 最近事件：观复自己记下的事（状态迁移、评审、产物…）。
+        // 可见性同样按人过滤 —— 看不见的活，它的流水也不该出现在总览里。
+        var recentEvents = await db.StatusEvents
+            .AsNoTracking()
+            .OrderByDescending(e => e.CreatedAt)
+            .Take(60)
+            .ToListAsync(cancellationToken);
 
+        var eventTaskIds = recentEvents.Select(e => e.TaskId).Distinct().ToList();
+
+        var eventTasks = await db.Tasks
+            .AsNoTracking()
+            .Where(t => eventTaskIds.Contains(t.Id))
+            .Select(t => new { t.Id, t.Key, t.Title, t.ProjectId })
+            .ToListAsync(cancellationToken);
+
+        var eventTaskById = eventTasks.ToDictionary(t => t.Id);
+
+        var events = recentEvents
+            .Where(e => visibleTaskIds is null || visibleTaskIds.Contains(e.TaskId))
+            .Where(e => eventTaskById.ContainsKey(e.TaskId))
+            .Take(20)
+            .Select(e =>
+            {
+                var task = eventTaskById[e.TaskId];
+
+                return new OverviewEventDto(
+                    e.Id,
+                    e.EventType,
+                    e.Actor,
+                    e.Source.ToString(),
+                    e.Note,
+                    e.FromStatus?.ToString(),
+                    e.ToStatus?.ToString(),
+                    e.TaskId,
+                    task.Key,
+                    task.Title,
+                    projectNames.TryGetValue(task.ProjectId, out var pname) ? pname : "—",
+                    e.CreatedAt);
+            })
+            .ToList();
+
+        var since = clock.UtcNow - SessionIdleAfter;
         var sessions = await db.AgentSessions
             .AsNoTracking()
             .Where(s => s.EndedAt == null && s.LastSeenAt >= since)
@@ -246,6 +319,7 @@ public sealed class OverviewService(IAppDbContext db, IClock clock,
             tasks,
             myTasks,
             calls,
+            events,
             activeSessions,
             projectSummaries);
     }

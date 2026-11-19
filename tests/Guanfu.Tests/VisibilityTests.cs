@@ -282,4 +282,64 @@ public sealed class VisibilityTests
         Assert.Single(visible);
         Assert.Equal("爱丽丝的活", visible[0].Summary);
     }
+
+    [Fact]
+    public async Task 总览里的待批只归自己_别人的不该出现在首页()
+    {
+        using var host = new GuanfuTestHost();
+        var members = new MemberService(host.Db, host.Clock);
+
+        var alice = await members.CreateAsync("alice", "爱丽丝", "password-1");
+        var bob = await members.CreateAsync("bob", "鲍勃", "password-2");
+
+        var requester = new ApprovalService(host.Db, host.Clock, null, new FakeScope(null));
+
+        await requester.RequestAsync("db_execute", "db.write", "{}", "鲍勃的活", "agent-b",
+            assigneeMemberId: bob.Id);
+
+        var overview = new OverviewService(host.Db, host.Clock, new FakeScope(Member(alice.Id)));
+        var data = await overview.GetAsync();
+
+        Assert.Empty(data.PendingApprovals);
+    }
+
+    [Fact]
+    public async Task 总览里的最近活动只看得见自己的活()
+    {
+        using var host = new GuanfuTestHost();
+        var members = new MemberService(host.Db, host.Clock);
+
+        var alice = await members.CreateAsync("alice", "爱丽丝", "password-1");
+        var bob = await members.CreateAsync("bob", "鲍勃", "password-2");
+
+        var project = await host.Projects.CreateAsync("测试项目");
+        var mine = await host.Tasks.CreateAsync(project.Id, "我的活");
+        var theirs = await host.Tasks.CreateAsync(project.Id, "别人的活");
+
+        var setup = new TaskService(
+            host.Db, host.Clock, host.Git, host.Reviews, null, new FakeScope(null));
+
+        await setup.SetAssignmentAsync(mine.Id, "爱丽丝", assigneeMemberId: alice.Id);
+        await setup.SetAssignmentAsync(theirs.Id, "鲍勃", assigneeMemberId: bob.Id);
+
+        var overview = new OverviewService(host.Db, host.Clock, new FakeScope(Member(alice.Id)));
+        var data = await overview.GetAsync();
+
+        // 总览该有「最近活动」—— 观复自己记下的事，不是只有数据库调用。
+        Assert.NotEmpty(data.RecentEvents);
+        Assert.All(data.RecentEvents, e => Assert.NotEqual("别人的活", e.TaskTitle));
+    }
+
+    [Fact]
+    public async Task 没人登录时总览看得到全部_单机模式()
+    {
+        using var host = new GuanfuTestHost();
+        var project = await host.Projects.CreateAsync("测试项目");
+        await host.Tasks.CreateAsync(project.Id, "某个活");
+
+        var overview = new OverviewService(host.Db, host.Clock, new FakeScope(null));
+        var data = await overview.GetAsync();
+
+        Assert.NotEmpty(data.RecentEvents);
+    }
 }

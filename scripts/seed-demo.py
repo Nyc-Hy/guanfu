@@ -5,8 +5,9 @@
 
 造出来的东西：
 - 一个项目「订单中心重构」+ 两个迭代版本
+- 三个成员（张伟 / 李娜 / 王强，密码 demo-password）
 - 一堆处在不同状态的任务（草稿 / 开发中 / 评审中 / 已完成 / 受阻）
-- 文档（PRD、接口文档）、产物（SQL 脚本、测试报告）
+- 文档（PRD、接口说明）、产物（SQL 脚本、测试报告）
 - 一条待批的审批、一段审计流水
 
 只往库里加东西，不删不改已有数据 —— 重复跑会多灌一份。
@@ -15,7 +16,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 
@@ -38,6 +41,126 @@ def call(rest: str, method: str, path: str, body=None, token: str = ""):
         body = error.read().decode()
         print(f"  ! {method} {path} → HTTP {error.code}: {body[:160]}", file=sys.stderr)
         return None
+
+
+def upload_document(rest: str, task_id: str, filename: str, content: str, kind: str = ""):
+    """传一个文档（multipart/form-data）—— 文档接口只收文件，不收 JSON。"""
+    boundary = "----guanfuseed" + "".join(c for c in filename if c.isascii() and c.isalnum())
+    parts = []
+
+    def field(name: str, value: str):
+        parts.append(
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n".encode()
+        )
+
+    parts.append(
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n"
+        f"Content-Type: text/markdown\r\n\r\n".encode()
+    )
+    parts.append(content.encode())
+    parts.append(f"\r\n--{boundary}--\r\n".encode())
+
+    request = urllib.request.Request(
+        rest.rstrip("/") + f"/api/tasks/{task_id}/documents",
+        data=b"".join(parts),
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = response.read().decode()
+            return json.loads(payload) if payload else {}
+    except urllib.error.HTTPError as error:
+        print(f"  ! 上传文档 {filename} → HTTP {error.code}: {error.read().decode()[:160]}", file=sys.stderr)
+        return None
+
+
+class Mcp:
+    """MCP over HTTP —— 只用来看一眼工具面、**造一条待批审批**。
+
+    审批单不是 REST 能造的：它只从**写工具**里长出来（工具先问人要批）。
+    所以要演示「待批审批」这一页，就得真的调一次要审批的写工具。
+    """
+
+    def __init__(self, url: str, token: str = ""):
+        self.endpoint = url.rstrip("/") + "/mcp"
+        self.token = token
+        self.session_id = ""
+        self._next_id = 0
+
+    def _post(self, body: dict) -> dict:
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            "MCP-Protocol-Version": "2025-06-18",
+        }
+        if self.session_id:
+            headers["Mcp-Session-Id"] = self.session_id
+        if self.token:
+            headers["X-Guanfu-Token"] = self.token
+
+        request = urllib.request.Request(
+            self.endpoint, data=json.dumps(body).encode(), headers=headers, method="POST"
+        )
+
+        with urllib.request.urlopen(request, timeout=60) as response:
+            session = response.headers.get("Mcp-Session-Id")
+            if session:
+                self.session_id = session
+            text = response.read().decode()
+
+        # 走 SSE 的回包只取 data 行
+        if "data:" in text:
+            data_lines = [
+                line.strip()[len("data:"):].strip()
+                for line in text.split("\n")
+                if line.strip().startswith("data:")
+            ]
+            if data_lines:
+                text = "".join(data_lines)
+
+        try:
+            return json.loads(text) if text.strip() else {}
+        except json.JSONDecodeError:
+            return {}
+
+    def initialize(self) -> None:
+        self._next_id += 1
+        self._post({
+            "jsonrpc": "2.0",
+            "id": self._next_id,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "guanfu-seed", "version": "0.1.0"},
+            },
+        })
+        self._post({"jsonrpc": "2.0", "method": "notifications/initialized"})
+
+    def call(self, tool: str, arguments: dict) -> dict:
+        self._next_id += 1
+        payload = self._post({
+            "jsonrpc": "2.0",
+            "id": self._next_id,
+            "method": "tools/call",
+            "params": {"name": tool, "arguments": arguments},
+        })
+
+        result = payload.get("result", {})
+        structured = result.get("structuredContent")
+        if isinstance(structured, dict):
+            return structured
+
+        content = result.get("content") or []
+        if content and isinstance(content[0], dict) and "text" in content[0]:
+            try:
+                return json.loads(content[0]["text"])
+            except json.JSONDecodeError:
+                return {"text": content[0]["text"]}
+
+        return result
 
 
 def main() -> int:
@@ -129,15 +252,15 @@ def main() -> int:
             "author": assignee or "agent-a",
         }, args.token)
 
-        # 推进到目标状态（状态机要一步一步走）
+        # 推进到目标状态（状态机要一步一步走；Blocked 不在主链上，单独走）
         path = ["Draft", "DocsReady", "Planned", "InDev", "Testing", "Review", "Done"]
-        for step in path[1:]:
+        steps = ["DocsReady", "Blocked"] if status == "Blocked" else path[1:path.index(status) + 1]
+
+        for step in steps:
             call(rest, "POST", f"/api/tasks/{tid}/status", {
                 "status": step,
                 "actor": assignee or "agent-a",
             }, args.token)
-            if step == status:
-                break
 
     print("==> 产物与文档")
     artifacts = [
@@ -164,16 +287,36 @@ def main() -> int:
             "author": "agent-a",
         }, args.token)
 
+    print("==> 文档")
+    documents = [
+        (task_ids[0][0], "订单模型 PRD.md", "prd", "# 订单模型 PRD\n\n## 背景\n三条线并到一个订单模型。\n\n## 范围\n- 下单\n- 履约\n- 售后\n"),
+        (task_ids[1][0], "下单接口说明.md", "apidoc", "# 下单接口\n\nPOST /api/orders\n\n请求体：商品、数量、地址。\n"),
+    ]
+    for tid, filename, kind, content in documents:
+        upload_document(rest, tid, filename, content, kind)
+
     print("==> 待批审批")
-    call(rest, "POST", "/api/approvals", {
-        "toolName": "db_execute",
-        "kind": "db.write",
-        "payload": json.dumps({
-            "sql": "UPDATE orders SET status = 'paid' WHERE id IN (SELECT id FROM payment_pending);",
-        }),
-        "summary": "批量把待支付订单改成已支付",
-        "requestedBy": "agent-a",
+    # 审批单只能从**写工具**里长出来 —— REST 没有「造一条审批」的端点。
+    # 所以这里真的调一次要审批的写工具（shell_run），让人看到「待批」长什么样。
+    work_dir = tempfile.mkdtemp(prefix="guanfu-demo-")
+    call(rest, "PUT", f"/api/projects/{pid}/config", {
+        "repoPath": work_dir,
+        "allowedCommands": ["touch"],
     }, args.token)
+
+    mcp = Mcp(rest, args.token)
+    mcp.initialize()
+    pending = mcp.call("shell_run", {
+        "projectId": pid,
+        "command": "touch demo-approval-marker",
+        "waitSeconds": 1,
+        "callerId": "agent-a",
+    })
+
+    if pending.get("approvalStatus") == "Pending" or pending.get("approvalId"):
+        print("  已造一条待批审批（在「待批操作」页）")
+    else:
+        print(f"  ! 没造出待批审批：{json.dumps(pending, ensure_ascii=False)[:200]}", file=sys.stderr)
 
     print()
     print("演示数据灌好了：")

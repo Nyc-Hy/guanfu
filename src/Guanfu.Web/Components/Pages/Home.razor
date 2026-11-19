@@ -301,7 +301,7 @@ else
                             {
                                 <tr>
                                     <td class="wb-muted" title="@Absolute(item.At)">@Relative(item.At)</td>
-                                    <td><span class="wb-chip wb-chip-warn">数据库</span></td>
+                                    <td><span class="wb-chip @item.ChipClass">@item.Chip</span></td>
                                     <td>@item.Text</td>
                                     <td>
                                         @if (item.TaskId is not null)
@@ -497,7 +497,8 @@ else
     /// <summary>最近活动里的一行（观复记下的事）。</summary>
     private sealed record ActivityItem(
         DateTimeOffset At,
-        bool IsFile,
+        string Chip,
+        string ChipClass,
         string Text,
         Guid? TaskId,
         string TaskLabel,
@@ -754,10 +755,27 @@ else
         }
     }
 
-    /// <summary>把「数据库调用」合成一条按时间倒序的流水。</summary>
+    /// <summary>
+    /// 把「最近事件」与「数据库调用」合成一条按时间倒序的流水。
+    ///
+    /// 这一栏叫「最近活动」，就该是**观复自己记下的事** ——
+    /// 以前这里只摆数据库调用，团队没用数据库时就永远是空的。
+    /// </summary>
     private static IReadOnlyList<ActivityItem> BuildActivity(OverviewDto data)
     {
         var items = new List<ActivityItem>();
+
+        foreach (var evt in data.RecentEvents)
+        {
+            items.Add(new ActivityItem(
+                evt.CreatedAt,
+                UiText.EventType(evt.EventType),
+                "wb-chip-muted",
+                DescribeEvent(evt),
+                evt.TaskId,
+                UiText.TaskRef(evt.TaskKey, evt.TaskTitle),
+                evt.ProjectName));
+        }
 
         foreach (var call in data.RecentDbCalls)
         {
@@ -767,7 +785,8 @@ else
 
             items.Add(new ActivityItem(
                 call.CreatedAt,
-                false,
+                "数据库",
+                "wb-chip-warn",
                 $"{target} · {Truncate(call.Sql, 60)}",
                 call.TaskId,
                 UiText.TaskRef(call.TaskKey),
@@ -775,6 +794,25 @@ else
         }
 
         return items.OrderByDescending(i => i.At).Take(20).ToList();
+    }
+
+    /// <summary>一句话说清这条事件发生了什么。</summary>
+    private static string DescribeEvent(OverviewEventDto evt)
+    {
+        var what = evt.Note;
+
+        if (string.IsNullOrWhiteSpace(what))
+        {
+            what = evt.EventType == "status.changed"
+                   && Enum.TryParse<TaskStatus>(evt.FromStatus, out var from)
+                   && Enum.TryParse<TaskStatus>(evt.ToStatus, out var to)
+                ? $"{UiText.Status(from)} → {UiText.Status(to)}"
+                : UiText.EventType(evt.EventType);
+        }
+
+        var who = string.IsNullOrWhiteSpace(evt.Actor) ? null : evt.Actor;
+
+        return who is null ? what : $"{who}：{what}";
     }
 
     private async Task CreateAsync()
