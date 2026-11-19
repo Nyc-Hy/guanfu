@@ -872,6 +872,7 @@ public static class GuanfuApi
         // 界面的搜索页早就有限量了（Search.razor），REST 这条也得有。
         api.MapGet("/search", async (
             ITaskService tasks, IProjectService projects, IDocumentService documents,
+            IArtifactService artifacts, IDbCallService dbCalls,
             string? q, int? limit, CancellationToken ct) =>
         {
             if (string.IsNullOrWhiteSpace(q))
@@ -935,7 +936,21 @@ public static class GuanfuApi
                 }
             }
 
-            return Results.Ok(new { tasks = taskHits, projects = projectHits, documents = documentHits });
+            // 产物（脚本、报告）：交付物得能被搜到 ——
+            // 「这段 SQL 在哪个任务里」答不出来，脚本一多就没人找得到它是哪个版本带来的。
+            var artifactHits = await artifacts.SearchAsync(keyword, take, ct);
+
+            // SQL 执行记录：同样按可见性过滤（普通成员只看自己任务的）。
+            var dbCallHits = await dbCalls.SearchAsync(keyword, take, ct);
+
+            return Results.Ok(new
+            {
+                tasks = taskHits,
+                projects = projectHits,
+                documents = documentHits,
+                artifacts = artifactHits,
+                dbCalls = dbCallHits
+            });
         });
 
         // ---- 人工凭证 ----

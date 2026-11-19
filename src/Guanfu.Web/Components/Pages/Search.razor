@@ -3,6 +3,7 @@
 @inject ITaskService Tasks
 @inject IProjectService Projects
 @inject IDocumentService Documents
+@inject IArtifactService Artifacts
 @inject IDbCallService DbCalls
 
 <PageTitle>全局搜索 · 观复</PageTitle>
@@ -38,7 +39,8 @@ else if (!Searched)
 {
     <div class="wb-note">输入关键词开始搜索。任务按编号精确匹配（归一化）与标题包含匹配；文件和 SQL 按内容包含匹配。</div>
 }
-else if (TaskHits.Count == 0 && ProjectHits.Count == 0 && DocHits.Count == 0 && DbHits.Count == 0)
+else if (TaskHits.Count == 0 && ProjectHits.Count == 0 && DocHits.Count == 0
+    && ArtifactHits.Count == 0 && DbHits.Count == 0)
 {
     <div class="wb-empty">没有找到匹配「@LastQuery」的结果。</div>
 }
@@ -133,6 +135,34 @@ else
             </div>
         </section>
     }
+    else if (ActiveGroup == "artifacts")
+    {
+        <section class="wb-panel">
+            <div class="wb-card-head">
+                <h3>产物</h3>
+                <span class="wb-muted">脚本、报告与交付文件 —— 搜的是标题与内容</span>
+            </div>
+            <div class="wb-table-scroll wb-table-wide">
+                <table class="wb-table wb-task-table">
+                    <thead>
+                    <tr><th>产物</th><th>类型</th><th>命中处</th><th>任务</th><th>项目</th></tr>
+                    </thead>
+                    <tbody>
+                    @foreach (var hit in ArtifactHits)
+                    {
+                        <tr>
+                            <td><a href="/tasks/@hit.TaskId">@hit.Title</a></td>
+                            <td><span class="wb-chip">@ArtifactTypeLabel(hit.Type)</span></td>
+                            <td class="wb-muted"><code>@hit.Snippet</code></td>
+                            <td class="wb-muted">@UiText.TaskRef(hit.TaskKey, hit.TaskTitle)</td>
+                            <td class="wb-muted">@hit.ProjectName</td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    }
     else if (ActiveGroup == "db")
     {
         <section class="wb-panel">
@@ -197,6 +227,7 @@ else
     private const int DocLimit = 20;
     private const int FileLimit = 20;
     private const int DbCallLimit = 20;
+    private const int ArtifactLimit = 50;
     private const int DocScanTaskLimit = 100;
     private const int DocContentScanLimit = 20;
 
@@ -226,12 +257,14 @@ else
         new("tasks", "任务", TaskHits.Count),
         new("projects", "项目", ProjectHits.Count),
         new("docs", "文档", DocHits.Count),
+        new("artifacts", "产物", ArtifactHits.Count),
         new("db", "SQL 执行记录", DbHits.Count)
     }.Where(g => g.Count > 0).ToList();
 
     private IReadOnlyList<TaskSummaryDto> TaskHits { get; set; } = [];
     private IReadOnlyList<ProjectSummaryDto> ProjectHits { get; set; } = [];
     private IReadOnlyList<DocHit> DocHits { get; set; } = [];
+    private IReadOnlyList<ArtifactSearchHitDto> ArtifactHits { get; set; } = [];
     private IReadOnlyList<DbCallHitDto> DbHits { get; set; } = [];
     private List<PageError> GroupErrors { get; set; } = [];
 
@@ -253,6 +286,12 @@ else
         }
     }
 
+    /// <summary>产物类型的中文说法。</summary>
+    private static string ArtifactTypeLabel(string type) =>
+        Enum.TryParse<ArtifactType>(type, out var parsed)
+            ? UiText.ArtifactTypeLabel(parsed)
+            : type;
+
     private async Task SearchAsync()
     {
         var query = Query.Trim();
@@ -267,6 +306,7 @@ else
         TaskHits = [];
         ProjectHits = [];
         DocHits = [];
+        ArtifactHits = [];
         DbHits = [];
         GroupErrors = [];
         SkippedDocs = 0;
@@ -278,6 +318,7 @@ else
             await SearchProjectsAsync(query);
             await SearchTasksAsync(query);
             await SearchDocumentsAsync(query);
+            await SearchArtifactsAsync(query);
             await SearchDbCallsAsync(query);
             Searched = true;
             ActiveGroup = ResultGroups.FirstOrDefault()?.Key ?? "tasks";
@@ -288,6 +329,24 @@ else
         }
     }
 
+
+    /// <summary>
+    /// 搜产物（标题与内容）。
+    ///
+    /// 交付物得能被搜到 —— 「这段 SQL 在哪个任务里」答不出来，
+    /// 脚本一多就没人找得到它是哪个版本带来的。
+    /// </summary>
+    private async Task SearchArtifactsAsync(string query)
+    {
+        try
+        {
+            ArtifactHits = await Artifacts.SearchAsync(query, ArtifactLimit);
+        }
+        catch (Exception ex)
+        {
+            GroupErrors.Add(PageError.From(ex, "搜索产物"));
+        }
+    }
 
     /// <summary>
     /// 搜数据库调用。SQL 原文、库名、目标表任一命中都算数 ——

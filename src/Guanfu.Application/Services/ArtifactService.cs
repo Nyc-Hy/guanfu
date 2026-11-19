@@ -34,9 +34,25 @@ public interface IArtifactService
         Guid taskId,
         Guid artifactId,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 搜产物（标题与内容）。
+    ///
+    /// 「这段 SQL 在哪个任务里？」—— 产物是交付物，交付物得能被搜到，
+    /// 否则脚本一多就没人找得到它是哪个版本带来的。
+    ///
+    /// 可见性跟任务一致：普通成员只搜得到**自己任务**下的产物。
+    /// </summary>
+    Task<IReadOnlyList<ArtifactSearchHitDto>> SearchAsync(
+        string query,
+        int limit = 50,
+        CancellationToken cancellationToken = default);
 }
 
-public sealed class ArtifactService(IAppDbContext db, IClock clock) : IArtifactService
+public sealed class ArtifactService(
+    IAppDbContext db,
+    IClock clock,
+    ICurrentMemberScope? currentMember = null) : IArtifactService
 {
     public async Task<IReadOnlyList<ArtifactDto>> ListAsync(
         Guid taskId,
@@ -211,6 +227,105 @@ public sealed class ArtifactService(IAppDbContext db, IClock clock) : IArtifactS
             Note = "登记时的版本",
             CreatedAt = current.UpdatedAt ?? current.CreatedAt
         });
+    }
+
+    public async Task<IReadOnlyList<ArtifactSearchHitDto>> SearchAsync(
+        string query,
+        int limit = 50,
+        CancellationToken cancellationToken = default)
+    {
+        var value = query.Trim();
+
+        if (value.Length == 0)
+        {
+            return [];
+        }
+
+        // 大小写不敏感：人打「delete from」要能搜到「DELETE FROM」。
+        var lowered = value.ToLowerInvariant();
+
+        var scope = currentMember?.Current;
+
+        var visibleTaskIds = db.Tasks
+            .AsNoTracking()
+            .VisibleTo(scope)
+            .Select(t => t.Id);
+
+        var rows = await db.Artifacts
+            .AsNoTracking()
+            .Where(a =>
+                (a.Title != null && a.Title.ToLower().Contains(lowered)) ||
+                (a.Content != null && a.Content.ToLower().Contains(lowered)))
+            .Where(a => scope == null || scope.IsAdmin || visibleTaskIds.Contains(a.TaskId))
+            .OrderByDescending(a => a.CreatedAt)
+            .Take(Math.Clamp(limit, 1, 200))
+            .ToListAsync(cancellationToken);
+
+        if (rows.Count == 0)
+        {
+            return [];
+        }
+
+        var taskIds = rows.Select(a => a.TaskId).Distinct().ToList();
+
+        var tasks = await db.Tasks
+            .AsNoTracking()
+            .Where(t => taskIds.Contains(t.Id))
+            .Select(t => new { t.Id, t.Key, t.Title, t.ProjectId })
+            .ToListAsync(cancellationToken);
+
+        var projectIds = tasks.Select(t => t.ProjectId).Distinct().ToList();
+
+        var projects = await db.Projects
+            .AsNoTracking()
+            .Where(p => projectIds.Contains(p.Id))
+            .Select(p => new { p.Id, p.Name })
+            .ToListAsync(cancellationToken);
+
+        var taskById = tasks.ToDictionary(t => t.Id);
+        var projectById = projects.ToDictionary(p => p.Id);
+
+        return rows.Select(a =>
+        {
+            var task = taskById.GetValueOrDefault(a.TaskId);
+            string projectName = "—";
+            if (task is not null && projectById.TryGetValue(task.ProjectId, out var project))
+            {
+                projectName = project.Name;
+            }
+
+            return new ArtifactSearchHitDto(
+                a.Id,
+                a.Title,
+                a.Type.ToString(),
+                a.TaskId,
+                task?.Key,
+                task?.Title,
+                projectName,
+                a.Content is null ? "标题命中" : Snippet(a.Content!, value));
+        }).ToList();
+    }
+
+    /// <summary>命中处的前后文（让人一眼看出是哪一段）。</summary>
+    private static string Snippet(string content, string keyword)
+    {
+        const int Window = 40;
+
+        var index = content.IndexOf(keyword, StringComparison.OrdinalIgnoreCase);
+
+        if (index < 0)
+        {
+            var limit = Window * 2;
+            return content.Length <= limit ? content : content[..limit] + "…";
+        }
+
+        var start = Math.Max(0, index - Window);
+        var end = Math.Min(content.Length, index + keyword.Length + Window);
+
+        var prefix = start > 0 ? "…" : string.Empty;
+        var suffix = end < content.Length ? "…" : string.Empty;
+
+        return prefix + content[start..end].Replace("\n", " ") + suffix;
     }
 
     private static ArtifactDto ToDto(Artifact artifact) => new(

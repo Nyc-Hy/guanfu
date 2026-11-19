@@ -134,6 +134,18 @@ public sealed record ArtifactDto(
     DateTimeOffset? UpdatedAt = null,
     string? EditedBy = null);
 
+/// <summary>搜到的产物。</summary>
+public sealed record ArtifactSearchHitDto(
+    Guid ArtifactId,
+    string Title,
+    string Type,
+    Guid TaskId,
+    string? TaskKey,
+    string? TaskTitle,
+    string ProjectName,
+    /// <summary>命中处的前后文（让人一眼看出是哪一段）。</summary>
+    string Snippet);
+
 /// <summary>产物的一个历史版本。</summary>
 public sealed record ArtifactRevisionDto(
     Guid Id,

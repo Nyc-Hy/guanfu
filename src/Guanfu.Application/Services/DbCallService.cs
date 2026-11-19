@@ -69,7 +69,8 @@ public interface IDbCallService
 /// 目标表全埋在那行的 JSON 里 —— 查不动。这张专表把它们摊成列，
 /// 让「谁在什么时候对哪个库的哪张表跑了什么 SQL、影响几行、谁批的」能筛能翻。
 /// </summary>
-public sealed class DbCallService(IAppDbContext db, IClock clock) : IDbCallService
+public sealed class DbCallService(IAppDbContext db, IClock clock,
+    ICurrentMemberScope? currentMember = null) : IDbCallService
 {
     /// <summary>目标表列的存储上限（与 EF 配置的 HasMaxLength(2000) 一致）。</summary>
     internal const int TargetTablesMaxChars = 2000;
@@ -246,12 +247,24 @@ public sealed class DbCallService(IAppDbContext db, IClock clock) : IDbCallServi
         // lower() 是 SQL 函数，翻译得过去；value 的 lower() 在客户端算好当参数传。
         var lowered = value.ToLowerInvariant();
 
+        // 可见性：普通成员只搜得到**自己任务**下的调用记录。
+        // 没挂任务的调用（项目级操作）只有管理员看得到 ——
+        // 那是「别人项目的操作」，不该出现在成员的搜索结果里。
+        var scope = currentMember?.Current;
+
+        var visibleTaskIds = db.Tasks
+            .AsNoTracking()
+            .VisibleTo(scope)
+            .Select(t => t.Id);
+
         var rows = await db.DbCallRecords
             .AsNoTracking()
             .Where(r =>
                 (r.Sql != null && r.Sql.ToLower().Contains(lowered)) ||
                 (r.Database != null && r.Database.ToLower().Contains(lowered)) ||
                 (r.TargetTables != null && r.TargetTables.ToLower().Contains(lowered)))
+            .Where(r => scope == null || scope.IsAdmin ||
+                        (r.TaskId != null && visibleTaskIds.Contains(r.TaskId.Value)))
             .OrderByDescending(r => r.CreatedAt)
             .Take(Math.Clamp(limit, 1, 200))
             .ToListAsync(cancellationToken);
