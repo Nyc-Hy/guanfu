@@ -23,6 +23,9 @@ public static class GuanfuApi
     {
         var api = app.MapGroup("/api");
 
+        // 任务可见性门禁：按 id 直取别人的任务也要被挡（列表过滤挡不住这一条）。
+        api.AddEndpointFilter<TaskVisibilityFilter>();
+
         // 统一错误出口：领域异常（非法迁移、资源不存在等）转成结构化 4xx，
         // 而不是漏成 500 的 HTML 错误页 —— agent 和脚本都靠这个读懂发生了什么。
         api.AddEndpointFilter(async (context, next) =>

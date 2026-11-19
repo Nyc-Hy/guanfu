@@ -78,8 +78,11 @@ public sealed class DeliveryPackageService(
     IAppDbContext db,
     IDocumentStore documents,
     IDeliveryPackageStore store,
-    IClock clock) : IDeliveryPackageService
+    IClock clock,
+    ICurrentMemberScope? currentMember = null) : IDeliveryPackageService
 {
+    /// <summary>当前身份（没人登录 = 单人本机模式 = 不过滤）。</summary>
+    private MemberScope? Scope => currentMember?.Current;
     /// <summary>包里清单文件的名字（固定，人一看就知道那是清单）。</summary>
     private const string ManifestFileName = "清单.md";
 
@@ -491,7 +494,10 @@ public sealed class DeliveryPackageService(
             }
         }
 
+        // 可见性：候选池只能圈**看得见**的活 ——
+        // 否则成员能把别人的产物打进交付包发出去。
         return await db.Tasks.AsNoTracking()
+            .VisibleTo(Scope)
             .Where(t => t.MilestoneId != null && scope.Contains(t.MilestoneId!.Value))
             .Where(t => !t.IsArchived)
             .OrderBy(t => t.Key)

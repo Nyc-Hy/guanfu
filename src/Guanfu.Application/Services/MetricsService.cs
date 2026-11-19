@@ -31,8 +31,13 @@ public interface IMetricsService
     Task<IReadOnlyList<ProjectMetricsDto>> GetAllAsync(CancellationToken cancellationToken = default);
 }
 
-public sealed class MetricsService(IAppDbContext db, IClock clock) : IMetricsService
+public sealed class MetricsService(
+    IAppDbContext db,
+    IClock clock,
+    ICurrentMemberScope? currentMember = null) : IMetricsService
 {
+    /// <summary>当前身份（没人登录 = 单人本机模式 = 不过滤）。</summary>
+    private MemberScope? Scope => currentMember?.Current;
     private const int StaleAfterHours = 72;
     private const int ThroughputWeeks = 8;
 
@@ -41,7 +46,11 @@ public sealed class MetricsService(IAppDbContext db, IClock clock) : IMetricsSer
         var project = await db.Projects.AsNoTracking().FirstOrDefaultAsync(p => p.Id == projectId, cancellationToken)
                       ?? throw new NotFoundException("项目", projectId);
 
-        var tasks = await db.Tasks.AsNoTracking().Where(t => t.ProjectId == projectId).ToListAsync(cancellationToken);
+        // 可见性：计数也要按身份收 —— 否则「这个项目有 40 个活」本身就是一种泄露。
+        var tasks = await db.Tasks.AsNoTracking()
+            .VisibleTo(Scope)
+            .Where(t => t.ProjectId == projectId)
+            .ToListAsync(cancellationToken);
 
         // 用子查询而不是 IN 列表 —— 任务多了 IN 列表会撞 SQLite 的参数上限
         var doneEvents = await db.StatusEvents
@@ -78,6 +87,7 @@ public sealed class MetricsService(IAppDbContext db, IClock clock) : IMetricsSer
         var projectIds = projects.Select(p => p.Id).ToList();
 
         var allTasks = await db.Tasks.AsNoTracking()
+            .VisibleTo(Scope)
             .Where(t => projectIds.Contains(t.ProjectId))
             .ToListAsync(cancellationToken);
 

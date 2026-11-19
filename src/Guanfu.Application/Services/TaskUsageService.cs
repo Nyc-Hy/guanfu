@@ -82,13 +82,19 @@ public sealed record ProjectUsageDto(
     IReadOnlyList<TaskUsageDto> TopTasks,
     IReadOnlyList<AgentUsageDto> Agents);
 
-public sealed class TaskUsageService(IAppDbContext db) : ITaskUsageService
+public sealed class TaskUsageService(
+    IAppDbContext db,
+    ICurrentMemberScope? currentMember = null) : ITaskUsageService
 {
+    /// <summary>当前身份（没人登录 = 单人本机模式 = 不过滤）。</summary>
+    private MemberScope? Scope => currentMember?.Current;
     public async Task<TaskUsageDto> GetTaskUsageAsync(
         Guid taskId,
         CancellationToken cancellationToken = default)
     {
+        // 可见性：用量是**某个任务**的账 —— 看不见那个任务，就不该看见它的用量。
         var task = await db.Tasks.AsNoTracking()
+            .VisibleTo(Scope)
             .FirstOrDefaultAsync(t => t.Id == taskId, cancellationToken)
             ?? throw new NotFoundException("任务", taskId);
 

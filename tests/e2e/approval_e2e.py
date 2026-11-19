@@ -660,6 +660,78 @@ def main() -> int:
         else:
             print("  ⚠ 没签发出凭证，跳过成员审计断言")
 
+        # ── D15 个人数据隔离：拿别人的任务 id 直接调接口也不行 ────
+        print("\n-- D15 别人的任务 id 调不通 --")
+        member_user = f"e2e-iso-{suffix}"
+        member_password = "e2e-password-3"
+
+        iso_status, iso_body = rest_status(
+            rest,
+            "POST",
+            "/api/members",
+            {
+                "userName": member_user,
+                "displayName": "隔离成员",
+                "password": member_password,
+                "role": "Member",
+            },
+        )
+        expect(iso_status in (200, 201), f"该能建成员（实际 {iso_status}）")
+
+        iso_login_status, _, iso_cookie = rest_login(rest, member_user, member_password)
+        expect(iso_login_status == 200, f"成员该能登录（实际 {iso_login_status}）")
+
+        # 再建一个「别人」，用来当被分派的那一方
+        other_status, other_body = rest_status(
+            rest,
+            "POST",
+            "/api/members",
+            {
+                "userName": f"e2e-other-{suffix}",
+                "displayName": "另一位",
+                "password": member_password,
+                "role": "Member",
+            },
+        )
+        other_member_id = None
+        if other_status in (200, 201):
+            try:
+                other_member_id = json.loads(other_body).get("id")
+            except Exception:
+                other_member_id = None
+
+        if iso_cookie:
+            # 这个任务是 owner 建的、没分派 → 对成员是可见的（未分派谁都能看）。
+            # 所以先拿一个**分派给别人**的任务来试。
+            other_task = rest_json(
+                rest,
+                "POST",
+                f"/api/projects/{project_id}/tasks",
+                {"title": "e2e 隔离任务", "type": "requirement"},
+            )
+            rest_json(
+                rest,
+                "POST",
+                f"/api/tasks/{other_task['id']}/assign",
+                {"assignee": "别人", "assigneeMemberId": other_member_id},
+            )
+
+            status, body = rest_with_cookie(
+                rest, "GET", f"/api/tasks/{other_task['id']}", iso_cookie
+            )
+            expect(
+                status == 404,
+                f"成员不该能按 id 读到别人的任务（实际 HTTP {status}）",
+            )
+
+            status, body = rest_with_cookie(
+                rest, "GET", f"/api/tasks/{other_task['id']}/documents", iso_cookie
+            )
+            expect(
+                status == 404,
+                f"成员不该能按 id 读到别人的任务文档（实际 HTTP {status}）",
+            )
+
         section("结果")
         if FAILURES:
             print(f"❌ 失败 {len(FAILURES)} 项:")

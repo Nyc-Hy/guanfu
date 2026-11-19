@@ -90,8 +90,13 @@ public sealed record DispatchBoardDto(
     int InProgressCount,
     int BlockedCount);
 
-public sealed class DispatchService(IAppDbContext db, IClock clock) : IDispatchService
+public sealed class DispatchService(
+    IAppDbContext db,
+    IClock clock,
+    ICurrentMemberScope? currentMember = null) : IDispatchService
 {
+    /// <summary>当前身份（没人登录 = 单人本机模式 = 不过滤）。</summary>
+    private MemberScope? Scope => currentMember?.Current;
     public async Task<IReadOnlyList<DispatchSuggestionDto>> SuggestAsync(
         Guid projectId,
         int limit = 10,
@@ -102,7 +107,10 @@ public sealed class DispatchService(IAppDbContext db, IClock clock) : IDispatchS
         var take = Math.Clamp(limit, 1, 50);
         var now = clock.UtcNow;
 
+        // 可见性：调度板也是一条「读」的路 —— 成员不该在「现在能干」里
+        // 看见别人的活（那等于把别人的计划摊开）。
         var tasks = await db.Tasks.AsNoTracking()
+            .VisibleTo(Scope)
             .Where(t => t.ProjectId == projectId &&
                         !t.IsArchived &&
                         t.Status != TaskStatus.Done &&
@@ -308,6 +316,7 @@ public sealed class DispatchService(IAppDbContext db, IClock clock) : IDispatchS
         var now = clock.UtcNow;
 
         var tasks = await db.Tasks.AsNoTracking()
+            .VisibleTo(Scope)
             .Where(t => t.ProjectId == projectId &&
                         !t.IsArchived &&
                         t.Status != TaskStatus.Done &&

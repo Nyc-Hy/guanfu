@@ -59,8 +59,13 @@ public interface IProjectService
         int? maxToolCallsPerTask = null);
 }
 
-public sealed class ProjectService(IAppDbContext db, IClock clock) : IProjectService
+public sealed class ProjectService(
+    IAppDbContext db,
+    IClock clock,
+    ICurrentMemberScope? currentMember = null) : IProjectService
 {
+    /// <summary>当前身份（没人登录 = 单人本机模式 = 不过滤）。</summary>
+    private MemberScope? Scope => currentMember?.Current;
     /// <summary>超过这个时长没有动静就算停滞。</summary>
     public const int StaleAfterHours = 72;
 
@@ -220,7 +225,10 @@ public sealed class ProjectService(IAppDbContext db, IClock clock) : IProjectSer
         var result = new List<ProjectSummaryDto>(projects.Count);
         foreach (var project in projects)
         {
+            // 可见性：项目卡片上的计数也按身份收 ——
+            // 否则「这个项目有 40 个活」本身就是一种泄露。
             var tasks = await db.Tasks
+                .VisibleTo(Scope)
                 .Where(t => t.ProjectId == project.Id)
                 .AsNoTracking()
                 .ToListAsync(cancellationToken);
@@ -241,6 +249,7 @@ public sealed class ProjectService(IAppDbContext db, IClock clock) : IProjectSer
         }
 
         var tasks = await db.Tasks
+            .VisibleTo(Scope)
             .Where(t => t.ProjectId == id)
             .AsNoTracking()
             .ToListAsync(cancellationToken);
