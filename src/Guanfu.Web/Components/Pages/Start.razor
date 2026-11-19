@@ -1,0 +1,165 @@
+@page "/start"
+@rendermode InteractiveServer
+@using Microsoft.AspNetCore.Components.Authorization
+@inject IProjectService Projects
+@inject IMemberService Members
+@inject ICredentialService Credentials
+@inject IMilestoneService Milestones
+@inject ITaskService Tasks
+@inject IServiceScopeFactory ScopeFactory
+
+<PageTitle>上手 · 观复</PageTitle>
+
+<div class="wb-page-head">
+    <div>
+        <h1>上手清单</h1>
+        <p class="wb-muted">
+            观复是**给 agent 用的项目管理工具** —— 活是 agent 干的，看板是 agent 写的，
+            人负责点头与归档。按着下面六步走一遍，第一条活就能跑起来。
+        </p>
+    </div>
+</div>
+
+<section class="wb-panel">
+    <div class="wb-card-head">
+        <h3>六步</h3>
+        <span class="wb-muted">@DoneCount / @Steps.Count 已完成</span>
+    </div>
+
+    <div class="wb-table-scroll">
+        <table class="wb-table">
+            <thead>
+            <tr><th></th><th>步骤</th><th>为什么</th><th>去哪做</th></tr>
+            </thead>
+            <tbody>
+            @foreach (var step in Steps)
+            {
+                <tr>
+                    <td>
+                        @if (step.Done)
+                        {
+                            <span class="wb-tag wb-tag-ok">已完成</span>
+                        }
+                        else
+                        {
+                            <span class="wb-tag">待办</span>
+                        }
+                    </td>
+                    <td><strong>@step.Title</strong></td>
+                    <td class="wb-muted">@step.Why</td>
+                    <td>
+                        <a class="wb-btn" href="@step.Link">@step.Action</a>
+                    </td>
+                </tr>
+            }
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<section class="wb-panel">
+    <h3>三句话记住观复是什么</h3>
+    <ul class="wb-plain-list">
+        <li><strong>它不提供 AI 服务</strong> —— 不调模型、不跑 agent，只做过程记录、审批与归档。</li>
+        <li><strong>它不碰代码</strong> —— 代码是 agent 用自己的客户端工具改的；观复不数「改了哪些文件」。</li>
+        <li><strong>它只管过程与记录</strong> —— 做到哪一步、谁做的、哪些要人点头、产出的文档与脚本怎么归档与交付。</li>
+    </ul>
+</section>
+
+@code {
+    private sealed record Step(
+        string Title,
+        string Why,
+        string Link,
+        string Action,
+        bool Done);
+
+    private List<Step> Steps { get; set; } = [];
+
+    private int DoneCount => Steps.Count(s => s.Done);
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        try
+        {
+            using var scope = ScopeFactory.CreateScope();
+
+            var projects = await scope.ServiceProvider.GetRequiredService<IProjectService>().ListAsync();
+            var members = await scope.ServiceProvider.GetRequiredService<IMemberService>().ListAsync();
+            var credentials = await scope.ServiceProvider.GetRequiredService<ICredentialService>().ListAsync();
+            var tasks = await scope.ServiceProvider.GetRequiredService<ITaskService>().ListAsync();
+
+            var milestones = projects.Count == 0
+                ? []
+                : await Task.WhenAll(projects.Select(p =>
+                    scope.ServiceProvider.GetRequiredService<IMilestoneService>()
+                        .ListAsync(p.Id)));
+
+            var hasMilestone = milestones.Any(m => m.Count > 0);
+            var hasPackage = await HasDeliveryPackageAsync(projects, milestones);
+
+            Steps =
+            [
+                new("建一个项目",
+                    "项目是看板的容器 —— 任务、迭代版本、审批都挂在它下面。",
+                    "/?tab=projects&new=1", "去建项目", projects.Count > 0),
+
+                new("建一个成员（你自己）",
+                    "团队部署时「谁在操作」必须是真的。第一个成员就是管理员。",
+                    "/members", "去建成员", members.Count > 0),
+
+                new("给 agent 发一把钥匙",
+                    "凭证在签发时就把身份绑上 —— agent 的身份以它为准，请求头自称不算。",
+                    "/credentials", "去签发凭证", credentials.Count > 0),
+
+                new("把接入配置给 agent",
+                    "Claude Code / Codex 走 HTTP；只支持 stdio 的客户端走 `guanfu mcp` 桥接。",
+                    "/connect", "去复制配置", credentials.Count > 0),
+
+                new("建一个迭代版本，挂上第一个任务",
+                    "版本 → 需求组 → 任务，是交付的层级：打包时按版本圈内容。",
+                    "/", "去建任务", hasMilestone && tasks.Count > 0),
+
+                new("跑通第一个活，打个包发出去",
+                    "agent 领活 → 回写计划与产出 → 推进状态；人勾选文档与产物，打成 zip + 清单，"
+                    + "再用分享链接发给项管。",
+                    "/", "去看进度", hasPackage)
+            ];
+        }
+        catch (Exception ex)
+        {
+            Steps = [];
+            Error = PageError.From(ex, "读上手清单");
+        }
+    }
+
+    /// <summary>有没有打过包（交付的最后一公里）。</summary>
+    private async Task<bool> HasDeliveryPackageAsync(
+        IReadOnlyList<ProjectSummaryDto> projects,
+        IReadOnlyList<IReadOnlyList<MilestoneDto>> milestones)
+    {
+        using var scope = ScopeFactory.CreateScope();
+        var delivery = scope.ServiceProvider.GetRequiredService<IDeliveryPackageService>();
+
+        for (var i = 0; i < projects.Count && i < milestones.Count; i++)
+        {
+            foreach (var milestone in milestones[i])
+            {
+                var packages = await delivery.ListAsync(milestone.Id);
+                if (packages.Count > 0)
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private PageError? Error { get; set; }
+}

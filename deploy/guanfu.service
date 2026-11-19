@@ -1,0 +1,36 @@
+# 观复的 systemd 单元。
+#
+#   sudo cp deploy/guanfu.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now guanfu
+#   journalctl -u guanfu -f
+#
+[Unit]
+Description=观复 — 给 agent 用的项目管理工具
+After=network.target
+
+[Service]
+Type=simple
+User=guanfu
+Group=guanfu
+WorkingDirectory=/opt/guanfu
+
+# 环境变量放 /etc/guanfu/env（权限 600，里面可能有路径与开关）
+EnvironmentFile=-/etc/guanfu/env
+Environment=GUANFU_HOME=/var/lib/guanfu
+Environment=ASPNETCORE_URLS=http://127.0.0.1:5177
+
+ExecStart=/opt/guanfu/bin/guanfu-server
+
+# 进程崩了自动重启；观复自己不做主备
+Restart=on-failure
+RestartSec=5
+
+# 数据目录的写权限只给它自己
+ProtectSystem=strict
+ReadWritePaths=/var/lib/guanfu
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

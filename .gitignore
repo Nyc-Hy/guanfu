@@ -30,3 +30,6 @@ coverage*.xml
 
 # macOS
 .DS_Store
+
+# 发布包（scripts/publish.sh 的产物）—— 不进版本库
+dist/

@@ -197,11 +197,22 @@ static int TokenCommand()
 
 static async Task<int> ServeAsync(List<string> cliArgs)
 {
+    // **发布出来的包里**：同目录有 `guanfu-server`（自包含的服务端二进制）——
+    // 直接跑它，不需要源码，也不需要装 .NET。
+    var sibling = ResolveSiblingServer();
+    if (sibling is not null)
+    {
+        return await RunServerAsync(sibling, cliArgs);
+    }
+
+    // **源码树里**：退回到 `dotnet run --project`。
     var projectPath = ResolveWebProject();
     if (projectPath is null)
     {
         Console.Error.WriteLine(
-            "找不到 Guanfu.Web 工程。请用 --project <路径> 指定，或设置环境变量 WORKBENCH_WEB_PROJECT。");
+            "找不到观复服务端（guanfu-server），也找不到 Guanfu.Web 工程。" +
+            "发布包里应该有 guanfu-server；源码树里请用 --project <路径> 指定，"+
+            "或设置环境变量 WORKBENCH_WEB_PROJECT。");
         return 4;
     }
 
@@ -225,6 +236,86 @@ static async Task<int> ServeAsync(List<string> cliArgs)
 
     using var process = System.Diagnostics.Process.Start(startInfo)
                         ?? throw new GuanfuCliException("无法启动 dotnet 进程。");
+
+    await process.WaitForExitAsync();
+    return process.ExitCode;
+}
+
+/// <summary>
+/// 找同目录的 `guanfu-server`（发布包里的服务端二进制）。
+///
+/// 发布出来的观复是「两个二进制 + 一份说明」：服务端自包含，
+/// CLI 负责 stdio 桥接与命令行 —— 桥接是只支持 stdio 的 MCP 客户端唯一的入口。
+/// </summary>
+static string? ResolveSiblingServer()
+{
+    try
+    {
+        var self = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(self))
+        {
+            return null;
+        }
+
+        var dir = Path.GetDirectoryName(self);
+        if (string.IsNullOrWhiteSpace(dir))
+        {
+            return null;
+        }
+
+        var name = OperatingSystem.IsWindows() ? "guanfu-server.exe" : "guanfu-server";
+
+        // 发布包的结构：bin/guanfu-cli/（命令行）与 bin/guanfu-server/（服务端）是兄弟，
+        // 所以同目录找不到时要往上一级看一眼。
+        foreach (var baseDir in new[] { dir, Path.GetDirectoryName(dir) })
+        {
+            if (string.IsNullOrWhiteSpace(baseDir))
+            {
+                continue;
+            }
+
+            var candidate = Path.Combine(baseDir, name);
+
+            // 服务端是一个可执行文件
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+
+            // 或者一个**目录**（自包含发布：一堆 dll + wwwroot）
+            var inside = Path.Combine(candidate, name);
+            if (File.Exists(inside))
+            {
+                return inside;
+            }
+        }
+
+        return null;
+    }
+    catch (Exception)
+    {
+        return null;
+    }
+}
+
+/// <summary>跑同目录的服务端二进制。</summary>
+static async Task<int> RunServerAsync(string serverPath, List<string> cliArgs)
+{
+    Console.WriteLine($"启动观复: {serverPath}");
+
+    var startInfo = new System.Diagnostics.ProcessStartInfo
+    {
+        FileName = serverPath,
+        UseShellExecute = false
+    };
+
+    foreach (var arg in cliArgs)
+    {
+        startInfo.ArgumentList.Add(arg);
+    }
+
+    using var process = System.Diagnostics.Process.Start(startInfo)
+                        ?? throw new GuanfuCliException("无法启动观复服务端。");
 
     await process.WaitForExitAsync();
     return process.ExitCode;
