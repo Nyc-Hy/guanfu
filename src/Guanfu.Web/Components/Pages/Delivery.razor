@@ -6,6 +6,7 @@
 @inject IServiceScopeFactory ScopeFactory
 @inject NavigationManager Nav
 @inject IJSRuntime JS
+@inject HumanTokenAccessor Tokens
 
 <PageTitle>打包交付 · 观复</PageTitle>
 
@@ -83,24 +84,34 @@ else
             </div>
 
             <div class="wb-form-row wb-mt-3">
-                @if (Authorized)
-                {
-                    <button class="wb-btn wb-btn-primary" disabled="@(Busy || _selected.Count == 0)"
-                            @onclick="PackAsync">
-                        打包这 @_selected.Count 项
-                    </button>
-                    <span class="wb-muted">打出来的是一个 zip，里面带一份清单（清单.md + manifest.json）。</span>
-                }
-                else
-                {
-                    @* 打包是要**发出去**的东西 —— 与导出同级，要有人在场。 *@
-                    <span class="wb-muted">打包交付需要人工凭证（东西要发出去，得有人点头）。</span>
-                }
+                @* 按钮一直在 —— 没凭证时置灰并说明为什么，别让人以为功能没了。 *@
+                <button class="wb-btn wb-btn-primary"
+                        disabled="@(Busy || _selected.Count == 0 || !Authorized)"
+                        @onclick="PackAsync"
+                        title="@(Authorized ? "打出来的是一个 zip，里面带一份清单" : "打包要人工凭证：东西要发出去，得有人点头")">
+                    打包这 @_selected.Count 项
+                </button>
+                <span class="wb-muted">打出来的是一个 zip，里面带一份清单（清单.md + manifest.json）。</span>
             </div>
 
             @if (!Authorized)
             {
-                <PageTokenGate @bind-Authorized="Authorized" />
+                @* 打包是要**发出去**的东西 —— 与导出同级，要有人在场。
+                   一个面板把两条路说清（登录 / 贴 token），别拆成两块。 *@
+                <div class="wb-form-row wb-mt-3">
+                    <span class="wb-muted">人工凭证</span>
+                    <input class="wb-input" type="password" placeholder="人工 token（控制台里那串）"
+                           @oninput="OnTokenInputChanged" />
+                    <button class="wb-btn" disabled="@string.IsNullOrWhiteSpace(TokenInput)"
+                            @onclick="VerifyTokenAsync">验证</button>
+                </div>
+                <p class="wb-muted">
+                    在本机打开观复时会自动获取；远程访问请从启动观复的控制台复制人工 token，粘贴到上面。
+                </p>
+                @if (!string.IsNullOrWhiteSpace(TokenHint))
+                {
+                    <p class="wb-hint">@TokenHint</p>
+                }
             }
         }
     </section>
@@ -223,6 +234,29 @@ else
     private bool Loading { get; set; } = true;
     private bool Busy { get; set; }
     private bool Authorized { get; set; }
+
+    /// <summary>粘贴的人工凭证。</summary>
+    private string TokenInput { get; set; } = string.Empty;
+
+    /// <summary>凭证验证的提示。</summary>
+    private string? TokenHint { get; set; }
+
+    private void OnTokenInputChanged(ChangeEventArgs args) =>
+        TokenInput = args.Value?.ToString() ?? string.Empty;
+
+    /// <summary>验证粘贴的人工凭证（owner 本人在场）。</summary>
+    private void VerifyTokenAsync()
+    {
+        if (ApprovalUiGuard.CanDecide(TokenInput, Tokens.Token))
+        {
+            TokenInput = string.Empty;
+            TokenHint = null;
+            Authorized = true;
+            return;
+        }
+
+        TokenHint = ApprovalUiGuard.InvalidTokenMessage;
+    }
     private PageError? Error { get; set; }
     private PageError? LoadError { get; set; }
 
