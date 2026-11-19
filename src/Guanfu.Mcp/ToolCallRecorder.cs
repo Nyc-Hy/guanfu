@@ -62,6 +62,10 @@ public sealed class ToolCallRecorder(
                 ?? session?.AgentId
                 ?? sessions?.CurrentAgentId;
 
+            // 这把钥匙背后的人（成员显示名）。
+            // agent 自报的名字不算数 —— 「是谁」得由签发凭证时绑定的成员说了算。
+            var memberName = sessions?.CurrentCredential?.MemberName;
+
             await audit.RecordAsync(new ToolAuditEntry(
                 toolName,
                 callerId,
@@ -73,7 +77,8 @@ public sealed class ToolCallRecorder(
                 Outcome: outcome,
                 ResultSummary: null,
                 RowsAffected: null,
-                DurationMs: durationMs), cancellationToken);
+                DurationMs: durationMs,
+                MemberName: memberName), cancellationToken);
         }
         catch (Exception)
         {

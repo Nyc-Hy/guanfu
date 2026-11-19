@@ -82,7 +82,7 @@ public sealed record ProjectUsageDto(
     IReadOnlyList<TaskUsageDto> TopTasks,
     IReadOnlyList<AgentUsageDto> Agents);
 
-public sealed class TaskUsageService(IAppDbContext db, IClock clock) : ITaskUsageService
+public sealed class TaskUsageService(IAppDbContext db) : ITaskUsageService
 {
     public async Task<TaskUsageDto> GetTaskUsageAsync(
         Guid taskId,

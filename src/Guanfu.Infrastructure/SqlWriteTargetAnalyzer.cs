@@ -284,7 +284,7 @@ public static class SqlWriteTargetAnalyzer
         // 认不出就整条判失败，不能只盯着主表放行。
         if (outputInto is not null)
         {
-            var extra = ToTableName(outputInto.IntoTable, null, resolveAlias: false);
+            var extra = ToTableName(outputInto.IntoTable, aliases: null, resolveAlias: false);
             if (extra is null)
             {
                 return null;
@@ -296,7 +296,7 @@ public static class SqlWriteTargetAnalyzer
         return new SqlWriteStatementTarget(type, tables);
     }
 
-    private static string? ToTableName(TableReference? reference, AliasScope aliases, bool resolveAlias) =>
+    private static string? ToTableName(TableReference? reference, AliasScope? aliases, bool resolveAlias) =>
         reference is NamedTableReference named ? ToTableName(named.SchemaObject, aliases, resolveAlias) : null;
 
     /// <summary>

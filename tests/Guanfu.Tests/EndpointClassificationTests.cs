@@ -106,6 +106,8 @@ public class EndpointClassificationTests
         "POST /api/workspace/export",
         "POST /api/workspace/import",
         "POST /api/audit/archive",
+        "POST /api/credentials",
+        "DELETE /api/credentials/{credentialId:guid}",
     };
 
     [Fact]

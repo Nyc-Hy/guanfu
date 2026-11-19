@@ -17,7 +17,9 @@ public sealed record ToolAuditEntry(
     string Outcome,
     string? ResultSummary,
     int? RowsAffected,
-    long DurationMs);
+    long DurationMs,
+    /// <summary>这把钥匙背后的人（成员显示名）。</summary>
+    string? MemberName = null);
 
 public interface IToolAuditService
 {
@@ -63,7 +65,9 @@ public sealed record ToolAuditDto(
     string? ResultSummary,
     int? RowsAffected,
     long DurationMs,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    /// <summary>这把钥匙背后的人（成员显示名）。</summary>
+    string? MemberName = null);
 
 /// <summary>工具调用审计。append-only：只追加，不修改不删除。</summary>
 public sealed class ToolAuditService(IAppDbContext db, IClock clock) : IToolAuditService
@@ -104,7 +108,10 @@ public sealed class ToolAuditService(IAppDbContext db, IClock clock) : IToolAudi
                 DurationMs = entry.DurationMs,
                 CreatedAt = clock.UtcNow,
                 Sequence = (last?.Sequence ?? 0) + 1,
-                PrevHash = last?.Hash
+                PrevHash = last?.Hash,
+                MemberName = entry.MemberName,
+                // 新记录一律用第 2 版格式（带成员）。
+                HashVersion = CurrentHashVersion
             };
 
             record.Hash = ComputeHash(record, record.PrevHash);
@@ -129,7 +136,23 @@ public sealed class ToolAuditService(IAppDbContext db, IClock clock) : IToolAudi
     /// 字段之间用 单元分隔符（U+001F）隔开 —— 不用普通分隔符的话，
     /// 字段值里出现分隔符就能伪造出另一条记录的哈希。
     /// </summary>
-    internal static string ComputeHash(ToolCallAudit record, string? prevHash)
+    /// <summary>当前写入用的哈希格式版本。</summary>
+    internal const int CurrentHashVersion = 2;
+
+    /// <summary>
+    /// 一条审计记录的哈希：内容 + 上一条的哈希。
+    ///
+    /// **按记录自己的版本算** —— 链的格式改过（加了成员那一列），
+    /// 老记录仍是第 1 版格式，新记录是第 2 版，两代同处一条链里也验得过。
+    /// 版本这一列不在哈希里，但改它一样会被发现（版本对不上 → 哈希对不上）。
+    /// </summary>
+    internal static string ComputeHash(ToolCallAudit record, string? prevHash) =>
+        record.HashVersion >= 2
+            ? ComputeHashV2(record, prevHash)
+            : ComputeHashV1(record, prevHash);
+
+    /// <summary>第 1 版格式（老记录）：字段顺序与当年一模一样，别动。</summary>
+    private static string ComputeHashV1(ToolCallAudit record, string? prevHash)
     {
         var canonical = string.Join('\u001F',
             prevHash ?? string.Empty,
@@ -147,8 +170,35 @@ public sealed class ToolAuditService(IAppDbContext db, IClock clock) : IToolAudi
             record.DurationMs.ToString(CultureInfo.InvariantCulture),
             record.CreatedAt.UtcTicks.ToString(CultureInfo.InvariantCulture));
 
-        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
+        return Hash(canonical);
     }
+
+    /// <summary>第 2 版格式：在第 1 版的基础上把「这把钥匙背后的人」也算进去。</summary>
+    private static string ComputeHashV2(ToolCallAudit record, string? prevHash)
+    {
+        var canonical = string.Join('\u001F',
+            "v2",
+            prevHash ?? string.Empty,
+            record.Sequence.ToString(CultureInfo.InvariantCulture),
+            record.ToolName,
+            record.CallerId ?? string.Empty,
+            record.MemberName ?? string.Empty,
+            record.ProjectId?.ToString() ?? string.Empty,
+            record.TaskId?.ToString() ?? string.Empty,
+            record.Arguments,
+            record.RequiredApproval ? "1" : "0",
+            record.ApprovalId?.ToString() ?? string.Empty,
+            record.Outcome,
+            record.ResultSummary ?? string.Empty,
+            record.RowsAffected?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
+            record.DurationMs.ToString(CultureInfo.InvariantCulture),
+            record.CreatedAt.UtcTicks.ToString(CultureInfo.InvariantCulture));
+
+        return Hash(canonical);
+    }
+
+    private static string Hash(string canonical) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
 
     /// <summary>
     /// 验哈希链：从头走一遍，重算每条的哈希，看对不对得上。
@@ -296,6 +346,7 @@ public sealed class ToolAuditService(IAppDbContext db, IClock clock) : IToolAudi
             a.ResultSummary,
             a.RowsAffected,
             a.DurationMs,
-            a.CreatedAt)).ToList();
+            a.CreatedAt,
+            a.MemberName)).ToList();
     }
 }

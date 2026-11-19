@@ -537,6 +537,65 @@ def main() -> int:
             f"没登录不该能看成员名单（实际 {no_session_status}）",
         )
 
+        # ── D14 成员的钥匙：审计里要出现「这把钥匙是谁的」 ──────────
+        print("\n-- D14 成员凭证的调用要在审计里留下成员 --")
+        member_user = f"e2e-key-{suffix}"
+        member_password = "e2e-password-2"
+
+        create_member_status, member_body = rest_status(
+            rest,
+            "POST",
+            "/api/members",
+            {
+                "userName": member_user,
+                "displayName": "钥匙主人",
+                "password": member_password,
+                "role": "Member",
+            },
+        )
+        expect(create_member_status in (200, 201), f"该能建成员（实际 {create_member_status}）")
+
+        member_id = None
+        if create_member_status in (200, 201):
+            try:
+                member_id = json.loads(member_body).get("id")
+            except Exception:
+                member_id = None
+
+        issue_status, issue_body = rest_status(
+            rest,
+            "POST",
+            "/api/credentials",
+            {
+                "kind": "Agent",
+                "subject": "e2e-member-agent",
+                "memberId": member_id,
+                "note": "e2e 成员凭证",
+            },
+        )
+        expect(issue_status in (200, 201), f"该能签发凭证（实际 {issue_status}）")
+
+        token = None
+        if issue_status in (200, 201):
+            try:
+                token = json.loads(issue_body).get("token")
+            except Exception:
+                token = None
+
+        if token:
+            member_client = Mcp(args.url, headers={"X-Guanfu-Token": token})
+            member_client.initialize()
+            member_client.call("guanfu_list_projects", {})
+
+            audit_rows = rest_json(rest, "GET", "/api/audit?limit=200")
+            owned = [r for r in audit_rows if r.get("memberName") == "钥匙主人"]
+            expect(
+                len(owned) >= 1,
+                f"审计里该出现这把钥匙背后的人（实际：{len(owned)} 条）",
+            )
+        else:
+            print("  ⚠ 没签发出凭证，跳过成员审计断言")
+
         section("结果")
         if FAILURES:
             print(f"❌ 失败 {len(FAILURES)} 项:")

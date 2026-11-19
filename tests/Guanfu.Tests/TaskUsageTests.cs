@@ -33,7 +33,7 @@ public class TaskUsageTests
             RequiredApproval: false, ApprovalId: null,
             Outcome: "success", ResultSummary: null, RowsAffected: null, DurationMs: 1));
 
-        var usage = await new TaskUsageService(host.Db, host.Clock).GetTaskUsageAsync(task.Id);
+        var usage = await new TaskUsageService(host.Db).GetTaskUsageAsync(task.Id);
 
         Assert.Equal(3, usage.ToolCalls);
         Assert.Equal(1, usage.UniqueTools);
@@ -55,7 +55,7 @@ public class TaskUsageTests
             RequiredApproval: false, ApprovalId: null,
             Outcome: "success", ResultSummary: null, RowsAffected: null, DurationMs: 1));
 
-        var board = await new TaskUsageService(host.Db, host.Clock).GetProjectUsageAsync(project.Id);
+        var board = await new TaskUsageService(host.Db).GetProjectUsageAsync(project.Id);
 
         Assert.Equal(2, board.TotalTasks);
         Assert.Equal(1, board.TotalToolCalls);
@@ -70,7 +70,7 @@ public class TaskUsageTests
         var project = await host.Projects.CreateAsync("P");
         var task = await host.Tasks.CreateAsync(project.Id, "一");
 
-        var budget = await new TaskUsageService(host.Db, host.Clock)
+        var budget = await new TaskUsageService(host.Db)
             .GetCallBudgetAsync(project.Id, task.Id);
 
         Assert.False(budget.Over);
@@ -85,7 +85,7 @@ public class TaskUsageTests
         await host.Projects.UpdateConfigAsync(project.Id, maxToolCallsPerTask: 2);
         var task = await host.Tasks.CreateAsync(project.Id, "一");
 
-        var service = new TaskUsageService(host.Db, host.Clock);
+        var service = new TaskUsageService(host.Db);
 
         for (var i = 0; i < 2; i++)
         {

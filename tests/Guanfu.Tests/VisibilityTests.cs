@@ -203,6 +203,61 @@ public sealed class VisibilityTests
     }
 
     [Fact]
+    public async Task 停用的成员老Cookie不算数()
+    {
+        using var host = new GuanfuTestHost();
+        var members = new MemberService(host.Db, host.Clock);
+
+        var alice = await members.CreateAsync("alice", "爱丽丝", "password-1");
+        await members.SetDisabledAsync(alice.Id, true);
+
+        var scope = new Web.CurrentMemberScope(
+            new Microsoft.AspNetCore.Http.HttpContextAccessor { HttpContext = null },
+            host.Db);
+
+        var principal = new System.Security.Claims.ClaimsPrincipal(
+            new System.Security.Claims.ClaimsIdentity(
+                [
+                    new System.Security.Claims.Claim(Web.MemberAuth.MemberIdClaim, alice.Id.ToString()),
+                    new System.Security.Claims.Claim(Web.MemberAuth.RoleClaim, "Member"),
+                    new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.Name, "爱丽丝")
+                ],
+                "test"));
+
+        // 停用之后，老 Cookie 不该继续算数
+        Assert.Null(await scope.ResolveAsync(principal));
+        Assert.Null(scope.Current);
+    }
+
+    [Fact]
+    public async Task 在职成员的Cookie算数()
+    {
+        using var host = new GuanfuTestHost();
+        var members = new MemberService(host.Db, host.Clock);
+
+        var alice = await members.CreateAsync("alice", "爱丽丝", "password-1");
+
+        var scope = new Web.CurrentMemberScope(
+            new Microsoft.AspNetCore.Http.HttpContextAccessor { HttpContext = null },
+            host.Db);
+
+        var principal = new System.Security.Claims.ClaimsPrincipal(
+            new System.Security.Claims.ClaimsIdentity(
+                [
+                    new System.Security.Claims.Claim(Web.MemberAuth.MemberIdClaim, alice.Id.ToString()),
+                    new System.Security.Claims.Claim(Web.MemberAuth.RoleClaim, "Member"),
+                    new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.Name, "爱丽丝")
+                ],
+                "test"));
+
+        var resolved = await scope.ResolveAsync(principal);
+
+        Assert.NotNull(resolved);
+        Assert.Equal(alice.Id, resolved!.MemberId);
+        Assert.Equal("爱丽丝", resolved.DisplayName);
+    }
+
+    [Fact]
     public async Task 普通成员只看得到自己的待批()
     {
         using var host = new GuanfuTestHost();

@@ -42,7 +42,9 @@ public sealed record CredentialIdentity(
     /// <summary>归属的成员（agent 凭证背后站着的那个人）。</summary>
     Guid? MemberId = null,
     /// <summary>归属成员的角色（管理员 / 成员）。</summary>
-    MemberRole? MemberRole = null)
+    MemberRole? MemberRole = null,
+    /// <summary>归属成员的显示名（审计里给人看的那一列）。</summary>
+    string? MemberName = null)
 {
     /// <summary>这个身份能不能看这个项目。</summary>
     public bool AllowsProject(Guid projectId) =>
@@ -162,6 +164,7 @@ public sealed class CredentialService(IAppDbContext db, IClock clock) : ICredent
 
             // 归属的成员被停用 → 名下的钥匙立刻失效（「人走了，钥匙还在」是最大的洞）。
             MemberRole? role = null;
+            string? memberName = null;
 
             if (candidate.MemberId is Guid memberId)
             {
@@ -174,6 +177,7 @@ public sealed class CredentialService(IAppDbContext db, IClock clock) : ICredent
                 }
 
                 role = member.Role;
+                memberName = member.DisplayName;
             }
 
             return new CredentialIdentity(
@@ -182,7 +186,8 @@ public sealed class CredentialService(IAppDbContext db, IClock clock) : ICredent
                 ParseScope(candidate.ProjectScope),
                 Fingerprint(candidate.TokenHash),
                 candidate.MemberId,
-                role);
+                role,
+                memberName);
         }
 
         return null;

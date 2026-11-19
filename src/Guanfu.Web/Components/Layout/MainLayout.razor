@@ -213,16 +213,18 @@
             var state = await AuthStateTask;
             var user = state.User;
 
-            if (user.Identity?.IsAuthenticated == true)
+            // 身份要**到库里核对**（停用/删号后老 Cookie 不该继续管用），
+            // 核对过的身份再回填给服务层 —— 电路里拿不到 HttpContext，
+            // 「普通成员只看自己的东西」这条规则要靠它才生效。
+            var scope = await CurrentScope.ResolveAsync(user);
+
+            if (scope is not null)
             {
-                CurrentUser = user.Identity.Name;
-                IsAdmin = MemberAuth.IsAdmin(user);
+                CurrentUser = scope.DisplayName;
+                IsAdmin = scope.IsAdmin;
             }
 
-            // 把身份回填给服务层 —— 电路里拿不到 HttpContext，
-            // 「普通成员只看自己的东西」这条规则要靠它才生效。
-            CurrentScope.SetFallback(
-                CurrentMemberScope.FromPrincipal(user));
+            CurrentScope.SetFallback(scope);
         }
         catch (Exception)
         {

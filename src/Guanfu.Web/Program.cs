@@ -180,6 +180,9 @@ app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
 
+// 身份解析：Cookie 里的成员要**到库里核对**（停用/删号后老 Cookie 不该继续管用）。
+app.UseMiddleware<MemberScopeMiddleware>();
+
 // 开发时静态文件别缓存：改完 CSS / JS 刷新就该看到新的。
 // 默认中间件会带 Last-Modified，浏览器拿到 304 就继续用本地副本 ——
 // 人会以为「改了没生效」，其实拿的是旧文件。

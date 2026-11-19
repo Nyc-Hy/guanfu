@@ -205,6 +205,20 @@ public static class HumanTokenPolicy
             return IsPost(method);
         }
 
+        // /api/credentials —— 发钥匙 = 给身份。拿到钥匙的人能顶替身份操作，
+        // 与裁决审批同权：没有人工凭证不许签发。
+        if (segments.Length == 2
+            && segments[1].Equals("credentials", StringComparison.OrdinalIgnoreCase))
+        {
+            return IsPost(method);
+        }
+
+        if (segments.Length == 3
+            && segments[1].Equals("credentials", StringComparison.OrdinalIgnoreCase))
+        {
+            return IsDelete(method);
+        }
+
         // PUT /api/projects/{id}/spec —— 改项目级规约（DoD / 提交约定 / 测试命令）。
         // 规矩是**人的决定**：agent 读它、照着做，但不该自己改「什么算做完」。
         if (segments.Length == 4

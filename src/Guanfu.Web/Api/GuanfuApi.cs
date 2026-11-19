@@ -1001,6 +1001,39 @@ public static class GuanfuApi
 
         // ---- 工具调用审计 ----
         // 审计表一直在写，但没有查询入口 —— 出了事没法复盘。补上。
+        // ---- 访问凭证 ----
+        // 「给人发钥匙」跟裁决审批同权：拿到钥匙的人能顶替身份操作。
+        // 所以这三个端点要人工凭证（界面上那页也是同一道门）。
+        api.MapGet("/credentials", async (ICredentialService credentials, CancellationToken ct) =>
+            Results.Ok(await credentials.ListAsync(ct)));
+
+        api.MapPost("/credentials", async (
+            IssueCredentialRequest request, ICredentialService credentials, CancellationToken ct) =>
+        {
+            if (!Enum.TryParse<CredentialKind>(request.Kind, ignoreCase: true, out var kind))
+            {
+                return Results.BadRequest($"未知凭证种类: {request.Kind}");
+            }
+
+            var issued = await credentials.IssueAsync(
+                kind,
+                request.Subject,
+                request.ProjectScope,
+                request.Note,
+                request.ExpiresAt,
+                "owner",
+                request.MemberId);
+
+            return Results.Created($"/api/credentials/{issued.Id}", issued);
+        });
+
+        api.MapDelete("/credentials/{credentialId:guid}", async (
+            Guid credentialId, ICredentialService credentials, CancellationToken ct) =>
+        {
+            var revoked = await credentials.RevokeAsync(credentialId, ct);
+            return revoked ? Results.NoContent() : Results.NotFound(new { error = "凭证不存在或已吊销。" });
+        });
+
         api.MapGet("/audit", async (
             IToolAuditService audit, string? toolName, Guid? taskId, Guid? projectId, int? limit, CancellationToken ct) =>
         {
@@ -1071,6 +1104,17 @@ public sealed record CreateTaskRequest(
 /// <summary>改任务。Type 传了才改。</summary>
 public sealed record UpdateTaskRequest(string? Type = null);
 public sealed record ChangeStatusRequest(string Status, string? Note, string? Actor, string? Source);
+/// <summary>领任务。</summary>
+/// <summary>签发一把凭证。</summary>
+public sealed record IssueCredentialRequest(
+    string Kind,
+    string Subject,
+    IReadOnlyList<Guid>? ProjectScope = null,
+    string? Note = null,
+    DateTimeOffset? ExpiresAt = null,
+    /// <summary>归属的成员（agent 凭证背后站着的那个人）。</summary>
+    Guid? MemberId = null);
+
 /// <summary>领任务。</summary>
 public sealed record ClaimTaskRequest(
     string AgentId,

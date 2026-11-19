@@ -44,7 +44,7 @@ public class DispatchServiceTests
         Assert.Equal(1, board.BlockedCount);
         Assert.Equal(task.Id, board.Blocked[0].Id);
         Assert.Equal(1, board.Blocked[0].PendingDependencies);
-        Assert.Equal([blocker.Key], board.Blocked[0].BlockedBy);
+        Assert.Equal([blocker.Key!], board.Blocked[0].BlockedBy);
         Assert.Equal(1, board.Blocked[0].BlockDepth);
     }
 

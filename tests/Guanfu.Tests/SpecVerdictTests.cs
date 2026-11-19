@@ -48,8 +48,9 @@ public class SpecVerdictTests
 
         var pack = await host.Reviews.GetPackAsync(task.Id);
 
-        Assert.Equal("Passed", pack.SpecItems!.Single().Status);
-        Assert.Equal("补了 3 个用例", pack.SpecItems.Single().Note);
+        var items = pack.SpecItems!;
+        Assert.Equal("Passed", items.Single().Status);
+        Assert.Equal("补了 3 个用例", items.Single().Note);
     }
 
     [Fact]

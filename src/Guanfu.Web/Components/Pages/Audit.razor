@@ -135,6 +135,7 @@ else
                 <th>时间</th>
                 <th>做了什么</th>
                 <th>调用方</th>
+                <th>谁的人</th>
                 <th>项目 / 任务</th>
                 <th>结果</th>
                 <th>耗时</th>
@@ -156,6 +157,18 @@ else
                         else
                         {
                             <span class="wb-chip wb-chip-agent">@row.CallerId</span>
+                        }
+                    </td>
+                    <td>
+                        @* 这把钥匙背后的人 —— agent 自报的名字不算数，
+                           身份以签发凭证时绑定的成员为准。 *@
+                        @if (string.IsNullOrWhiteSpace(row.MemberName))
+                        {
+                            <span class="wb-muted">—</span>
+                        }
+                        else
+                        {
+                            <span class="wb-chip">@row.MemberName</span>
                         }
                     </td>
                     <td>
