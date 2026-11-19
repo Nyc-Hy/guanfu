@@ -499,6 +499,30 @@ AI 写的脚本能跑，但不一定合乎生产口径 —— **人改是常态*
 
 ## 12. CLI（`guanfu`）速查
 
+> **本地配套**：观复是服务端的中枢，但活发生在各处 —— agent 在自己的机器上，
+> 团队的 CI 与部署脚本也在自己的机器上。它们把结果报进来的口子就是这几个命令：
+
+```bash
+# 把本地结果报进观复（CI、部署脚本、git 钩子都能用）
+guanfu report status   REQ-001 InDev --note "脚本推进的"
+guanfu report artifact REQ-001 --title "建表.sql" --type SqlScript --file dist/order.sql
+guanfu report plan     REQ-001 --understanding "..." --breakdown "..."
+guanfu report test     REQ-001 --total 10 --passed 9 --coverage 0.92
+guanfu report doc      REQ-001 ./发布说明.md --kind delivery
+
+# 交付打包（要人工凭证：--token 或 GUANFU_HUMAN_TOKEN）
+guanfu delivery candidates "12 月版本"     # 这个版本下能打包什么
+guanfu delivery pack "12 月版本" --share    # 打包并打印分享链接
+guanfu delivery list "12 月版本"
+
+# 接 agent 的配置片段
+guanfu agent-config --client http         # 或 --client stdio
+```
+
+> 编号与名字处处能认：`REQ-001`、`12 月版本` 不用去翻 GUID。
+
+其余命令：
+
 全局：`--url <地址>`（默认 http://127.0.0.1:5177，或 `WORKBENCH_URL`）、`--token <凭证>`（§3）。
 
 ```

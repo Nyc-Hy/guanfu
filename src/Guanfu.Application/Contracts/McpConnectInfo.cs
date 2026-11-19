@@ -1,4 +1,4 @@
-namespace Guanfu.Web;
+namespace Guanfu.Application.Contracts;
 
 /// <summary>
 /// 接入 agent 的配置片段。

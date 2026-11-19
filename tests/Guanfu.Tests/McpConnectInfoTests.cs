@@ -1,6 +1,8 @@
 using System.Text.Json;
 using Guanfu.Web;
 
+using Guanfu.Application.Contracts;
+
 namespace Guanfu.Tests;
 
 /// <summary>

@@ -816,6 +816,11 @@ public static class GuanfuApi
             return Results.File(path, "application/zip", package.FileName);
         });
 
+        // ---- 今天的局面 ----
+        // 命令行与脚本要看「现在该我做什么」时用同一份口径（界面上的首页也是它）。
+        api.MapGet("/overview", async (IOverviewService overview, CancellationToken ct) =>
+            Results.Ok(await overview.GetAsync(ct)));
+
         // ---- 度量 ----
         api.MapGet("/metrics", async (IMetricsService metrics, CancellationToken ct) =>
             Results.Ok(await metrics.GetAllAsync(ct)));

@@ -1,5 +1,6 @@
 ﻿using System.Text.Json;
 using Guanfu.Application.Contracts;
+using static Guanfu.Cli.CliArgs;
 using Guanfu.Application.Services;
 using Guanfu.Cli;
 
@@ -85,6 +86,12 @@ try
             return await ReviewCommandAsync(url, cliArgs);
         case "audit":
             return await AuditCommandAsync(url, cliArgs);
+        case "report":
+            return await ReportCommand.RunAsync(url, cliArgs);
+        case "delivery":
+            return await DeliveryCommand.RunAsync(url, cliArgs);
+        case "agent-config":
+            return AgentConfigCommand.Run(url, cliArgs);
         case "db":
             return await DbCommandAsync(url, cliArgs);
         case "token":
@@ -114,6 +121,9 @@ static void PrintUsage()
         用法:
           guanfu serve                              启动 Web（UI + REST + MCP 端点）
           guanfu mcp                                stdio ↔ HTTP 的 MCP 桥接
+          guanfu report                             把本地结果报进观复（状态/产出/计划/测试/文档）
+          guanfu delivery                           交付打包与分享链接
+          guanfu agent-config [--client http|stdio] 打印接 agent 的配置片段
           guanfu project list                       列出项目
           guanfu project add <名称> [--desc 描述]
           guanfu project show <项目ID>
@@ -132,7 +142,7 @@ static void PrintUsage()
           guanfu milestone list <项目ID>
           guanfu milestone create <项目ID> <名称> [--desc 描述]
           guanfu milestone delete <里程碑ID>
-          guanfu milestone assign <任务ID> <里程碑ID>     传 0 表示摘出来
+          guanfu milestone assign <任务ID或编号> <里程碑ID或名字>   传 0 表示摘出来
           guanfu metrics [<项目ID>]
           guanfu workspace export <目录>
           guanfu workspace import <目录> --home <目标数据目录>
@@ -1043,13 +1053,30 @@ static async Task<int> MilestoneCommandAsync(string url, List<string> cliArgs)
         {
             if (cliArgs.Count < 3)
             {
-                Console.Error.WriteLine("用法: guanfu milestone assign <任务ID> <里程碑ID>（传 0 表示摘出来）");
+                Console.Error.WriteLine("用法: guanfu milestone assign <任务ID或编号> <里程碑ID或名字>（传 0 表示摘出来）");
                 return 1;
             }
 
-            Guid? milestoneId = Arg(cliArgs, 2) == "0" ? null : ParseGuidArg(Arg(cliArgs, 2), "里程碑 ID");
+            // 人说「REQ-001」「12 月版本」—— 编号与名字都要认。
+            var taskId = await CliResolve.TaskIdAsync(client, Arg(cliArgs, 1));
+
+            if (taskId is null)
+            {
+                Console.Error.WriteLine($"找不到任务：{Arg(cliArgs, 1)}");
+                return 1;
+            }
+
+            Guid? milestoneId = Arg(cliArgs, 2) == "0"
+                ? null
+                : await CliResolve.MilestoneIdAsync(client, Arg(cliArgs, 2));
+
+            if (Arg(cliArgs, 2) != "0" && milestoneId is null)
+            {
+                Console.Error.WriteLine($"找不到迭代版本：{Arg(cliArgs, 2)}");
+                return 1;
+            }
             var task = await client.PostAsync<TaskSummaryDto>(
-                $"/api/tasks/{Arg(cliArgs, 1)}/milestone", new { milestoneId });
+                $"/api/tasks/{taskId}/milestone", new { milestoneId });
             Console.WriteLine($"已更新任务 {task.Id} 的里程碑。");
             return 0;
         }
@@ -1329,16 +1356,6 @@ static async Task<int> ToolCommandAsync(string url, List<string> cliArgs)
     }
 }
 
-/// <summary>解析 GUID，失败时给一句人话（原来直接抛 FormatException，退出码 3，错误信息是原始 .NET 异常）。</summary>
-static Guid ParseGuidArg(string value, string what)
-{
-    if (!Guid.TryParse(value, out var parsed))
-    {
-        throw new GuanfuCliException($"{what} 不是合法的 GUID: {value}");
-    }
-
-    return parsed;
-}
 
 /// <summary>解析整数，失败时给一句人话。</summary>
 static int ParseIntArg(string value, string what, int fallback)
@@ -1461,12 +1478,6 @@ static async Task<int> DbCommandAsync(string url, List<string> cliArgs)
     }
 }
 
-static string? GetOption(List<string> cliArgs, string name)
-{
-    var index = cliArgs.IndexOf(name);
-    return index >= 0 && index + 1 < cliArgs.Count ? cliArgs[index + 1] : null;
-}
-
 /// <summary>
 /// 第 n 个位置参数（0 起）。
 ///
@@ -1474,44 +1485,6 @@ static string? GetOption(List<string> cliArgs, string name)
 /// 选项写在位置参数前面就会读错（`guanfu task show --project X REQ-001` 读成 "--project"）。
 /// 选项值统一写成 <c>--name value</c>；布尔开关放最后，或用 <c>--name=value</c>。
 /// </summary>
-static string Arg(List<string> cliArgs, int index)
-{
-    var positionals = Positionals(cliArgs);
-
-    if (index < 0 || index >= positionals.Count)
-    {
-        throw new GuanfuCliException($"缺少位置参数（第 {index + 1} 个）。");
-    }
-
-    return positionals[index];
-}
-
-/// <summary>全部位置参数（选项和它的值不算）。</summary>
-static List<string> Positionals(List<string> cliArgs)
-{
-    var positionals = new List<string>();
-
-    for (var i = 0; i < cliArgs.Count; i++)
-    {
-        var arg = cliArgs[i];
-
-        if (arg.StartsWith("--", StringComparison.Ordinal))
-        {
-            // 选项的值紧随其后，一并跳过。
-            if (i + 1 < cliArgs.Count && !cliArgs[i + 1].StartsWith("--", StringComparison.Ordinal))
-            {
-                i++;
-            }
-
-            continue;
-        }
-
-        positionals.Add(arg);
-    }
-
-    return positionals;
-}
-
 static string Truncate(string value, int length) =>
     value.Length <= length ? value : value[..(length - 1)] + "…";
 
