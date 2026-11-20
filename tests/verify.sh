@@ -76,7 +76,13 @@ if [[ $E2E_CODE -eq 0 ]]; then
   record "端到端" "yes" "${PASSED} 条断言全过"
 else
   grep -E '✗' "$E2E_LOG" | head -30
-  record "端到端" "no" "${FAILED_CASES} 条断言没过"
+  # 「0 条断言没过」是个骗人的说法：链路崩了（脚本起不来、服务没起来）也是没跑完。
+  # 那种情况要说清楚是**没跑完**，不是「一条都没挂」。
+  if [[ "${FAILED_CASES:-0}" -eq 0 ]]; then
+    record "端到端" "no" "没跑完（${PASSED} 条跑过，链路中途出错）"
+  else
+    record "端到端" "no" "${FAILED_CASES} 条断言没过"
+  fi
 fi
 
 # ── 总账 ─────────────────────────────────────────────────────────────

@@ -4,12 +4,12 @@ using Guanfu.Domain;
 namespace Guanfu.Tests;
 
 /// <summary>
-/// 任务类型（需求/缺陷/优化）与分支绑定。
+/// 任务类型（需求 / 缺陷 / 优化）与按类型编号。
 ///
 /// 结构是 项目 → 迭代版本 → 需求/缺陷/优化；
-/// 任务项绑了分支，就只有仓库当前就在那个分支上才会运行。
+/// 各类型的编号前缀独立计数，改类型不改编号。
 /// </summary>
-public class TaskTypeAndBranchTests
+public class TaskTypeTests
 {
     // ── 类型与编号 ────────────────────────────────────────────────────
 
@@ -97,7 +97,4 @@ public class TaskTypeAndBranchTests
         Assert.False(TaskTypes.TryParse(null, out _));
         Assert.False(TaskTypes.TryParse("  ", out _));
     }
-
-    // ── 分支绑定 ──────────────────────────────────────────────────────
-
 }

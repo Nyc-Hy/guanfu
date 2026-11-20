@@ -81,7 +81,7 @@ fi
 status=0
 
 echo
-echo "### 链路 A/B/C：MCP 全链路（编号 → 结项、评审拦截、分支守卫）"
+echo "### 链路 A/B/C：MCP 全链路（编号 → 结项、评审拦截、类型编号）"
 python3 "$ROOT/tests/e2e/mcp_e2e.py" --url "http://127.0.0.1:$PORT" || status=1
 
 echo
