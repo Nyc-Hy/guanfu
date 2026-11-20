@@ -7,6 +7,8 @@
 @inject NavigationManager Nav
 @inject IJSRuntime JS
 @inject HumanTokenAccessor Tokens
+@using System.Security.Claims
+@using Microsoft.AspNetCore.Components.Authorization
 
 <PageTitle>打包交付 · 观复</PageTitle>
 
@@ -217,6 +219,9 @@ else
 
     [Parameter] public Guid MilestoneId { get; set; }
 
+    /// <summary>当前登录的人（谁打的包要写进账里）。</summary>
+    [CascadingParameter] private Task<AuthenticationState>? AuthStateTask { get; set; }
+
     private DeliveryCandidatesDto? Candidates { get; set; }
     private IReadOnlyList<DeliveryPackageDto> Packages { get; set; } = [];
     private readonly HashSet<Guid> _selected = new();
@@ -419,7 +424,7 @@ else
             using var scope = ScopeFactory.CreateScope();
             var delivery = scope.ServiceProvider.GetRequiredService<IDeliveryPackageService>();
 
-            await delivery.CreateAsync(MilestoneId, _selected.ToList(), "human");
+            await delivery.CreateAsync(MilestoneId, _selected.ToList(), await PackerNameAsync());
 
             _selected.Clear();
 
@@ -440,6 +445,37 @@ else
         item.Kind == "document"
             ? UiText.DocumentKind(item.KindLabel)
             : (item.KindLabel ?? "其它");
+
+    /// <summary>
+    /// 打包人 —— 账上要写清「谁打的包」。
+    /// 登录了就记成员的名字；没登录（owner 拿 token 在用）记「owner」。
+    /// </summary>
+    private async Task<string> PackerNameAsync()
+    {
+        if (AuthStateTask is not null)
+        {
+            try
+            {
+                var state = await AuthStateTask;
+
+                if (state.User.Identity?.IsAuthenticated == true)
+                {
+                    var name = state.User.Identity.Name;
+
+                    if (!string.IsNullOrWhiteSpace(name))
+                    {
+                        return name;
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                // 拿不到身份就当没登录
+            }
+        }
+
+        return "owner";
+    }
 
     private static string FormatSize(long bytes) =>
         bytes < 1024 ? $"{bytes} B" : $"{bytes / 1024.0:0.#} KB";
