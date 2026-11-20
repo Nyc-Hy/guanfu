@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Guanfu.Application;
 using Guanfu.Domain;
 
@@ -6,6 +7,9 @@ namespace Guanfu.Infrastructure;
 
 public sealed class GuanfuDbContext(DbContextOptions<GuanfuDbContext> options) : DbContext(options), IAppDbContext
 {
+    public Task<IDbContextTransaction> BeginWriteTransactionAsync(CancellationToken cancellationToken = default) =>
+        Database.BeginTransactionAsync(cancellationToken);
+
     public DbSet<Workspace> Workspaces => Set<Workspace>();
     public DbSet<Project> Projects => Set<Project>();
     public DbSet<TaskItem> Tasks => Set<TaskItem>();

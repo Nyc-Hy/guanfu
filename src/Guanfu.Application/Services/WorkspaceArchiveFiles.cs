@@ -6,8 +6,7 @@ namespace Guanfu.Application.Services;
 /// <summary>
 /// 工作区搬迁的纯文件操作。
 ///
-/// 单独拎出来是因为**导入不需要数据库**——它只是把 workbench.db、documents/、secret.key
-/// 三个文件搬到新目录。既然不碰数据库，就不必依赖服务在跑：
+/// 导入只搬数据库快照与工作区文件，因此可以在服务启动前执行：
 /// 换机时服务还没起，直接本地搬完再设 数据目录 就行。
 ///
 /// 放在应用层是刻意的：Infrastructure 的导出实现和 CLI 的本地导入共用同一份，
@@ -32,6 +31,7 @@ public static class WorkspaceArchiveFiles
 
     /// <summary>外部 agent 的运行日志目录名。</summary>
     public const string RunsFolderName = "runs";
+    public const string PackagesFolderName = "packages";
 
     /// <summary>
     /// secret.key 的兜底权限（0600，只有属主可读写）。
@@ -48,10 +48,7 @@ public static class WorkspaceArchiveFiles
         var source = Path.GetFullPath(sourceDirectory);
         var target = Path.GetFullPath(targetHomeDirectory);
 
-        // 边界必须**双向**判：
-        // 1) 目标在源里面 —— documents 目标目录先被 recursive 删除，而它正好就是源，导入把自己删掉；
-        // 2) 源在目标里面 —— 同样会被那次 recursive 删除干掉（比如拿 数据目录/backup 当源）。
-        // 只判一个方向等于只堵了一半。
+        // 不允许源和目标互相包含，避免归档切换影响作为输入的文件。
         if (PathBoundary.IsSameOrInside(source, target))
         {
             throw new GuanfuException(
@@ -61,8 +58,7 @@ public static class WorkspaceArchiveFiles
         if (PathBoundary.IsSameOrInside(target, source))
         {
             throw new GuanfuException(
-                $"源目录不能是目标目录本身或它的子目录: {source}（目标: {target}）。" +
-                "导入会先清空目标里的 documents/runs，那样会把源一起删掉。");
+                $"源目录不能是目标目录本身或它的子目录: {source}（目标: {target}）。");
         }
 
         // 老的导出包里库文件叫 workbench.db —— 两种都认
@@ -82,53 +78,41 @@ public static class WorkspaceArchiveFiles
         }
 
         cancellationToken.ThrowIfCancellationRequested();
-        Directory.CreateDirectory(target);
+        using var staging = new WorkspaceArchiveStaging(target);
 
-        var dbTarget = Path.Combine(target, DatabaseFileName);
+        var dbTarget = Path.Combine(staging.StagePath, DatabaseFileName);
         CopyFile(dbSource, dbTarget);
 
-        var fileCount = 1;
-        var totalBytes = new FileInfo(dbTarget).Length;
-
-        var documentsSource = Path.Combine(source, DocumentsFolderName);
-        var documentsTarget = Path.Combine(target, DocumentsFolderName);
-        if (Directory.Exists(documentsSource))
+        // 只替换备份中实际存在的目录。老包没有收录的能力和目标上的其他本机配置都保留。
+        var entries = new List<string>
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            ReplaceDirectory(documentsTarget);
-            CopyDirectory(documentsSource, documentsTarget, cancellationToken);
-            var (count, bytes) = Measure(documentsTarget);
-            fileCount += count;
-            totalBytes += bytes;
+            DatabaseFileName,
+            DatabaseFileName + "-wal",
+            DatabaseFileName + "-shm",
+            DatabaseFileName + "-journal"
+        };
+        foreach (var directory in new[] { DocumentsFolderName, RunsFolderName, PackagesFolderName })
+        {
+            var sourcePath = Path.Combine(source, directory);
+            if (Directory.Exists(sourcePath))
+            {
+                CopyDirectory(sourcePath, Path.Combine(staging.StagePath, directory), cancellationToken);
+                entries.Add(directory);
+            }
         }
 
         var keySource = Path.Combine(source, KeyFileName);
         if (File.Exists(keySource))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var keyTarget = Path.Combine(target, KeyFileName);
+            var keyTarget = Path.Combine(staging.StagePath, KeyFileName);
             CopyFile(keySource, keyTarget);
-
-            // File.Copy 不保留 Unix 权限：不恢复的话 0600 的密钥落地变 0644，
-            // 新机器上人人都能读它（数据库密码就是用它加密的）。
             RestoreKeyMode(source, keyTarget);
-
-            fileCount++;
+            entries.Add(KeyFileName);
         }
 
-        // 外部 agent 的运行日志：换机后也要能看到之前的运行记录
-        var runsSource = Path.Combine(source, RunsFolderName);
-        if (Directory.Exists(runsSource))
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var runsTarget = Path.Combine(target, RunsFolderName);
-            ReplaceDirectory(runsTarget);
-            CopyDirectory(runsSource, runsTarget, cancellationToken);
-            var (count, bytes) = Measure(runsTarget);
-            fileCount += count;
-            totalBytes += bytes;
-        }
-
+        var (fileCount, totalBytes) = Measure(staging.StagePath);
+        staging.Publish(entries, cancellationToken);
         return (fileCount, totalBytes);
     }
 
@@ -208,25 +192,6 @@ public static class WorkspaceArchiveFiles
 
         mode = (UnixFileMode)(value & 0b1_1111_1111);
         return true;
-    }
-
-    /// <summary>
-    /// 清掉目标子目录，准备整份覆盖。
-    /// 目标是软链时直接拒绝：recursive 删除可能顺着链接把**工作区之外**的目录清空。
-    /// </summary>
-    private static void ReplaceDirectory(string target)
-    {
-        if (!Directory.Exists(target))
-        {
-            return;
-        }
-
-        if (IsLink(new DirectoryInfo(target)))
-        {
-            throw new GuanfuException($"目标目录是符号链接，拒绝删除: {target}。请先手工处理这个链接再导入。");
-        }
-
-        Directory.Delete(target, recursive: true);
     }
 
     public static void CopyFile(string source, string target)

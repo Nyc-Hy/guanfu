@@ -129,7 +129,7 @@ public sealed class McpToolContractTests
     [Fact]
     public void 写工具必须声明走审批()
     {
-        foreach (var name in new[] { "db_execute", "git_commit", "git_push", "shell_run" })
+        foreach (var name in new[] { "db_execute" })
         {
             var tool = Tools().FirstOrDefault(t => t.Name == name);
 

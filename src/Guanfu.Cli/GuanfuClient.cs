@@ -19,10 +19,10 @@ public sealed class GuanfuClient(string baseUrl, string? token = null)
     private static readonly ConcurrentDictionary<string, HttpClient> Clients = new();
 
     private readonly HttpClient _http = Clients.GetOrAdd(
-        baseUrl.TrimEnd('/') + "/",
-        key => new HttpClient { BaseAddress = new Uri(key), Timeout = TimeSpan.FromMinutes(2) });
+        CliServer.Normalize(baseUrl) + "/",
+        key => new HttpClient(CliServer.NewHandler()) { BaseAddress = new Uri(key), Timeout = TimeSpan.FromMinutes(2) });
 
-    // token 优先级：--token 显式 > GUANFU_HUMAN_TOKEN（旧的 WORKBENCH_HUMAN_TOKEN 也认） > 数据目录/.human-token 文件。
+    // 网络请求的人工凭证来自显式参数或环境变量。
     // HttpClient 按地址共享，所以 token 不能塞进 DefaultRequestHeaders（不同 token 会互相串），
     // 必须每条请求单独带头。
     private readonly string? _token = ResolveToken(
@@ -30,7 +30,7 @@ public sealed class GuanfuClient(string baseUrl, string? token = null)
         // 新的环境变量优先；旧的仍然认（脚本里的写法不该失效）
         Environment.GetEnvironmentVariable("GUANFU_HUMAN_TOKEN")
         ?? Environment.GetEnvironmentVariable("WORKBENCH_HUMAN_TOKEN"),
-        ResolveHomeDirectory());
+        homeDirectory: null);
 
     /// <summary>
     /// CLI 统一用应用层那一份 JSON 选项：读服务端、打印给自己看都用它。
@@ -79,7 +79,7 @@ public sealed class GuanfuClient(string baseUrl, string? token = null)
         return null;
     }
 
-    /// <summary>数据目录，缺省 ~/.workbench（与 Web 侧 GuanfuOptions 同口径）。</summary>
+    /// <summary>数据目录。默认 ~/.guanfu，沿用已有的 ~/.workbench。</summary>
     internal static string? ResolveHomeDirectory()
     {
         // 新的环境变量优先；旧的仍然认
@@ -93,7 +93,14 @@ public sealed class GuanfuClient(string baseUrl, string? token = null)
         }
 
         var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        return string.IsNullOrWhiteSpace(profile) ? null : Path.Combine(profile, ".workbench");
+        if (string.IsNullOrWhiteSpace(profile))
+        {
+            return null;
+        }
+
+        var current = Path.Combine(profile, ".guanfu");
+        var legacy = Path.Combine(profile, ".workbench");
+        return Directory.Exists(legacy) && !Directory.Exists(current) ? legacy : current;
     }
 
     /// <summary>
@@ -104,11 +111,11 @@ public sealed class GuanfuClient(string baseUrl, string? token = null)
     /// owner 视角 —— 跟他在网页上看到的不一样。
     /// </summary>
     private readonly string? _sessionCookie = CliSession
-        .Load(GuanfuClient.ResolveHomeDirectory())?.Cookie;
+        .Load(ResolveHomeDirectory(), baseUrl)?.Cookie;
 
     private HttpRequestMessage CreateRequest(HttpMethod method, string path)
     {
-        var request = new HttpRequestMessage(method, path);
+        var request = new HttpRequestMessage(method, "./" + path.TrimStart('/'));
         if (!string.IsNullOrEmpty(_token))
         {
             request.Headers.TryAddWithoutValidation(HumanTokenHeader, _token);
@@ -191,6 +198,14 @@ public sealed class GuanfuClient(string baseUrl, string? token = null)
         using var response = await _http.SendAsync(request, ct);
         await EnsureOkAsync(response, ct);
         return await response.Content.ReadAsStringAsync(ct);
+    }
+
+    public async Task DownloadAsync(string path, Stream destination, CancellationToken ct = default)
+    {
+        using var request = CreateRequest(HttpMethod.Get, path);
+        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+        await EnsureOkAsync(response, ct);
+        await response.Content.CopyToAsync(destination, ct);
     }
 
     /// <summary>拼查询串用的转义。编号、关键字里可能有空格和 &，不转义就拼出非法 URL。</summary>

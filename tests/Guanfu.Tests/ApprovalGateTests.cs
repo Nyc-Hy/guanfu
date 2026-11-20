@@ -1,7 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Guanfu.Application.Services;
 using Guanfu.Domain;
-using Guanfu.Mcp;
 
 namespace Guanfu.Tests;
 
@@ -10,187 +9,103 @@ namespace Guanfu.Tests;
 ///
 /// 核心承诺：**一条审批只能执行一次，而且只能执行当初批的那件事**。
 ///
-/// 之前闸门只认「状态是不是 Approved」，不比对工具、不比对操作内容 ——
-/// 于是批一条 shell_run 就能拿去推代码，批一条「提交 A」就能提交 B。
-/// 这些测试就是守住这条底线的。
+/// 当前数据库写入仍通过同一道审批闸门，旧工具的审批记录也必须与新工具隔离。
 /// </summary>
 public class ApprovalGateTests
 {
-    private sealed class RecordingGitWriter : IGitWriter
+    private const string Sql = "UPDATE dbo.Orders SET Status = 1";
+
+    private static Task<ApprovalGateResult> AcquireAsync(
+        GuanfuTestHost host, Guid projectId, Guid approvalId, string payload = Sql) =>
+        host.Gate.AcquireAsync(
+            "db_execute", "db.write", payload, "数据库写入", "tester", null,
+            projectId, approvalId, waitSeconds: 1);
+
+    private static async Task<Guid> ApproveAsync(
+        GuanfuTestHost host, Guid projectId, string tool = "db_execute", string kind = "db.write")
     {
-        public List<string> Commits { get; } = new();
-        public List<(string? Branch, string? Remote)> Pushes { get; } = new();
-
-        public Task<GitCommandResult> CommitAsync(string repoPath, string message, CancellationToken cancellationToken = default)
-        {
-            Commits.Add(message);
-            return Task.FromResult(new GitCommandResult(true, "committed", null));
-        }
-
-        public Task<GitCommandResult> PushAsync(string repoPath, string? branch = null, string? remote = null, CancellationToken cancellationToken = default)
-        {
-            Pushes.Add((branch, remote));
-            return Task.FromResult(new GitCommandResult(true, "pushed", null));
-        }
-    }
-
-    /// <summary>记录跑过哪些命令的假 shell —— 不真的起进程。</summary>
-    private sealed class RecordingShellRunner : IShellRunner
-    {
-        public List<string> Executed { get; } = new();
-
-        public bool IsAllowed(string? allowedCommandsJson, string command) =>
-            ShellRunner.ParseAllowed(allowedCommandsJson)
-                .Any(p => command.Trim().StartsWith(p + " ", StringComparison.OrdinalIgnoreCase));
-
-        public bool IsAllowed(IReadOnlyList<string> allowedCommands, string command) =>
-            allowedCommands.Any(p => command.Trim().StartsWith(p + " ", StringComparison.OrdinalIgnoreCase));
-
-        public Task<ShellResult> RunAsync(string workingDirectory, string command, CancellationToken cancellationToken = default)
-        {
-            Executed.Add(command);
-            return Task.FromResult(new ShellResult(true, 0, "ok", ""));
-        }
-    }
-
-    private static (GeneralMcpTools Tools, RecordingGitWriter Git, RecordingShellRunner Shell, IProjectService Projects)
-        BuildTools(GuanfuTestHost host)
-    {
-        var git = new RecordingGitWriter();
-        var shell = new RecordingShellRunner();
-
-        var tools = new GeneralMcpTools(
-            host.Files,
-            host.Projects,
-            git,
-            shell,
-            host.Gate,
-            host.Audit,
-            host.Clock);
-
-        return (tools, git, shell, host.Projects);
+        var request = await host.Approvals.RequestAsync(tool, kind, Sql, "待审操作", projectId: projectId);
+        await host.Approvals.DecideAsync(request.Id, approve: true, decidedBy: "tester");
+        return request.Id;
     }
 
     [Fact]
-    public async Task 批过的审批不能拿去执行另一条命令()
+    public async Task 批过的审批不能换SQL复用()
     {
         using var host = new GuanfuTestHost();
-        var (tools, _, shell, projects) = BuildTools(host);
+        var project = await host.Projects.CreateAsync("P");
+        var approvalId = await ApproveAsync(host, project.Id);
 
-        var project = await projects.CreateAsync("P");
-        await projects.UpdateConfigAsync(project.Id, repoPath: "/tmp", allowedCommands: ["echo"]);
+        var result = await AcquireAsync(host, project.Id, approvalId, Sql.Replace("= 1", "= 2"));
 
-        var first = await tools.RunShellAsync(project.Id, "echo hello", waitSeconds: 1);
-        Assert.False(first.Ok);
-        Assert.NotEqual(Guid.Empty, first.ApprovalId);
-
-        await host.Approvals.DecideAsync(first.ApprovalId, approve: true, decidedBy: "tester");
-
-        // 同一条审批，换一条命令 —— 必须被拒
-        var second = await tools.RunShellAsync(project.Id, "echo pwned", approvalId: first.ApprovalId);
-
-        Assert.False(second.Ok, "审批被复用到别的命令上了");
-        Assert.Empty(shell.Executed);
+        Assert.False(result.Approved);
+        Assert.Contains("不一致", result.Message);
+        Assert.Equal("Approved", (await host.Approvals.GetAsync(approvalId))!.Status);
     }
 
     [Fact]
-    public async Task 批过的审批不能跨工具复用()
+    public async Task 旧工具审批不能拿去执行数据库写入()
     {
         using var host = new GuanfuTestHost();
-        var (tools, git, _, projects) = BuildTools(host);
+        var project = await host.Projects.CreateAsync("P");
+        var approvalId = await ApproveAsync(host, project.Id, "shell_run", "shell.write");
 
-        var project = await projects.CreateAsync("P");
-        await projects.UpdateConfigAsync(project.Id, repoPath: "/tmp", allowedCommands: ["echo", "git"]);
+        var result = await AcquireAsync(host, project.Id, approvalId);
 
-        var first = await tools.RunShellAsync(project.Id, "echo hello", waitSeconds: 1);
-        await host.Approvals.DecideAsync(first.ApprovalId, approve: true, decidedBy: "tester");
-
-        // 批的是 shell_run，拿去调 git_commit —— 审批类型都不一样
-        var second = await tools.CommitAsync(project.Id, "偷偷提交", approvalId: first.ApprovalId);
-
-        Assert.False(second.Ok, "shell_run 的审批被 git_commit 用掉了");
-        Assert.Empty(git.Commits);
+        Assert.False(result.Approved);
+        Assert.Contains("shell_run", result.Message);
     }
 
     [Fact]
-    public async Task 批过的审批不能换参数复用()
+    public async Task 批过的审批不能跨项目复用()
     {
         using var host = new GuanfuTestHost();
-        var (tools, git, _, projects) = BuildTools(host);
+        var project = await host.Projects.CreateAsync("P");
+        var other = await host.Projects.CreateAsync("Q");
+        var approvalId = await ApproveAsync(host, project.Id);
 
-        var project = await projects.CreateAsync("P");
-        await projects.UpdateConfigAsync(project.Id, repoPath: "/tmp", allowedCommands: ["echo", "git"]);
+        var result = await AcquireAsync(host, other.Id, approvalId);
 
-        var first = await tools.CommitAsync(project.Id, "提交 A", waitSeconds: 1);
-        await host.Approvals.DecideAsync(first.ApprovalId, approve: true, decidedBy: "tester");
-
-        // 审批的是「提交 A」，这里提交「提交 B」
-        var second = await tools.CommitAsync(project.Id, "提交 B", approvalId: first.ApprovalId);
-
-        Assert.False(second.Ok, "同一条审批被拿去提交了另一条 message");
-        Assert.Empty(git.Commits);
+        Assert.False(result.Approved);
+        Assert.Contains("别的项目", result.Message);
     }
 
     [Fact]
     public async Task 一条审批只能执行一次()
     {
         using var host = new GuanfuTestHost();
-        var (tools, git, _, projects) = BuildTools(host);
+        var project = await host.Projects.CreateAsync("P");
+        var approvalId = await ApproveAsync(host, project.Id);
 
-        var project = await projects.CreateAsync("P");
-        await projects.UpdateConfigAsync(project.Id, repoPath: "/tmp", allowedCommands: ["echo", "git"]);
+        Assert.True((await AcquireAsync(host, project.Id, approvalId)).Approved);
+        await host.Gate.CompleteAsync(approvalId, "已完成");
 
-        var first = await tools.CommitAsync(project.Id, "提交 A", waitSeconds: 1);
-        await host.Approvals.DecideAsync(first.ApprovalId, approve: true, decidedBy: "tester");
-
-        var ok = await tools.CommitAsync(project.Id, "提交 A", approvalId: first.ApprovalId);
-        Assert.True(ok.Ok, "第一次执行应该成功");
-
-        // 同一条审批再跑一遍 —— 必须被拒
-        var again = await tools.CommitAsync(project.Id, "提交 A", approvalId: first.ApprovalId);
-
-        Assert.False(again.Ok, "同一条审批被执行了两次");
-        Assert.Single(git.Commits);
+        Assert.False((await AcquireAsync(host, project.Id, approvalId)).Approved);
     }
 
     [Fact]
     public async Task 并发执行只有一次能过()
     {
         using var host = new GuanfuTestHost();
-        var (tools, git, _, projects) = BuildTools(host);
-
-        var project = await projects.CreateAsync("P");
-        await projects.UpdateConfigAsync(project.Id, repoPath: "/tmp", allowedCommands: ["echo", "git"]);
-
-        var first = await tools.CommitAsync(project.Id, "提交 A", waitSeconds: 1);
-        await host.Approvals.DecideAsync(first.ApprovalId, approve: true, decidedBy: "tester");
+        var project = await host.Projects.CreateAsync("P");
+        var approvalId = await ApproveAsync(host, project.Id);
 
         var results = await Task.WhenAll(
-            tools.CommitAsync(project.Id, "提交 A", approvalId: first.ApprovalId),
-            tools.CommitAsync(project.Id, "提交 A", approvalId: first.ApprovalId));
+            AcquireAsync(host, project.Id, approvalId),
+            AcquireAsync(host, project.Id, approvalId));
 
-        Assert.Single(results.Where(r => r.Ok));
-        Assert.Single(git.Commits);
+        Assert.Single(results.Where(r => r.Approved));
     }
 
     [Fact]
     public async Task 过期审批不能执行()
     {
         using var host = new GuanfuTestHost();
-        var (tools, git, _, projects) = BuildTools(host);
-
-        var project = await projects.CreateAsync("P");
-        await projects.UpdateConfigAsync(project.Id, repoPath: "/tmp", allowedCommands: ["echo", "git"]);
-
-        var first = await tools.CommitAsync(project.Id, "提交 A", waitSeconds: 1);
-        await host.Approvals.DecideAsync(first.ApprovalId, approve: true, decidedBy: "tester");
-
+        var project = await host.Projects.CreateAsync("P");
+        var approvalId = await ApproveAsync(host, project.Id);
         host.Clock.Advance(TimeSpan.FromHours(2));
 
-        var second = await tools.CommitAsync(project.Id, "提交 A", approvalId: first.ApprovalId);
-
-        Assert.False(second.Ok, "过期审批还能执行");
-        Assert.Empty(git.Commits);
+        Assert.False((await AcquireAsync(host, project.Id, approvalId)).Approved);
     }
 
     [Fact]
@@ -199,7 +114,7 @@ public class ApprovalGateTests
         using var host = new GuanfuTestHost();
 
         var approval = await host.Approvals.RequestAsync(
-            "shell_run", "shell.write", "echo x", "摘要", ttlMinutes: 1);
+            "db_execute", "db.write", Sql, "摘要", ttlMinutes: 1);
 
         host.Clock.Advance(TimeSpan.FromMinutes(2));
 
@@ -216,7 +131,7 @@ public class ApprovalGateTests
     {
         using var host = new GuanfuTestHost();
 
-        await host.Approvals.RequestAsync("shell_run", "shell.write", "echo x", "摘要", ttlMinutes: 1);
+        await host.Approvals.RequestAsync("db_execute", "db.write", Sql, "摘要", ttlMinutes: 1);
         host.Clock.Advance(TimeSpan.FromMinutes(2));
 
         var pending = await host.Approvals.ListAsync(ApprovalStatus.Pending);
@@ -230,7 +145,7 @@ public class ApprovalGateTests
         using var host = new GuanfuTestHost();
 
         var approval = await host.Approvals.RequestAsync(
-            "shell_run", "shell.write", "echo x", "摘要");
+            "db_execute", "db.write", Sql, "摘要");
 
         await Assert.ThrowsAsync<GuanfuException>(
             () => Task.WhenAll(
@@ -241,21 +156,4 @@ public class ApprovalGateTests
         Assert.NotEqual(ApprovalStatus.Pending, row.Status);
     }
 
-    [Fact]
-    public async Task 合法续跑能正常执行()
-    {
-        using var host = new GuanfuTestHost();
-        var (tools, git, _, projects) = BuildTools(host);
-
-        var project = await projects.CreateAsync("P");
-        await projects.UpdateConfigAsync(project.Id, repoPath: "/tmp", allowedCommands: ["echo", "git"]);
-
-        var first = await tools.CommitAsync(project.Id, "提交 A", waitSeconds: 1);
-        await host.Approvals.DecideAsync(first.ApprovalId, approve: true, decidedBy: "tester");
-
-        var second = await tools.CommitAsync(project.Id, "提交 A", approvalId: first.ApprovalId);
-
-        Assert.True(second.Ok, $"合法续跑应该成功，实际：{second.Message}");
-        Assert.Single(git.Commits);
-    }
 }

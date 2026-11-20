@@ -28,6 +28,25 @@ public class WorkspaceArchiverTests : IDisposable
     }
 
     [Fact]
+    public async Task 重做备份生成快照失败时保留上一份归档()
+    {
+        await using var db = CreateDb(_home);
+        var archiver = new WorkspaceArchiver(db, Options.Create(new GuanfuOptions { HomeDirectory = _home }));
+        await archiver.ExportAsync(_export);
+        var dbPath = Path.Combine(_export, "guanfu.db");
+        var manifestPath = Path.Combine(_export, "manifest.json");
+        var previous = await File.ReadAllBytesAsync(dbPath);
+        var manifest = await File.ReadAllTextAsync(manifestPath);
+
+        // SQLite 拒绝在一个已开始的事务里执行 VACUUM INTO。
+        await using var transaction = await db.Database.BeginTransactionAsync();
+        await Assert.ThrowsAsync<Microsoft.Data.Sqlite.SqliteException>(() => archiver.ExportAsync(_export));
+
+        Assert.Equal(previous, await File.ReadAllBytesAsync(dbPath));
+        Assert.Equal(manifest, await File.ReadAllTextAsync(manifestPath));
+    }
+
+    [Fact]
     public async Task 导出的库是完整可用的()
     {
         await using var db = CreateDb(_home);

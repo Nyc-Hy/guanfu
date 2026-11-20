@@ -37,6 +37,41 @@ public class WorkspaceArchiveFilesTests : IDisposable
     }
 
     [Fact]
+    public void 导入无法替换文档时保留原数据库和密钥()
+    {
+        Directory.CreateDirectory(_target);
+        var db = Path.Combine(_target, "guanfu.db");
+        var key = Path.Combine(_target, "secret.key");
+        var documents = Path.Combine(_target, "documents");
+        File.WriteAllText(db, "previous-db");
+        File.WriteAllText(key, "previous-key");
+        File.WriteAllText(documents, "不能替换成目录");
+
+        Assert.Throws<GuanfuException>(() => WorkspaceArchiveFiles.Import(_source, _target));
+
+        Assert.Equal("previous-db", File.ReadAllText(db));
+        Assert.Equal("previous-key", File.ReadAllText(key));
+        Assert.Equal("不能替换成目录", File.ReadAllText(documents));
+    }
+
+    [Fact]
+    public void 覆盖恢复移走旧数据库日志并保留本机配置()
+    {
+        Directory.CreateDirectory(_target);
+        var db = Path.Combine(_target, "guanfu.db");
+        File.WriteAllText(db, "previous-db");
+        File.WriteAllText(db + "-wal", "previous-wal");
+        var config = Path.Combine(_target, "本机配置.txt");
+        File.WriteAllText(config, "keep");
+
+        WorkspaceArchiveFiles.Import(_source, _target);
+
+        Assert.Equal("fake-db", File.ReadAllText(db));
+        Assert.False(File.Exists(db + "-wal"));
+        Assert.Equal("keep", File.ReadAllText(config));
+    }
+
+    [Fact]
     public void 导入不存在的源目录报明确错误()
     {
         var missing = Path.Combine(Path.GetTempPath(), "wb-not-exist-" + Guid.NewGuid().ToString("N"));

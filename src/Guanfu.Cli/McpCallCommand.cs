@@ -118,7 +118,7 @@ internal static class McpCallCommand
     private static async Task<List<(string Name, string Description)>> FetchToolsAsync(string url, string? token)
     {
         var endpoint = url.TrimEnd('/') + "/mcp";
-        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
+        using var http = new HttpClient(CliServer.NewHandler()) { Timeout = TimeSpan.FromMinutes(2) };
 
         string? sessionId = null;
 
@@ -195,7 +195,7 @@ internal static class McpCallCommand
         string? token = null)
     {
         var endpoint = url.TrimEnd('/') + "/mcp";
-        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
+        using var http = new HttpClient(CliServer.NewHandler()) { Timeout = TimeSpan.FromMinutes(2) };
 
         string? sessionId = null;
 

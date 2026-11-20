@@ -143,8 +143,7 @@ REST 有每分钟 300 次的限流；`/api` 写方法要求 `Origin` 与 `Host` 
 
 - **本机开网页**：自动获取，不用管。
 - **远程开网页**：从启动控制台复制那串，粘贴到页面上的 token 输入框（如项目设置页）。
-- **CLI**：`guanfu token` 打印；或 `--token <凭证>`；或环境变量 `WORKBENCH_HUMAN_TOKEN`；
-  或默认读数据目录的 `.human-token`。优先级：`--token` > 环境变量 > 文件。
+- **CLI**：用 `--token <凭证>` 或 `GUANFU_HUMAN_TOKEN` 指定。部署机可用 `guanfu token` 读取本机人工凭证。
 
 凭证是「证明屏幕前是人」的共享秘密，**不要提交进仓库、不要贴进聊天群**。
 
@@ -170,8 +169,8 @@ REST 有每分钟 300 次的限流；`/api` 写方法要求 `Origin` 与 `Host` 
    `guanfu_get_context` 一次取回文档 / 计划 / 产物 / 流水 / 允许迁移 →
    `guanfu_set_plan` 回写需求理解与开发计划 → 改代码、跑测试 →
    `guanfu_report_test_result` 回写测试结果 → `guanfu_update_status` 推进。
-6. **写操作来审批**：agent 调 `db_execute` / `git_commit` / `git_push` / `shell_run` 时不会直接执行，
-   而是返回审批号；你在 `/approvals` 点头后，agent 带审批号再调一次才真正执行（§7）。
+6. **数据库写入按规则审批**：需要审批的 `db_execute` 返回审批号。人在 `/approvals` 批准后，
+   agent 带审批号续跑。代码修改、测试和 Git 在开发机用 Codex 完成。
 7. **评审与结项**：推进到「评审中」后开一轮评审（`guanfu_start_review`），
    agent 取评审包、逐维度回写结论；**7 个维度全过**才允许「评审中 → 已完成」（§8）。
 8. **离线补报**：网络不通、观复在维护、活是上一轮会话干的时候，agent 是**先干活、后报**。
@@ -253,28 +252,14 @@ REST 有每分钟 300 次的限流；`/api` 写方法要求 `Origin` 与 `Host` 
 
 ## 7. 审批门禁：写操作怎么批
 
-四个写工具共用同一套闸门：`db_execute`、`git_commit`、`git_push`、`shell_run`。
-
-闭环：
-
-1. agent 第一次调用 → **不执行**，返回 `{ok:false, approvalId, ...}` 与操作摘要；
-2. 人在 `/approvals` 批准（或拒绝 / 撤销）；
-3. agent 带 `approvalId` 再调同一个工具 → 闸门校验后执行，审批状态
-   `Approved → Executing → Executed` 原子消费，**一条审批只执行一次**。
-
-审批**绑在具体操作上**，不是绑在「工具名」上：比对 `ToolName + PayloadHash + ProjectId`。
-换命令、换工具、换项目都用不了同一条审批。指纹还把执行对象算进去：
-
-- `db_execute`：`connectionId + server + database + sql`——换个库执行就对不上；
-- `git_commit`：**待提交内容的指纹**，且批准之后、执行之前**再算一次**——
-  等审批期间工作区变了就拒。人批的是「那些内容」，不是「提交这个动作」。
+`db_execute` 按表规则申请审批。需要审批时，人在 `/approvals` 批准后，
+agent 带 `approvalId` 续跑。审批绑定工具、项目和执行指纹。指纹包括连接 ID、服务器、库和 SQL。
+审批状态按 `Approved → Executing → Executed` 原子消费。
 
 其它要点：
 
 - 审批默认 **30 分钟**过期（可申请 1 分钟 ~ 24 小时）；过期要重新申请。
 - 撤销是后悔药：批了还没执行时可以撤。
-- `shell_run` 不走 shell 解析：命令拆成可执行文件 + 参数直接 exec，杜绝 `;` `&` `|` 拼接；
-  且必须命中项目白名单。白名单是**按词的前缀**：`git status` 只放行 `git status`，不误伤 `git status-tree`。
 - 服务在执行途中重启：那条审批会被标成**已过期 + 结果未知**，交人工确认后再重新申请
   （写操作可能已经生效，观复不假装知道）。
 - 配了审批 webhook（钉钉 / 飞书 / 通用 JSON）时，有人请求审批会推一条消息——人不在电脑前也不会静静躺到过期。
@@ -284,7 +269,7 @@ REST 有每分钟 300 次的限流；`/api` 写方法要求 `Origin` 与 `Host` 
 ## 8. 评审：骨架在观复，判断在 agent
 
 - 推进到「评审中」后开一轮：`guanfu_start_review`（或任务页按钮）。多轮历史都留着。
-- `guanfu_get_review_pack` 取评审包：计划、diff、产物、测试结果、上一轮结论。
+- `guanfu_get_review_pack` 取评审包：任务、计划、文档、产物、七个维度、完成定义判定及当前轮已登记的报告证据。各评审者在本机查看代码、diff 和测试。
 - agent（可以开子 agent / 专家团并行）逐维度回写：`guanfu_submit_review`，
   结论三选一：通过 / 不通过 / 不适用（`skipped=true`；「待评」是初始态，不是可回写的结论）。
   不通过必须写清 findings 与证据。任务页上也能逐维度点结论。
@@ -306,7 +291,32 @@ REST 有每分钟 300 次的限流；`/api` 写方法要求 `Origin` 与 `Host` 
 | `over_operation` | 是否有过度操作的代码 | 有没有画蛇添足的动作 |
 
 每个维度带检查清单（定义在 `src/Guanfu.Domain/ReviewDimensions.cs`），评审包里有。
-`guanfu review export` / `guanfu_export_review` 导出评审报告。
+`guanfu review export` / `guanfu_export_review` 支持 Markdown、JSON 和可离线打开的 HTML。
+也可在任务的「评审」页签下载当轮 HTML。
+
+### 回写全角度报告
+
+评审协调者调用 `guanfu_record_review_evidence`，传任务 ID、轮次、`expectedVersion` 和 `evidence`。
+首次提交版本填 `0`，之后从 `guanfu_get_review` 的 `round.reportEvidence.version` 读取。
+同一轮以同一份证据为准，更新时提交完整内容。基线或目标提交变化时开新一轮。
+
+| 证据字段 | 内容 |
+| --- | --- |
+| `baseline`、`revision` | 本机对比基线和被评审的提交或工作区快照标识 |
+| `checks` | 各角度的判定、说明和证据，可记录性能测量、兼容性、部署和交互检查 |
+| `findings` | 稳定问题编号、主分类、关联分类、严重度、证据及修复和复验状态 |
+| `requirements` | 条款编号、PRD 或开发文档的版本及位置、完成度、实现和验收证据 |
+| `changes` | 需求编号、文件、变更说明及补丁引用，可内嵌小补丁。共享改动设 `shared: true`，未归属则省略需求编号 |
+| `testCases` | 用例、关联需求、执行状态、环境和结果证据 |
+| `databaseChange` | `required`（需 SQL）、`not_required`（无需 SQL）或 `unknown`（待确认） |
+
+本机生成结构化 JSON 后，也可用 CLI 回写同一个 MCP 工具。大补丁、日志和 SQL 可上传为任务产物，再在证据里引用。
+
+```bash
+guanfu call guanfu_record_review_evidence \
+  --arg taskId=任务ID --arg round=1 --arg expectedVersion=0 --arg evidence=@review-evidence.json
+guanfu review export 任务ID --round 1 --format html > review.html
+```
 
 ---
 
@@ -428,6 +438,27 @@ AI 写的脚本能跑，但不一定合乎生产口径 —— **人改是常态*
 
 打包**要人工凭证** —— 东西是要发出去的，得有人点头。
 
+### 发版工具包
+
+打包页勾选「生成发版工具包」，选定要随包交付的产物，逐个确认所选 SQL 的阶段、阶段内顺序和目标数据库。
+即使没有选中附件，也能生成这个版本的报告包。解压后打开 `index.html`，查看整个版本及子版本的任务、
+需求完成度、评审问题、测试和数据库变更。每个任务都可点进详细报告，缺少评审或测试的任务会明确标出。
+
+ZIP 带 `reports/`、`发布说明.md` 和 `manifest.json`。SQL 按 `sql/deploy/`、`sql/verify/`、`sql/rollback/` 归档。
+清单记录评审轮次、报告证据版本、测试记录、产物版本和文件 SHA-256。已生成的包可回查，更新产物后需要重新打包。
+
+CLI 先列候选，通过 `--item` 选择要发的内容，或用 `--all` 选择所有候选。所选 SQL 需要一份本地计划文件。
+计划的 `sqlSteps` 数组内每项填写 `itemId`、`phase`（`deploy` / `verify` / `rollback`）、`target`，
+可填 `artifactVersion` 来校验确认过的脚本版本。数组顺序决定同一阶段内的执行顺序。可用 `notes` 填写发布说明。
+
+```bash
+guanfu delivery candidates "v1.4.0"
+guanfu delivery pack "v1.4.0" --all --release-plan release-plan.json --output v1.4.0.zip
+```
+
+选中的产物都无需 SQL 计划时，用 `--release` 生成工具包。
+如果选中的文档原件已丢失，打包会报错；恢复原件或取消该条目的勾选后可重试。
+
 ### 交付的最后一公里：分享链接
 
 包打好了，**项管没有观复账号** —— 他要的是一个能点的链接：
@@ -525,15 +556,18 @@ guanfu logout                              # 退出登录
 
 > **命令行按登录的身份说话**：登录后可见范围按**那个人**算
 > （跟他在网页上看到的一致），不是 owner 视角。
-> `GUANFU_CLI_HOME` 可以把本地会话放到别处（多人共用一台机器时）。
+> 登录会话按服务地址隔离。曾使用旧版 CLI 登录过的成员需要重新登录。
+> `GUANFU_CLI_HOME` 可以把 CLI 配置和会话放到别处。
 
 > 编号与名字处处能认：`REQ-001`、`12 月版本` 不用去翻 GUID。
 
 其余命令：
 
-全局：`--url <地址>`（默认 http://127.0.0.1:5177，或 `WORKBENCH_URL`）、`--token <凭证>`（§3）。
+联机命令须明确配置服务地址。优先级为命令的 `--url <地址>`、环境变量 `GUANFU_URL`（兼容 `WORKBENCH_URL`）、保存的默认服务地址。
+`serve`、`token` 和本地 `workspace import` 可以离线使用。
 
 ```
+guanfu configure --url http://127.0.0.1:5177    保存默认服务地址
 guanfu serve / guanfu mcp                     起服务 / stdio↔HTTP 桥接
 guanfu project list|add|show|config       项目；config 改仓库/启动命令/白名单/webhook（敏感）
 guanfu task list|create|show|claim        任务；list 支持 --status/--key/--type/--branch/--milestone/--limit/--offset
@@ -560,7 +594,7 @@ CLI 用的是应用层同一批 DTO 与 JSON 选项，不会出现「界面有�
 ## 13. 审计与合规
 
 - **每次工具调用都留痕**（只读也记——企业合规问的是「谁访问了什么资源」）。
-  五个写工具自己记得更细（审批号 / 影响行数 / SQL 原文 / 结果摘要），中央那份跳过，不会一行两条。
+  三个数据库工具各自记录审批号、影响行数、SQL 或结果摘要，中央审计跳过这些调用，避免重复记账。
 - 参数里的 `password / secret / token / api_key / access_token` 等名字的值抹成 `***` 再落表。
 - 每条审计带 `prevHash + hash`（内容 + 上一条哈希），按单调 `Sequence` 定序（**不靠时间戳**）。
   `/audit` 页「验哈希链」能验出断点：改一条、删一条都会断。
@@ -593,9 +627,9 @@ CLI 用的是应用层同一批 DTO 与 JSON 选项，不会出现「界面有�
 | 症状 | 原因与处理 |
 |---|---|
 | 敏感操作 401 | 没带人工凭证。本机网页自动带；远程粘贴 token；CLI 用 `--token` 或 `guanfu token` |
-| 批了还是拒 | 审批绑操作指纹：命令 / SQL / 目标库 / 项目换了，或 `git_commit` 等待期间工作区变了，或已执行过。重新申请 |
+| 批了还是拒 | SQL、连接或项目改变，以及审批已消费，都会拒绝续跑。需要重新申请时使用当前操作参数 |
 | 审批卡显示「结果未知」 | 服务在执行途中重启过。人工确认那次写操作到底生效没有，再重新申请 |
-| agent 报「文件不存在」 | 文件工具按**会话自己的目录**读 —— agent 在哪干活就在哪操作 |
+| agent 报「文件不存在」 | 用 Codex 查看开发机工作区。需要归档的文件可以用本机 CLI 上传 |
 | agent 看不到某个工具 | `/mcp-tools` 里被关了。打开即恢复（`tools/list` 与硬调两道都拦） |
 | 状态推进被拒 | 非法迁移。报错里带当前允许列表，照着走 |
 | 结项被拒 | 当前评审轮有维度没结论或不通过。补齐 / 改完再结 |

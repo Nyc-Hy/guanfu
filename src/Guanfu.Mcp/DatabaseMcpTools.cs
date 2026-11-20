@@ -18,7 +18,7 @@ public sealed record DbQueryToolResult(
     string? Error = null);
 
 /// <summary>
-/// db_execute 的统一返回。与写工具 <c>WriteToolResult</c> 对齐：
+/// db_execute 的统一返回：
 /// <see cref="Ok"/> 表示「真的执行成功了」，<see cref="Error"/> 给出失败原因。
 /// 审批被消费但执行失败时，<see cref="ApprovalStatus"/> 仍是 Executed（审批用掉了），
 /// Message 里会带上「审批已消费，请重新申请」，免得 agent 以为还能拿同一条审批续跑。
@@ -424,7 +424,7 @@ public sealed class DatabaseMcpTools(
             }
 
             // 审批收尾时要写的结果摘要 —— 成功失败都写，
-            // 免得审批历史上留一片空白（跟 git 那边的口径一致）。
+            // 让审批历史可追溯实际的执行结果。
             string? approvalSummary = null;
 
             try

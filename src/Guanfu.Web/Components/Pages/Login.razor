@@ -1,101 +1,31 @@
 @page "/login"
-@rendermode InteractiveServer
-@inject NavigationManager Nav
-@inject IJSRuntime JS
+@layout Guanfu.Web.Components.Layout.LoginLayout
 
 <PageTitle>登录 · 观复</PageTitle>
 
 <div class="wb-page-head">
-    <div>
-        <h1>登录</h1>
-        <p class="wb-muted">
-            团队部署时，每人有自己的账号 —— 谁在操作，事后查得到。
-            一个人本机用的话不需要登录，照旧拿控制台里那把人工凭证就行。
-        </p>
-    </div>
+    <h1>登录观复</h1>
 </div>
 
-<section class="wb-panel">
+<form id="wb-login" class="wb-panel" method="post" data-return-url="@ReturnUrl">
     <div class="wb-field-row">
         <label class="wb-label" for="login-user">用户名</label>
-        <input id="login-user" class="wb-input" @bind="UserName" @bind:event="oninput" />
+        <input id="login-user" name="userName" autocomplete="username" required />
     </div>
 
     <div class="wb-field-row">
         <label class="wb-label" for="login-pass">密码</label>
-        <input id="login-pass" class="wb-input" type="password" @bind="Password" @bind:event="oninput" />
+        <input id="login-pass" name="password" type="password" autocomplete="current-password" required />
     </div>
 
-    @if (!string.IsNullOrWhiteSpace(Error))
-    {
-        <p class="wb-error">@Error</p>
-    }
+    <p class="wb-error" role="alert" hidden></p>
 
     <div class="wb-form-row wb-mt-3">
-        <button class="wb-btn wb-btn-primary" disabled="@Busy" @onclick="LoginAsync">登录</button>
+        <button type="submit" class="wb-btn wb-btn-primary">登录</button>
     </div>
-</section>
+</form>
 
 @code {
     [SupplyParameterFromQuery(Name = "returnUrl")]
     private string? ReturnUrl { get; set; }
-
-    private string UserName { get; set; } = string.Empty;
-    private string Password { get; set; } = string.Empty;
-    private string? Error { get; set; }
-    private bool Busy { get; set; }
-
-    private async Task LoginAsync()
-    {
-        if (Busy)
-        {
-            return;
-        }
-
-        if (string.IsNullOrWhiteSpace(UserName) || string.IsNullOrWhiteSpace(Password))
-        {
-            Error = "用户名与密码都要填。";
-            return;
-        }
-
-        Busy = true;
-        Error = null;
-
-        try
-        {
-            var payload = await JS.InvokeAsync<string>(
-                "eval",
-                "fetch('/api/auth/login',{method:'POST',credentials:'same-origin'," +
-                "headers:{'Content-Type':'application/json'},body:JSON.stringify(" +
-                "{userName:" + Json(UserName) + ",password:" + Json(Password) + "})})" +
-                ".then(function(r){return r.text().then(function(t){return JSON.stringify({s:r.status,b:t});});})" +
-                ".catch(function(e){return JSON.stringify({s:0,b:''});})");
-
-            var ok = payload.Contains("\"s\":200");
-
-            if (!ok)
-            {
-                Error = payload.Contains("401")
-                    ? "用户名或密码不对。"
-                    : "登录没成功，稍后再试。";
-                return;
-            }
-
-            // 重新加载整个页面：新的 Cookie 要在**新的电路**里才认。
-            var target = string.IsNullOrWhiteSpace(ReturnUrl) ? "/" : ReturnUrl;
-            Nav.NavigateTo(target, forceLoad: true);
-        }
-        catch (Exception ex)
-        {
-            Error = "登录没成功：" + ex.Message;
-        }
-        finally
-        {
-            Busy = false;
-        }
-    }
-
-    /// <summary>把字符串转成 JSON 字面量（免得引号与换行把 JSON 弄坏）。</summary>
-    private static string Json(string value) =>
-        System.Text.Json.JsonSerializer.Serialize(value);
 }

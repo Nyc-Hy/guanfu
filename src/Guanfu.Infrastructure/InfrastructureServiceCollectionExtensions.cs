@@ -68,7 +68,6 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddSingleton<IDocumentStore, FileDocumentStore>();
         services.AddSingleton<IDeliveryPackageStore, FileDeliveryPackageStore>();
         services.AddSingleton<IGitInspector, GitInspector>();
-        services.AddSingleton<IGitWriter, GitWriter>();
         services.AddSingleton<ISecretProtector, AesSecretProtector>();
         services.AddScoped<ISqlCommandRunner, SqlServerCommandRunner>();
         services.AddScoped<IAgentLauncher, AgentLauncher>();

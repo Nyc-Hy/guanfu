@@ -171,7 +171,9 @@ public sealed record DeliveryCandidateDto(
     long SizeBytes,
     string TaskKey,
     string TaskTitle,
-    bool HasContent);
+    bool HasContent,
+    bool IsSql = false,
+    int? ArtifactVersion = null);
 
 /// <summary>一个迭代版本下能打包的东西（候选项 + 已打过的包）。</summary>
 public sealed record DeliveryCandidatesDto(
@@ -212,7 +214,9 @@ public sealed record DeliveryPackageItemDto(
     string? FileName,
     string TaskKey,
     string TaskTitle,
-    long SizeBytes);
+    long SizeBytes,
+    int? ArtifactVersion = null,
+    string? Sha256 = null);
 
 public sealed record PlanDto(
     Guid Id,
@@ -404,7 +408,8 @@ public sealed record ReviewRoundDto(
     /// <summary>还没给结论的维度数。</summary>
     int PendingCount = 0,
     /// <summary>不通过的维度数。</summary>
-    int FailedCount = 0);
+    int FailedCount = 0,
+    ReviewEvidenceSnapshot? ReportEvidence = null);
 
 /// <summary>评审维度的定义（检查清单）。</summary>
 public sealed record ReviewDimensionDto(

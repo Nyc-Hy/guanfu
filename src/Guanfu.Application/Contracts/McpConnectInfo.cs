@@ -37,7 +37,8 @@ public static class McpConnectInfo
               "mcpServers": {
                 "guanfu": {
                   "command": "guanfu",
-                  "args": ["mcp", "--url", "{{url}}"]
+                  "args": ["mcp", "--url", "{{url}}"],
+                  "env": { "GUANFU_TOKEN": "<凭证>" }
                 }
               }
             }

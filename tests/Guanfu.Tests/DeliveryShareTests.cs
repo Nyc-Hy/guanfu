@@ -15,6 +15,11 @@ namespace Guanfu.Tests;
 /// </summary>
 public sealed class DeliveryShareTests : IDisposable
 {
+    private sealed class FixedMemberScope(MemberScope current) : ICurrentMemberScope
+    {
+        public MemberScope Current => current;
+    }
+
     private readonly string _root = Path.Combine(
         Path.GetTempPath(),
         "wb-share-" + Guid.NewGuid().ToString("N"));
@@ -109,7 +114,32 @@ public sealed class DeliveryShareTests : IDisposable
         var resolved = await service.ResolveShareAsync(share.Token);
 
         Assert.NotNull(resolved);
-        Assert.Equal(packageId, resolved!.Id);
+        Assert.Equal((await service.GetAsync(packageId)).FileName, resolved.Value.FileName);
+        Assert.True(File.Exists(resolved.Value.Path));
+    }
+
+    [Fact]
+    public async Task 缺少来源的旧包仅管理员可直接读取_有效分享仍可下载()
+    {
+        var (host, owner, packageId) = await NewPackageAsync();
+        using var _ = host;
+
+        var package = host.Db.DeliveryPackages.Single(p => p.Id == packageId);
+        package.TaskIds = null;
+        await host.Db.SaveChangesAsync();
+        var share = await owner.CreateShareAsync(packageId);
+        var identity = new MemberScope(Guid.NewGuid(), "member", "成员", MemberRole.Member);
+        var documents = new TempDocumentStore(_root);
+        var store = new TempPackageStore(_root);
+        var member = new DeliveryPackageService(host.Db, documents, store, host.Clock,
+            new FixedMemberScope(identity));
+        var admin = new DeliveryPackageService(host.Db, documents, store, host.Clock,
+            new FixedMemberScope(identity with { Role = MemberRole.Admin }));
+
+        Assert.Empty(await member.ListAsync(package.MilestoneId));
+        await Assert.ThrowsAsync<NotFoundException>(() => member.GetAsync(packageId));
+        Assert.Equal(packageId, (await admin.GetAsync(packageId)).Id);
+        Assert.NotNull(await member.ResolveShareAsync(share.Token));
     }
 
     [Fact]

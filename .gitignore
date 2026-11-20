@@ -21,6 +21,18 @@ documents/
 *.db
 *.db-shm
 *.db-wal
+*.db-journal
+.human-token
+secret.key
+.env
+cli.json
+cli-server-url
+cli-session-*.json*
+.guanfu-archive-*/
+.*.guanfu-archive.lock
+packages/
+runs/
+backups/
 
 # 测试与覆盖率
 TestResults/

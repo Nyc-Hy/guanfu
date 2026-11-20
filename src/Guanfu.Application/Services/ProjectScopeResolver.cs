@@ -130,6 +130,12 @@ public sealed class ProjectScopeResolver(
             return await BuildAsync(session.ProjectId, session, cancellationToken);
         }
 
+        // 单项目凭证本身即可确定项目，开发机接入无需在服务器登记本地仓库。
+        if (sessions?.CurrentCredential is { ProjectScope.Count: 1 } credential)
+        {
+            return await BuildAsync(credential.ProjectScope[0], null, cancellationToken);
+        }
+
         return null;
     }
 

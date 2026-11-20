@@ -146,12 +146,7 @@ public static class HumanTokenPolicy
             return IsPut(method);
         }
 
-        // POST /api/projects —— 新建项目。
-        // 项目一创建就把一个**文件系统根目录**授给了这个项目：建完之后
-        // fs_list / fs_read 就以它为根，读得到根下面的一切。
-        // 改项目配置（改 repoPath）要凭证，创建项目却不要 —— 等于开了扇后门：
-        // 拿到 MCP / REST 的 agent 自己建个项目指向 /etc 就能把文件读出去。
-        // 建项目是人的决定（它决定了后面谁能读哪些目录），必须有人在场。
+        // POST /api/projects 可同时配置服务器侧的仓库路径，沿用项目配置的人工凭证校验。
         if (segments.Length == 2
             && segments[1].Equals("projects", StringComparison.OrdinalIgnoreCase))
         {
@@ -539,6 +534,14 @@ public static class MemberSessionPolicy
         if (segments.Length >= 2 && segments[1].Equals("credentials", StringComparison.OrdinalIgnoreCase))
         {
             return IsPost(method) || IsDelete(method);
+        }
+
+        if (segments.Length == 4
+            && segments[1].Equals("milestones", StringComparison.OrdinalIgnoreCase)
+            && (segments[3].Equals("accept", StringComparison.OrdinalIgnoreCase) ||
+                segments[3].Equals("unaccept", StringComparison.OrdinalIgnoreCase)))
+        {
+            return IsPost(method);
         }
 
         // /api/milestones/{id}/delivery/packages

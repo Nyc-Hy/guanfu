@@ -1,24 +1,12 @@
 #!/usr/bin/env python3
-"""链路 G：重启对账 —— 崩在执行中间的写操作，结果要标成「未知」。
+"""链路 G：数据库写入在执行中断后，服务重启并标记结果未知。
 
-服务崩在写操作执行中间时，那次写操作**可能已经生效**了 ——
-比如 commit 已经写进仓库，只是执行方没来得及回写状态。
-重启后系统判不出来，就别假装判得出来：把它标成「结果未知」交人工确认，
-而不是悄悄重跑一遍（重跑可能把同一个写操作做两遍）。
-
-这条链路真的起服务、崩服务、再起一次：
-  1. 起服务 A，造一条要跑很久的命令（sleep），让它执行起来
-  2. 执行途中**杀进程**（模拟崩溃，不是优雅退出）—— 审批停在 Executing
-  3. 用同一个 WORKBENCH_HOME 起服务 B
-  4. 那条审批应当是「过期 + 结果未知」，人一眼能看出来
-
-用法:
-    python3 tests/e2e/restart_e2e.py --dotnet /path/to/dotnet
+本机 TCP 测试连接只接收连接、不完成握手。确认真实 SQL 执行器进入连接阶段
+后终止服务，再用同一数据目录启动，验证审批对账。
 """
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import shutil
 import signal
@@ -34,16 +22,15 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from mcp_e2e import Mcp, expect, section, rest_json, FAILURES  # noqa: E402
 
-# 崩溃前给执行留的时间。够 shell_run 把审批占住（Approved → Executing）就行。
-EXECUTE_SECONDS = 4
-# 那条「要跑很久」的命令。秒数要够长，保证我们杀进程时它还在跑。
-LONG_COMMAND = "sleep 45"
+from approval_e2e import create_fixture_connection  # noqa: E402
+
+SQL = "UPDATE dbo.RestartProbe SET Id = 1"
 
 
 def start_server(dotnet: str, root: str, home: str, port: int) -> subprocess.Popen:
     """起一个观复进程，等它真的能服务了再返回。"""
     env = dict(os.environ)
-    env["WORKBENCH_HOME"] = home
+    env["GUANFU_HOME"] = home
 
     # 直接跑编译好的 dll，而不是 dotnet run ——
     # dotnet run 会再 fork 一个子进程，杀父进程杀不掉真在干活的那个。
@@ -78,7 +65,7 @@ def kill_hard(proc: subprocess.Popen) -> None:
     """模拟崩溃：SIGKILL，不给收尾的机会。
 
     优雅退出（SIGTERM）会让 ASP.NET Core 等在途请求跑完 ——
-    那条 sleep 就跑完了、审批也正常收尾，测的就不是「崩溃」了。
+    数据库连接可能超时并触发正常收尾，这条链路需要模拟进程崩溃。
     """
     try:
         os.kill(proc.pid, signal.SIGKILL)
@@ -107,11 +94,14 @@ def main() -> int:
 
     root = args.root
     home = tempfile.mkdtemp(prefix="wb-e2e-restart-home.")
-    repo = tempfile.mkdtemp(prefix="wb-e2e-restart-repo.")
     port = args.port or free_port()
     url = f"http://127.0.0.1:{port}"
 
     server: subprocess.Popen | None = None
+    database = socket.socket()
+    database.bind(("127.0.0.1", 0))
+    database.listen()
+    database.settimeout(10)
 
     try:
         # ---- 1 起服务 A ----
@@ -130,24 +120,13 @@ def main() -> int:
         with open(os.path.join(home, ".human-token"), encoding="utf-8") as handle:
             os.environ["WB_HUMAN_TOKEN"] = handle.read().strip()
 
-        project = rest_json(url, "POST", "/api/projects",
-                            {"name": "重启对账", "description": "链路 G", "repoPath": repo})
+        project = rest_json(url, "POST", "/api/projects", {"name": "重启对账"})
         project_id = project["id"]
-
-        # 白名单放行 sleep —— shell_run 不走 shell 解析，命令被拆成可执行文件 + 参数
-        rest_json(url, "PUT", f"/api/projects/{project_id}/config",
-                  {"allowedCommands": ["sleep"], "repoPath": repo})
+        create_fixture_connection(url, project_id, f"127.0.0.1,{database.getsockname()[1]}")
 
         mcp = Mcp(url)
         mcp.initialize()
-
-        # ---- 2 申请一条会跑很久的命令的审批 ----
-        pending = mcp.call("shell_run", {
-            "projectId": project_id,
-            "command": LONG_COMMAND,
-            "waitSeconds": 1,
-            "callerId": "e2e-agent",
-        })
+        pending = mcp.call("db_execute", {"projectId": project_id, "sql": SQL, "waitSeconds": 1})
         approval_id = pending.get("approvalId") or ""
         expect(bool(approval_id), f"应造出一条待审审批（返回：{pending}）")
 
@@ -161,9 +140,9 @@ def main() -> int:
         # ---- 3 执行途中把服务杀了 ----
         def execute() -> None:
             try:
-                mcp.call("shell_run", {
+                mcp.call("db_execute", {
                     "projectId": project_id,
-                    "command": LONG_COMMAND,
+                    "sql": SQL,
                     "approvalId": approval_id,
                     "waitSeconds": 1,
                     "callerId": "e2e-agent",
@@ -175,21 +154,21 @@ def main() -> int:
         worker = threading.Thread(target=execute, daemon=True)
         worker.start()
 
-        # 等它把审批占住（Approved → Executing）再杀进程
-        time.sleep(EXECUTE_SECONDS)
+        # 有 TCP 连接进入才继续，说明真实执行器已开始连接数据库。
+        peer, _ = database.accept()
+        with peer:
+            before = rest_json(url, "GET", "/api/approvals")
+            executing = [a for a in before if a.get("id") == approval_id]
+            expect(
+                bool(executing) and executing[0].get("status") == "Executing",
+                f"杀进程前审批应停在执行中（实际：{executing[0].get('status') if executing else '没找到'}）",
+            )
+            expect(
+                bool(executing) and not executing[0].get("outcomeUnknown"),
+                "还没重启，结果不该是未知的",
+            )
 
-        before = rest_json(url, "GET", "/api/approvals")
-        executing = [a for a in before if a.get("id") == approval_id]
-        expect(
-            bool(executing) and executing[0].get("status") == "Executing",
-            f"杀进程前审批应停在执行中（实际：{executing[0].get('status') if executing else '没找到'}）",
-        )
-        expect(
-            bool(executing) and not executing[0].get("outcomeUnknown"),
-            "还没重启，结果不该是未知的",
-        )
-
-        kill_hard(server)
+            kill_hard(server)
         server = None
 
         # ---- 4 用同一个 WORKBENCH_HOME 再起一次 ----
@@ -226,7 +205,7 @@ def main() -> int:
         if server is not None:
             kill_hard(server)
         shutil.rmtree(home, ignore_errors=True)
-        shutil.rmtree(repo, ignore_errors=True)
+        database.close()
 
 
 if __name__ == "__main__":

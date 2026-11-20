@@ -35,7 +35,7 @@ internal static class AuthCommand
                     return 1;
                 }
 
-                using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(1) };
+                using var http = new HttpClient(CliServer.NewHandler()) { Timeout = TimeSpan.FromMinutes(1) };
                 using var request = new HttpRequestMessage(HttpMethod.Post, url.TrimEnd('/') + "/api/auth/login")
                 {
                     Content = new StringContent(
@@ -62,9 +62,9 @@ internal static class AuthCommand
                 }
 
                 var home = GuanfuClient.ResolveHomeDirectory();
-                CliSession.Save(home, new CliSession.Session(userName, cookie));
+                CliSession.Save(home, url, new CliSession.Session(userName, cookie));
 
-                Console.WriteLine($"已登录：{userName}（会话存在 {CliSession.PathFor(home)}）");
+                Console.WriteLine($"已登录：{userName}（会话存在 {CliSession.PathFor(home, url)}）");
                 Console.WriteLine("这条命令行现在以这个成员的身份说话 —— 可见范围按他算。");
                 return 0;
         }
@@ -77,16 +77,20 @@ internal static class AuthCommand
 
                 try
                 {
-                    using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+                    using var http = new HttpClient(CliServer.NewHandler()) { Timeout = TimeSpan.FromSeconds(10) };
                     using var request = new HttpRequestMessage(HttpMethod.Post, url.TrimEnd('/') + "/api/auth/logout");
-                    await http.SendAsync(request);
+                    if (CliSession.Load(home, url) is { } session)
+                    {
+                        request.Headers.TryAddWithoutValidation("Cookie", $"guanfu_session={session.Cookie}");
+                        using var response = await http.SendAsync(request);
+                    }
                 }
                 catch (Exception)
                 {
                     // 服务端连不上也要把本地的会话清掉
                 }
 
-                CliSession.Clear(home);
+                CliSession.Clear(home, url);
                 Console.WriteLine("已退出登录（本地会话已清）。");
                 return 0;
         }

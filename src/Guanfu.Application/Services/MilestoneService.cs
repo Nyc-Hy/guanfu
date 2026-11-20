@@ -73,8 +73,11 @@ public interface IMilestoneService
 public sealed class MilestoneService(
     IAppDbContext db,
     IClock clock,
-    IProjectSpecService? specs = null) : IMilestoneService
+    IProjectSpecService? specs = null,
+    ICurrentMemberScope? currentMember = null) : IMilestoneService
 {
+    private MemberScope? Scope => currentMember?.Current;
+
     public async Task<MilestoneDto> GetAsync(Guid id, CancellationToken cancellationToken = default)
     {
         var milestone = await db.Milestones.AsNoTracking()
@@ -143,6 +146,7 @@ public sealed class MilestoneService(
             throw new GuanfuException("里程碑名称不能为空。");
         }
 
+        await using var transaction = await db.BeginWriteTransactionAsync(cancellationToken);
         var projectExists = await db.Projects.AnyAsync(p => p.Id == projectId, cancellationToken);
         if (!projectExists)
         {
@@ -161,6 +165,7 @@ public sealed class MilestoneService(
             {
                 throw new GuanfuException("父里程碑与子里程碑不属于同一个项目。");
             }
+            await MilestoneAcceptanceLock.EnsureEditableAsync(db, projectId, parent.Id, cancellationToken);
         }
 
         var order = await db.Milestones
@@ -182,6 +187,7 @@ public sealed class MilestoneService(
 
         db.Milestones.Add(milestone);
         await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
 
         return Build(milestone, []);
     }
@@ -213,8 +219,16 @@ public sealed class MilestoneService(
             throw new GuanfuException("clearDue 与 dueAt 不能同时给：一个要清空，一个要设值。");
         }
 
+        await using var transaction = await db.BeginWriteTransactionAsync(cancellationToken);
         var milestone = await db.Milestones.FirstOrDefaultAsync(m => m.Id == id, cancellationToken)
                         ?? throw new NotFoundException("里程碑", id);
+
+        var targetParent = clearParent ? null : parentId ?? milestone.ParentId;
+        if (targetParent != milestone.ParentId)
+        {
+            await MilestoneAcceptanceLock.EnsureEditableAsync(db, milestone.ProjectId, id, cancellationToken);
+            await MilestoneAcceptanceLock.EnsureEditableAsync(db, milestone.ProjectId, targetParent, cancellationToken);
+        }
 
         if (name is not null)
         {
@@ -276,6 +290,7 @@ public sealed class MilestoneService(
         }
 
         await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
 
         var tasks = await db.Tasks.AsNoTracking().Where(t => t.MilestoneId == id).ToListAsync(cancellationToken);
         return Build(milestone, tasks);
@@ -315,8 +330,17 @@ public sealed class MilestoneService(
 
     public async Task DeleteAsync(Guid id, CancellationToken cancellationToken = default)
     {
+        await using var transaction = await db.BeginWriteTransactionAsync(cancellationToken);
         var milestone = await db.Milestones.FirstOrDefaultAsync(m => m.Id == id, cancellationToken)
                         ?? throw new NotFoundException("里程碑", id);
+
+        await MilestoneAcceptanceLock.EnsureEditableAsync(db, milestone.ProjectId, milestone.Id, cancellationToken);
+
+        var children = await db.Milestones.Where(m => m.ParentId == id).ToListAsync(cancellationToken);
+        if (children.Any(c => c.AcceptedAt is not null))
+        {
+            throw new GuanfuException("有子里程碑已经验收。请撤销验收后再调整版本范围。");
+        }
 
         // 任务不跟着删，只是摘出来
         var tasks = await db.Tasks.Where(t => t.MilestoneId == id).ToListAsync(cancellationToken);
@@ -327,7 +351,6 @@ public sealed class MilestoneService(
 
         // 子里程碑也不跟着删 —— 孤儿节点比没了强。删掉父级，
         // 下面的需求组就变成孤儿了（外键是 Restrict，本来也删不掉）。
-        var children = await db.Milestones.Where(m => m.ParentId == id).ToListAsync(cancellationToken);
         foreach (var child in children)
         {
             child.ParentId = null;
@@ -335,28 +358,22 @@ public sealed class MilestoneService(
 
         db.Milestones.Remove(milestone);
         await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
     }
 
     public async Task AssignTaskAsync(Guid taskId, Guid? milestoneId, CancellationToken cancellationToken = default)
     {
+        await using var transaction = await db.BeginWriteTransactionAsync(cancellationToken);
         var task = await db.Tasks.FirstOrDefaultAsync(t => t.Id == taskId, cancellationToken)
                    ?? throw new NotFoundException("任务", taskId);
 
-        // 已验收的里程碑不许再往里加活 —— 签过字了，内容就定了。
-        if (milestoneId is Guid target)
+        var before = task.MilestoneId;
+        if (before == milestoneId)
         {
-            var scope = await CollectScopeAsync(target, cancellationToken);
-            var accepted = await db.Milestones.AsNoTracking()
-                .Where(m => m.AcceptedAt != null && scope.Contains(m.Id))
-                .Select(m => m.Name)
-                .FirstOrDefaultAsync(cancellationToken);
-
-            if (accepted is not null)
-            {
-                throw new GuanfuException(
-                    $"「{accepted}」已经验收，不能再往里加任务。要加先撤销验收。");
-            }
+            return;
         }
+
+        await MilestoneAcceptanceLock.EnsureEditableAsync(db, task.ProjectId, before, cancellationToken);
 
         string? milestoneName = null;
 
@@ -371,13 +388,8 @@ public sealed class MilestoneService(
                 throw new GuanfuException("里程碑与任务不属于同一个项目。");
             }
 
+            await MilestoneAcceptanceLock.EnsureEditableAsync(db, task.ProjectId, milestone.Id, cancellationToken);
             milestoneName = milestone.Name;
-        }
-
-        var before = task.MilestoneId;
-        if (before == milestoneId)
-        {
-            return;
         }
 
         task.MilestoneId = milestoneId;
@@ -406,6 +418,7 @@ public sealed class MilestoneService(
         });
 
         await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
     }
 
     private static MilestoneDto Build(Milestone milestone, IReadOnlyList<TaskItem> tasks)
@@ -436,6 +449,8 @@ public sealed class MilestoneService(
         string? acceptedBy = null,
         CancellationToken cancellationToken = default)
     {
+        EnsureCanAccept();
+        await using var transaction = await db.BeginWriteTransactionAsync(cancellationToken);
         var milestone = await db.Milestones.FirstOrDefaultAsync(m => m.Id == id, cancellationToken)
                         ?? throw new NotFoundException("里程碑", id);
 
@@ -469,9 +484,11 @@ public sealed class MilestoneService(
         }
 
         milestone.AcceptedAt = clock.UtcNow;
-        milestone.AcceptedBy = string.IsNullOrWhiteSpace(acceptedBy) ? "human" : acceptedBy.Trim();
+        milestone.AcceptedBy = Scope?.DisplayName ??
+            (string.IsNullOrWhiteSpace(acceptedBy) ? "human" : acceptedBy.Trim());
 
         await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
 
         var tasks = await db.Tasks.AsNoTracking()
             .Where(t => t.MilestoneId == milestone.Id)
@@ -482,6 +499,8 @@ public sealed class MilestoneService(
 
     public async Task<MilestoneDto> UnacceptAsync(Guid id, CancellationToken cancellationToken = default)
     {
+        EnsureCanAccept();
+        await using var transaction = await db.BeginWriteTransactionAsync(cancellationToken);
         var milestone = await db.Milestones.FirstOrDefaultAsync(m => m.Id == id, cancellationToken)
                         ?? throw new NotFoundException("里程碑", id);
 
@@ -489,12 +508,21 @@ public sealed class MilestoneService(
         milestone.AcceptedBy = null;
 
         await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
 
         var tasks = await db.Tasks.AsNoTracking()
             .Where(t => t.MilestoneId == milestone.Id)
             .ToListAsync(cancellationToken);
 
         return Build(milestone, tasks);
+    }
+
+    private void EnsureCanAccept()
+    {
+        if (Scope is { IsAdmin: false })
+        {
+            throw new GuanfuException("需要管理员权限才能验收或撤销验收。");
+        }
     }
 
     /// <summary>

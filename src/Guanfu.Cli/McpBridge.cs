@@ -21,7 +21,7 @@ public static class McpBridge
     public static async Task<int> RunAsync(string baseUrl, List<string> args)
     {
         var endpoint = baseUrl.TrimEnd('/') + "/mcp";
-        using var handler = new HttpClientHandler();
+        using var handler = CliServer.NewHandler();
         using var http = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
         using var cts = new CancellationTokenSource();
 
@@ -31,68 +31,38 @@ public static class McpBridge
             (request, ct) => http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct),
             endpoint,
             cts.Token,
-            ResolveRepoPath(args),
+            ResolveRepoPath(baseUrl, args),
             ResolveAgentId(args),
             ResolveToken(args));
     }
 
     /// <summary>
-    /// 访问凭证：<c>--token</c> > <c>GUANFU_TOKEN</c> 环境变量 > 数据目录里的凭证文件。
+    /// 访问凭证：<c>--token</c> > <c>GUANFU_TOKEN</c> 环境变量。
     ///
-    /// 没有凭证也能连 —— 那把共享人工凭证兜着（本机单人用就是这么干的）。
+    /// 本机单人模式由服务端按场景判断是否需要凭证。
     /// </summary>
     internal static string? ResolveToken(List<string> args)
     {
-        var flag = ReadOption(args, "--token");
+        var flag = CliOptions.Token ?? ReadOption(args, "--token");
         if (!string.IsNullOrWhiteSpace(flag))
         {
             return flag;
         }
 
-        var fromEnv = Environment.GetEnvironmentVariable("GUANFU_TOKEN")
-                      ?? Environment.GetEnvironmentVariable("WORKBENCH_TOKEN")
-                      ?? Environment.GetEnvironmentVariable("GUANFU_HUMAN_TOKEN")
-                      ?? Environment.GetEnvironmentVariable("WORKBENCH_HUMAN_TOKEN");
-        if (!string.IsNullOrWhiteSpace(fromEnv))
-        {
-            return fromEnv;
-        }
-
-        try
-        {
-            var home = Environment.GetEnvironmentVariable("GUANFU_HOME")
-                       ?? Environment.GetEnvironmentVariable("WORKBENCH_HOME");
-
-            if (string.IsNullOrWhiteSpace(home))
-            {
-                var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-                var current = Path.Combine(profile, ".guanfu");
-                var legacy = Path.Combine(profile, ".workbench");
-                home = Directory.Exists(legacy) && !Directory.Exists(current) ? legacy : current;
-            }
-
-            var path = Path.Combine(home, ".human-token");
-            if (File.Exists(path))
-            {
-                return File.ReadAllText(path).Trim();
-            }
-        }
-        catch (Exception)
-        {
-            // 读不到就算了 —— 服务端会按「没带凭证」处理
-        }
-
-        return null;
+        return Environment.GetEnvironmentVariable("GUANFU_TOKEN")
+            ?? Environment.GetEnvironmentVariable("WORKBENCH_TOKEN")
+            ?? Environment.GetEnvironmentVariable("GUANFU_HUMAN_TOKEN")
+            ?? Environment.GetEnvironmentVariable("WORKBENCH_HUMAN_TOKEN");
     }
 
     /// <summary>
     /// 桥接所在的工作目录 —— agent 在这个目录里干活，它操作的仓库就该是它。
     ///
-    /// 优先级：--repo 参数 &gt; WORKBENCH_REPO 环境变量 &gt; 当前工作目录。
+    /// 优先级：--repo 参数 &gt; WORKBENCH_REPO 环境变量 &gt; 连接本机时使用当前工作目录。
     /// 传过去之后，观复能反查出这个目录属于哪个项目，调用就自动归属了 ——
     /// agent 不必再自己背项目 GUID。
     /// </summary>
-    private static string? ResolveRepoPath(List<string> args)
+    private static string? ResolveRepoPath(string baseUrl, List<string> args)
     {
         var flag = ReadOption(args, "--repo");
         if (!string.IsNullOrWhiteSpace(flag))
@@ -104,6 +74,11 @@ public static class McpBridge
         if (!string.IsNullOrWhiteSpace(fromEnv))
         {
             return fromEnv;
+        }
+
+        if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var server) || !server.IsLoopback)
+        {
+            return null;
         }
 
         try

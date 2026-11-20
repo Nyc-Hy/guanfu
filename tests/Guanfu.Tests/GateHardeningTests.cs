@@ -22,44 +22,11 @@ public class GateHardeningTests
 {
     // ---- 假实现 ----
 
-    private sealed class RecordingGitWriter : IGitWriter
-    {
-        public List<string> Commits { get; } = new();
-        public List<string> Pushes { get; } = new();
-
-        public Task<GitCommandResult> CommitAsync(string repoPath, string message, CancellationToken cancellationToken = default)
-        {
-            Commits.Add(message);
-            return Task.FromResult(new GitCommandResult(true, "committed", null));
-        }
-
-        public Task<GitCommandResult> PushAsync(string repoPath, string? branch = null, string? remote = null, CancellationToken cancellationToken = default)
-        {
-            Pushes.Add($"{branch}/{remote}");
-            return Task.FromResult(new GitCommandResult(true, "pushed", null));
-        }
-    }
-
-    /// <summary>可以指定「跑的时候把调用方的 token 取消掉」的假 shell。</summary>
-    private sealed class CancellingShellRunner : IShellRunner
-    {
-        public Action? OnRun { get; set; }
-
-        public bool IsAllowed(string? allowedCommandsJson, string command) => true;
-
-        public bool IsAllowed(IReadOnlyList<string> allowedCommands, string command) => true;
-
-        public Task<ShellResult> RunAsync(string workingDirectory, string command, CancellationToken cancellationToken = default)
-        {
-            OnRun?.Invoke();
-            return Task.FromResult(new ShellResult(true, 0, "ok", ""));
-        }
-    }
-
     /// <summary>假 SQL 执行器：按脚本回话，不连真库。</summary>
     private sealed class FakeSqlRunner : ISqlCommandRunner
     {
         public List<string> Executed { get; } = new();
+        public Action? OnExecute { get; init; }
 
         public SqlStatementAnalysis Analyze(string sql) => SqlStatementClassifier.Classify(sql);
 
@@ -71,6 +38,7 @@ public class GateHardeningTests
             DbConnectionConfig config, string sql, CancellationToken cancellationToken = default)
         {
             Executed.Add(sql);
+            OnExecute?.Invoke();
             return Task.FromResult(new SqlExecResult(3, TimeSpan.Zero));
         }
 
@@ -78,20 +46,6 @@ public class GateHardeningTests
             DbConnectionConfig config, string? schemaName = null, CancellationToken cancellationToken = default) =>
             Task.FromResult(new DbSchemaResult([]));
     }
-
-    private static GeneralMcpTools BuildTools(
-        GuanfuTestHost host,
-        IGitWriter? git = null,
-        IShellRunner? shell = null)
-        => new(
-            host.Files,
-            host.Projects,
-            git ?? new RecordingGitWriter(),
-            shell ?? new CancellingShellRunner(),
-            host.Gate,
-            host.Audit,
-            host.Clock,
-            host.Git);
 
     // ---- P0-1：免审批写的绕过口子 ----
 
@@ -158,15 +112,8 @@ public class GateHardeningTests
     [Fact]
     public void 自己留痕的工具不再被中央记录器重复记()
     {
-        foreach (var name in new[] { "db_execute", "db_query", "git_commit", "git_push", "shell_run" })
-        {
-            Assert.Contains(name, ToolCallRecorder.SelfAuditedTools);
-        }
-
-        // 这三个也自己留痕 —— 漏一个就是「一次调用两行记录」
-        Assert.Contains("fs_list", ToolCallRecorder.SelfAuditedTools);
-        Assert.Contains("fs_read", ToolCallRecorder.SelfAuditedTools);
-        Assert.Contains("db_schema", ToolCallRecorder.SelfAuditedTools);
+        Assert.Equal(new[] { "db_execute", "db_query", "db_schema" },
+            ToolCallRecorder.SelfAuditedTools.Order(StringComparer.Ordinal));
     }
 
     // ---- B2：调用方取消也要把审批收干净 ----
@@ -176,19 +123,21 @@ public class GateHardeningTests
     {
         using var host = new GuanfuTestHost();
         var project = await host.Projects.CreateAsync("P");
-        await host.Projects.UpdateConfigAsync(project.Id, repoPath: "/tmp", allowedCommands: ["echo"]);
+        await host.DbConnections.CreateAsync(project.Id, "c", "srv", "db", "u", "p");
 
         using var cts = new CancellationTokenSource();
-        var shell = new CancellingShellRunner { OnRun = () => cts.Cancel() };
-        var tools = BuildTools(host, shell: shell);
+        var runner = new FakeSqlRunner { OnExecute = cts.Cancel };
+        var tools = new DatabaseMcpTools(
+            host.DbConnections, runner, host.Gate, host.Approvals, host.Audit, host.Clock);
 
-        var first = await tools.RunShellAsync(project.Id, "echo hello", waitSeconds: 1);
+        const string sql = "UPDATE dbo.Orders SET v = 1";
+        var first = await tools.ExecuteAsync(project.Id, sql, waitSeconds: 1);
         await host.Approvals.DecideAsync(first.ApprovalId, approve: true, decidedBy: "tester");
 
-        // 执行过程中调用方断开了（token 被取消）
-        await Assert.ThrowsAnyAsync<Exception>(
-            async () => await tools.RunShellAsync(project.Id, "echo hello", approvalId: first.ApprovalId, cancellationToken: cts.Token));
+        await Record.ExceptionAsync(
+            () => tools.ExecuteAsync(project.Id, sql, approvalId: first.ApprovalId, cancellationToken: cts.Token));
 
+        Assert.Single(runner.Executed);
         var approval = await host.Approvals.GetAsync(first.ApprovalId);
         Assert.Equal("Executed", approval!.Status);
     }
@@ -263,6 +212,8 @@ public class GateHardeningTests
             host.DbConnections, runner, host.Gate, host.Approvals, host.Audit, host.Clock);
 
         var first = await tools.ExecuteAsync(project.Id, "UPDATE dbo.Orders SET v = 1", waitSeconds: 1);
+        Assert.Equal("Pending", first.ApprovalStatus);
+        Assert.Empty(runner.Executed);
         await host.Approvals.DecideAsync(first.ApprovalId, approve: true, decidedBy: "tester");
 
         var second = await tools.ExecuteAsync(
@@ -272,31 +223,11 @@ public class GateHardeningTests
 
         var approval = await host.Approvals.GetAsync(first.ApprovalId);
         Assert.Contains("影响", approval!.ResultSummary);
-    }
+        var replay = await tools.ExecuteAsync(
+            project.Id, "UPDATE dbo.Orders SET v = 1", approvalId: first.ApprovalId);
 
-    // ---- B7：git_push 绑内容 ----
-
-    [Fact]
-    public async Task 推送前仓库变了要重新申请()
-    {
-        using var host = new GuanfuTestHost();
-        var project = await host.Projects.CreateAsync("P");
-        await host.Projects.UpdateConfigAsync(project.Id, repoPath: "/tmp", allowedCommands: ["git"]);
-
-        host.Git.HeadSha = "sha-1";
-        var git = new RecordingGitWriter();
-        var tools = BuildTools(host, git);
-
-        var first = await tools.PushAsync(project.Id, waitSeconds: 1);
-        await host.Approvals.DecideAsync(first.ApprovalId, approve: true, decidedBy: "tester");
-
-        // 等审批期间又多了一个提交 —— 要推的内容跟人批的不一样了
-        host.Git.HeadSha = "sha-2";
-
-        var second = await tools.PushAsync(project.Id, approvalId: first.ApprovalId);
-
-        Assert.False(second.Ok, "HEAD 变了还推送了");
-        Assert.Empty(git.Pushes);
+        Assert.False(replay.Ok);
+        Assert.Single(runner.Executed);
     }
 
     // ---- B8：试连要校验连接属于当前项目 ----

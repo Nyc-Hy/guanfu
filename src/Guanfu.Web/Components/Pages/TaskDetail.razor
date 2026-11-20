@@ -310,6 +310,7 @@ else
                     @if (CurrentReview is not null)
                     {
                         <span class="wb-chip">第 @CurrentReview.Round 轮</span>
+                        <a class="wb-btn" href="/api/tasks/@TaskId/export/review?format=html&amp;round=@CurrentReview.Round">下载 HTML 报告</a>
                         <span class="wb-tag @(CurrentReview.Verdict == "Passed" ? "wb-tag-ok" : CurrentReview.Verdict == "Failed" ? "wb-tag-danger" : "")">
                             @(CurrentReview.Verdict == "Passed" ? "通过" : CurrentReview.Verdict == "Failed" ? "不通过" : "评审中")
                         </span>

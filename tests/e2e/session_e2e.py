@@ -9,7 +9,6 @@
   F3 跨项目要拒：会话在 A 项目，显式传 B 项目 → 必须被拒
   F4 按编号认领：claim(taskKey) 就能领，不用先查 GUID
   F5 认领之后审计自动带任务：agent 不用自己填 taskId
-  F6 提交要人工审批：批了才真的提交
 
 用法:
     python3 tests/e2e/session_e2e.py --url http://127.0.0.1:5199
@@ -17,35 +16,11 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
-import subprocess
 import sys
-import tempfile
 import time
-import urllib.request
 
 from mcp_e2e import Mcp, expect, section, rest_json, FAILURES, make_temp_repo
-
-
-def decide(rest: str, approval_id: str, approve: bool = True) -> tuple[int, str]:
-    """人工裁决审批。敏感端点要凭证。"""
-    token = os.environ.get("WB_HUMAN_TOKEN", "")
-    headers = {"Content-Type": "application/json"}
-    if token:
-        headers["X-Guanfu-Human-Token"] = token
-
-    request = urllib.request.Request(
-        rest.rstrip("/") + f"/api/approvals/{approval_id}/decide",
-        data=json.dumps({"approve": approve, "decidedBy": "e2e-human"}).encode(),
-        headers=headers,
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            return response.status, response.read().decode()
-    except urllib.error.HTTPError as error:
-        return error.code, error.read().decode()
 
 
 def main() -> int:
@@ -86,12 +61,8 @@ def main() -> int:
 
     # ── F2 不传 projectId 也能干活 ─────────────────────────────────
     print("\n-- F2 不传 projectId 也能干活（会话自动归属）--")
-    listing = bound.call("fs_list", {})
-    expect(listing.get("ok") is True, f"不传 projectId 的 fs_list 应成功（实际：{listing.get('error')}）")
-    expect(
-        listing.get("root") is not None and repo in (listing.get("root") or ""),
-        f"fs_list 的根应是项目绑定的仓库（实际：{listing.get('root')}）",
-    )
+    current_project = bound.call("guanfu_get_project", {})
+    expect(current_project.get("id") == project_id, "可从会话解析项目，无需 projectId")
 
     session = bound.call("guanfu_get_session", {})
     expect(session.get("ok") is True, "应有活跃会话")
@@ -106,7 +77,7 @@ def main() -> int:
 
     # ── F3 跨项目要拒 ─────────────────────────────────────────────
     print("\n-- F3 会话在 A 项目，显式传 B 项目要被拒 --")
-    crossed = bound.call("fs_list", {"projectId": other_id})
+    crossed = bound.call("guanfu_get_project", {"projectId": other_id})
     expect(crossed.get("ok") is not True, "跨项目调用必须被拒")
     expect(
         "不一致" in (crossed.get("error") or ""),
@@ -151,21 +122,6 @@ def main() -> int:
         f"两个 agent 并行领活不该被观复拦下（实际：{parallel.get('error')}）",
     )
 
-    # 文件工具按**会话自己的目录**读 —— agent 在哪干活就在哪操作。
-    marker = "session-dir-marker.txt"
-    with open(os.path.join(repo, marker), "w", encoding="utf-8") as handle:
-        handle.write("会话目录里的文件")
-    read_back = other_agent.call("fs_read", {"path": marker})
-    expect(
-        read_back.get("ok") is True and "会话目录" in (read_back.get("content") or ""),
-        f"文件工具应按会话目录读文件（实际：{read_back.get('error') or read_back.get('content')}）",
-    )
-    listing = other_agent.call("fs_list", {})
-    expect(
-        listing.get("root") is not None and repo in (listing.get("root") or ""),
-        f"fs_list 的根应是会话绑的目录（实际：{listing.get('root')}）",
-    )
-
     context = bound.call("guanfu_get_context", {"taskKey": task_key})
     expect(
         (context.get("task") or {}).get("id") == task_id,
@@ -174,15 +130,15 @@ def main() -> int:
 
     # ── F4.2 每任务工具调用上限 ───────────────────────────────────
     print("\n-- F4.2 每任务工具调用上限（用量闸门）--")
-    usage = rest_json(rest, "GET", f"/api/tasks/{task_id}/usage")
+    usage = rest_json(rest, "GET", f"/api/tasks/{second['id']}/usage")
     used = usage.get("toolCalls", 0)
     rest_json(rest, "PUT", f"/api/projects/{project_id}/config", {"maxToolCallsPerTask": used + 1})
 
-    ok_call = other_agent.call("fs_list", {})
-    expect(ok_call.get("ok") is True, "还没超上限时工具调用应正常")
+    ok_call = other_agent.call("guanfu_get_project", {})
+    expect(ok_call.get("id") == project_id, "还没超上限时工具调用应正常")
 
-    blocked_call = other_agent.call("fs_list", {})
-    expect(blocked_call.get("ok") is not True, "超过上限后工具调用应被拦下")
+    blocked_call = other_agent.call("guanfu_get_project", {})
+    expect(blocked_call.get("ok") is False, "超过上限后工具调用应被拦下")
     expect(
         "上限" in (blocked_call.get("error") or ""),
         f"错误信息应说明上限（实际：{blocked_call.get('error')}）",
@@ -221,8 +177,8 @@ def main() -> int:
     print("\n-- F5 认领之后审计自动带任务归属 --")
     # 认领之后再来一次调用 —— agent 不用自己填 taskId，
     # 会话记住了它干的是哪个任务，审计就该自动带上。
-    after_claim = bound.call("fs_list", {})
-    expect(after_claim.get("ok") is True, "认领之后的 fs_list 应成功")
+    after_claim = bound.call("guanfu_get_context", {"taskKey": task_key})
+    expect((after_claim.get("task") or {}).get("id") == task_id, "认领后可按编号取上下文")
 
     rows = rest_json(rest, "GET", f"/api/tasks/{task_id}/sessions")
     expect(len(rows) >= 1, f"任务应挂上会话（实际：{len(rows)}）")
@@ -236,46 +192,16 @@ def main() -> int:
             "会话应记住工作目录",
         )
 
-    audit = rest_json(rest, "GET", f"/api/audit?toolName=fs_list")
-    fs_rows = [r for r in audit if r.get("taskId") == task_id]
+    audit = rest_json(rest, "GET", f"/api/audit?toolName=guanfu_get_context")
+    context_rows = [r for r in audit if r.get("taskId") == task_id]
     expect(
-        len(fs_rows) >= 1,
-        f"认领之后的 fs_list 审计应自动带上 taskId（实际带上的条数：{len(fs_rows)}）",
+        len(context_rows) >= 1,
+        f"认领之后的 上下文审计应自动带上 taskId（实际带上的条数：{len(context_rows)}）",
     )
     expect(
-        all(r.get("projectId") == project_id for r in fs_rows),
+        all(r.get("projectId") == project_id for r in context_rows),
         "审计里的项目归属应是被绑定的那个项目",
     )
-
-    # ── F6 提交要人工审批 ─────────────────────────────────────────
-    print("\n-- F6 提交要人工审批，批了才真的提交 --")
-    rest_json(rest, "PUT", f"/api/projects/{project_id}/config", {
-        "repoPath": repo,
-        "allowedCommands": ["git", "touch"],
-    })
-
-    with open(os.path.join(repo, "hello.txt"), "w", encoding="utf-8") as handle:
-        handle.write("hello\n")
-
-    commit = bound.call("git_commit", {
-        "message": f"e2e 提交 {suffix}",
-        "waitSeconds": 1,
-        "taskId": task_id,
-    })
-    approval_id = commit.get("approvalId")
-    expect(bool(approval_id), f"提交应生成审批单（实际：{commit.get('error')}）")
-
-    if approval_id:
-        status, _ = decide(rest, approval_id)
-        expect(status == 200, f"人工批准应成功（实际 HTTP {status}）")
-
-        committed = bound.call("git_commit", {
-            "message": f"e2e 提交 {suffix}",
-            "approvalId": approval_id,
-            "waitSeconds": 1,
-            "taskId": task_id,
-        })
-        expect(committed.get("ok") is True, f"批准后提交应成功（实际：{committed.get('error')}）")
 
     print("\n" + "=" * 60)
     if FAILURES:

@@ -63,7 +63,8 @@ public sealed class DocumentService(
     IAppDbContext db,
     IDocumentParserRegistry registry,
     IDocumentStore store,
-    IClock clock) : IDocumentService
+    IClock clock,
+    ICurrentMemberScope? currentMember = null) : IDocumentService
 {
     /// <summary>一次批量上传的文件数上限。</summary>
     private const int MaxBatchFiles = 50;
@@ -234,7 +235,7 @@ public sealed class DocumentService(
 
     public async Task<IReadOnlyList<DocumentDto>> ListAsync(Guid taskId, CancellationToken cancellationToken = default)
     {
-        var documents = await db.Documents
+        var documents = await VisibleDocuments()
             .AsNoTracking()
             .Where(d => d.TaskId == taskId)
             .OrderBy(d => d.UploadedAt)
@@ -244,11 +245,22 @@ public sealed class DocumentService(
 
     public async Task<DocumentDto?> GetAsync(Guid documentId, CancellationToken cancellationToken = default)
     {
-        var document = await db.Documents
+        var document = await VisibleDocuments()
             .AsNoTracking()
             .FirstOrDefaultAsync(d => d.Id == documentId, cancellationToken);
 
         return document is null ? null : TaskService.ToDocumentDto(document);
+    }
+
+    private IQueryable<Document> VisibleDocuments()
+    {
+        if (currentMember?.Current is not { IsAdmin: false } scope)
+        {
+            return db.Documents;
+        }
+
+        var taskIds = db.Tasks.VisibleTo(scope).Select(task => task.Id);
+        return db.Documents.Where(document => taskIds.Contains(document.TaskId));
     }
 
     public async Task<ParsedDocDto> ParseAsync(
@@ -256,7 +268,7 @@ public sealed class DocumentService(
         bool force = false,
         CancellationToken cancellationToken = default)
     {
-        var document = await db.Documents.FirstOrDefaultAsync(d => d.Id == documentId, cancellationToken)
+        var document = await VisibleDocuments().FirstOrDefaultAsync(d => d.Id == documentId, cancellationToken)
                        ?? throw new NotFoundException("文档", documentId);
 
         var parser = registry.Resolve(document.FileName);

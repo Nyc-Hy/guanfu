@@ -32,21 +32,26 @@ fi
 
 STAMP="$(date +%Y%m%d)"
 NAME="guanfu-${RID}-${STAMP}"
-OUT="dist/$NAME"
+DIST="${GUANFU_DIST_DIR:-dist}"
+OUT="$DIST/$NAME"
+DOTNET="./.dotnet/dotnet"
+if [ ! -x "$DOTNET" ]; then
+  DOTNET="$(command -v dotnet)"
+fi
 
 echo "==> 清理 $OUT"
 rm -rf "$OUT"
 mkdir -p "$OUT/bin" "$OUT/deploy"
 
-echo "==> 发布服务端（$RID，自包含）"
-dotnet publish src/Guanfu.Web/Guanfu.Web.csproj \
+echo "==> 发布服务端（${RID}，自包含）"
+"$DOTNET" publish src/Guanfu.Web/Guanfu.Web.csproj \
   -c Release \
   -r "$RID" \
   --self-contained true \
   -o "$OUT/bin/guanfu-server"
 
-echo "==> 发布命令行（$RID，自包含）"
-dotnet publish src/Guanfu.Cli/Guanfu.Cli.csproj \
+echo "==> 发布命令行（${RID}，自包含）"
+"$DOTNET" publish src/Guanfu.Cli/Guanfu.Cli.csproj \
   -c Release \
   -r "$RID" \
   --self-contained true \
@@ -91,7 +96,7 @@ cat > "$OUT/VERSION" <<EOF
 构建时间：$(date -u '+%Y-%m-%d %H:%M:%S UTC')
 EOF
 
-tar -czf "$OUT.tar.gz" -C dist "$NAME"
+tar -czf "$OUT.tar.gz" -C "$DIST" "$NAME"
 
 echo
 echo "==> 打包完成：$OUT.tar.gz"
@@ -100,6 +105,6 @@ echo
 echo "解开就能跑："
 echo "    tar -xzf $(basename "$OUT.tar.gz")"
 echo "    cd $NAME"
-echo "    ./bin/guanfu-server          # 服务端（UI + REST + /mcp）"
+echo "    ./bin/guanfu serve           # 服务端（UI + REST + /mcp）"
 echo
 echo "详细说明在包里的 README.md。"

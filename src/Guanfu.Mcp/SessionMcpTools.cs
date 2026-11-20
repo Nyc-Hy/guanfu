@@ -139,6 +139,7 @@ public sealed class AgentSessionAccessor(
             var session = await sessions.GetAsync(sessionId, cancellationToken);
             if (session is not null)
             {
+                EnsureSessionAllowed(session);
                 await sessions.TouchAsync(sessionId, cancellationToken);
                 return session;
             }
@@ -149,15 +150,16 @@ public sealed class AgentSessionAccessor(
             var session = await sessions.FindByMcpSessionIdAsync(mcpSessionId, cancellationToken);
             if (session is not null)
             {
+                EnsureSessionAllowed(session);
                 await sessions.TouchAsync(session.Id, cancellationToken);
                 return session;
             }
         }
 
         var repo = ReadHeader(request, RepoHeader, LegacyRepoHeader);
-        if (!string.IsNullOrWhiteSpace(repo))
+        if (!string.IsNullOrWhiteSpace(repo) && CurrentCredential is not { ProjectScope.Count: > 0 })
         {
-            var agentId = ReadHeader(request, AgentHeader, LegacyAgentHeader);
+            var agentId = CurrentAgentId ?? "";
             if (string.IsNullOrWhiteSpace(agentId))
             {
                 agentId = "unknown";
@@ -174,6 +176,16 @@ public sealed class AgentSessionAccessor(
         }
 
         return null;
+    }
+
+    private void EnsureSessionAllowed(AgentSessionDto session)
+    {
+        if (CurrentCredential is { } credential &&
+            (!credential.AllowsProject(session.ProjectId) ||
+             (credential.Kind == CredentialKind.Agent && session.AgentId != credential.Subject)))
+        {
+            throw new GuanfuException("当前凭证无权使用该会话。");
+        }
     }
 }
 
@@ -206,6 +218,27 @@ public sealed class SessionMcpTools(
         // Mcp-Session-Id，不带观复自己的头 —— 不记上，下次调用就认不出这条会话，
         // agent 会收到「当前调用没有绑定项目」，明明刚绑过。
         var mcpSessionId = sessionAccessor?.CurrentMcpSessionId;
+        var credential = sessionAccessor?.CurrentCredential;
+
+        if (credential is { ProjectScope.Count: > 0 })
+        {
+            projectId ??= credential.ProjectScope.Count == 1 ? credential.ProjectScope[0] : null;
+            if (projectId is not Guid selected || !credential.AllowsProject(selected))
+            {
+                return new BindSessionToolResult(false, null, "请传凭证授权范围内的 projectId。");
+            }
+        }
+
+        if (sessionAccessor is not null)
+        {
+            // 复用前核对旧会话的凭证范围与 agent 身份。
+            await sessionAccessor.CurrentAsync(cancellationToken);
+        }
+
+        if (credential is { Kind: CredentialKind.Agent })
+        {
+            agentId = credential.Subject;
+        }
 
         var bound = await sessions.BindRepoAsync(
             repoPath, agentId, mcpSessionId, projectId, cancellationToken);

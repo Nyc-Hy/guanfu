@@ -7,6 +7,7 @@
 @inject NavigationManager Nav
 @inject IJSRuntime JS
 @inject HumanTokenAccessor Tokens
+@inject CurrentMemberScope CurrentMember
 @using System.Security.Claims
 @using Microsoft.AspNetCore.Components.Authorization
 
@@ -84,19 +85,67 @@ else
                 <button class="wb-btn" @onclick="SelectAll">全选</button>
                 <button class="wb-btn" @onclick="ClearAll">清空</button>
             </div>
+        }
+
+        <div class="wb-form-row wb-mt-3">
+            <label><input type="checkbox" @bind="ReleaseMode" /> 生成发版工具包</label>
+            <span class="wb-muted">汇总该版本的任务、评审、测试和选中的 SQL。</span>
+        </div>
+
+        @if (ReleaseMode)
+        {
+            var selectedSql = SelectedSql();
+            @if (selectedSql.Count > 0)
+            {
+                <div class="wb-table-scroll wb-mt-3">
+                    <table class="wb-table">
+                        <thead><tr><th>SQL 脚本</th><th>阶段</th><th>阶段内顺序</th><th>目标数据库</th></tr></thead>
+                        <tbody>
+                            @foreach (var script in selectedSql)
+                            {
+                                var draft = SqlDraftFor(script.ItemId);
+                                <tr @key="script.ItemId">
+                                    <td>
+                                        @script.Title · @script.TaskKey
+                                        @if (script.ArtifactVersion is int version)
+                                        {
+                                            <span class="wb-muted">· 第 @version 版</span>
+                                        }
+                                    </td>
+                                    <td>
+                                        <select class="wb-input" aria-label="阶段" @bind="draft.Phase">
+                                            <option value="deploy">上线</option>
+                                            <option value="verify">核验</option>
+                                            <option value="rollback">回滚</option>
+                                        </select>
+                                    </td>
+                                    <td><input class="wb-input" type="number" min="1" aria-label="阶段内顺序" @bind="draft.Order" /></td>
+                                    <td><input class="wb-input" maxlength="200" aria-label="目标数据库" @bind="draft.Target" /></td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+            <label class="wb-field-row wb-mt-3">
+                <span>发布说明</span>
+                <textarea class="wb-input" maxlength="32000" @bind="ReleaseNotes"
+                          placeholder="填写本次发布的前置条件、验证和回滚方式"></textarea>
+            </label>
+        }
 
             <div class="wb-form-row wb-mt-3">
                 @* 按钮一直在 —— 没凭证时置灰并说明为什么，别让人以为功能没了。 *@
                 <button class="wb-btn wb-btn-primary"
-                        disabled="@(Busy || _selected.Count == 0 || !Authorized)"
+                        disabled="@(Busy || (_selected.Count == 0 && !ReleaseMode) || !Authorized)"
                         @onclick="PackAsync"
                         title="@(Authorized ? "打出来的是一个 zip，里面带一份清单" : "打包要人工凭证：东西要发出去，得有人点头")">
-                    打包这 @_selected.Count 项
+                    @(ReleaseMode ? "生成发版工具包" : $"打包这 {_selected.Count} 项")
                 </button>
                 <span class="wb-muted">打出来的是一个 zip，里面带一份清单（清单.md + manifest.json）。</span>
             </div>
 
-            @if (!Authorized)
+            @if (!Authorized && LocalOwner)
             {
                 @* 打包是要**发出去**的东西 —— 与导出同级，要有人在场。
                    一个面板把两条路说清（登录 / 贴 token），别拆成两块。 *@
@@ -115,7 +164,10 @@ else
                     <p class="wb-hint">@TokenHint</p>
                 }
             }
-        }
+            else if (!Authorized)
+            {
+                <p class="wb-muted">管理员可以打包和管理分享链接。</p>
+            }
     </section>
 
     @if (ShareUrl is not null)
@@ -180,9 +232,12 @@ else
                                     <button class="wb-btn wb-btn-link" @onclick="() => ToggleManifest(package.Id)">
                                         @(IsManifestExpanded(package.Id) ? "收起清单" : "看清单")
                                     </button>
-                                    <button class="wb-btn wb-btn-link" @onclick="() => CreateShareAsync(package.Id)">
-                                        分享链接
-                                    </button>
+                                    @if (Authorized)
+                                    {
+                                        <button class="wb-btn wb-btn-link" @onclick="() => CreateShareAsync(package.Id)">
+                                            分享链接
+                                        </button>
+                                    }
                                     @if (package.ShareExpiresAt is { } expiry && package.ShareRevokedAt is null)
                                     {
                                         <div class="wb-muted">链接有效到 @expiry.ToLocalTime().ToString("MM-dd HH:mm")</div>
@@ -239,6 +294,53 @@ else
     private bool Loading { get; set; } = true;
     private bool Busy { get; set; }
     private bool Authorized { get; set; }
+    private bool LocalOwner { get; set; }
+    private bool ReleaseMode { get; set; }
+    private string? ReleaseNotes { get; set; }
+    private readonly Dictionary<Guid, SqlDraft> _sqlDrafts = new();
+
+    private sealed class SqlDraft
+    {
+        public string Phase { get; set; } = "deploy";
+        public int? Order { get; set; }
+        public string Target { get; set; } = "";
+    }
+
+    private List<DeliveryCandidateDto> SelectedSql() =>
+        Candidates?.Candidates.Where(item => item.IsSql && _selected.Contains(item.ItemId)).ToList() ?? [];
+
+    private SqlDraft SqlDraftFor(Guid id)
+    {
+        if (!_sqlDrafts.TryGetValue(id, out var draft))
+        {
+            draft = new SqlDraft();
+            _sqlDrafts.Add(id, draft);
+        }
+
+        return draft;
+    }
+
+    private ReleasePackageOptions? GetReleaseOptions()
+    {
+        if (!ReleaseMode)
+        {
+            return null;
+        }
+
+        var scripts = SelectedSql().Select(item => (Item: item, Draft: SqlDraftFor(item.ItemId))).ToList();
+        if (scripts.Any(s => s.Draft.Order is null or <= 0 || string.IsNullOrWhiteSpace(s.Draft.Target)))
+        {
+            throw new GuanfuException("请为每个 SQL 脚本填写阶段内顺序和目标数据库。");
+        }
+        if (scripts.Select(s => (s.Draft.Phase, s.Draft.Order)).Distinct().Count() != scripts.Count)
+        {
+            throw new GuanfuException("同一阶段内，SQL 脚本顺序不能重复。");
+        }
+
+        return new ReleasePackageOptions(scripts.OrderBy(s => s.Draft.Order)
+            .Select(s => new ReleaseSqlStep(s.Item.ItemId, s.Draft.Phase, s.Draft.Target, s.Item.ArtifactVersion))
+            .ToList(), ReleaseNotes);
+    }
 
     /// <summary>粘贴的人工凭证。</summary>
     private string TokenInput { get; set; } = string.Empty;
@@ -252,7 +354,7 @@ else
     /// <summary>验证粘贴的人工凭证（owner 本人在场）。</summary>
     private void VerifyTokenAsync()
     {
-        if (ApprovalUiGuard.CanDecide(TokenInput, Tokens.Token))
+        if (LocalOwner && ApprovalUiGuard.CanDecide(TokenInput, Tokens.Token))
         {
             TokenInput = string.Empty;
             TokenHint = null;
@@ -267,6 +369,8 @@ else
 
     protected override async Task OnInitializedAsync()
     {
+        LocalOwner = CurrentMember.Current is null;
+        Authorized = CurrentMember.Current?.IsAdmin == true;
         await LoadAsync();
     }
 
@@ -328,7 +432,7 @@ else
     /// <summary>签发一个分享链接 —— 项管没有观复账号，他要的是一个能点的链接。</summary>
     private async Task CreateShareAsync(Guid packageId)
     {
-        if (Busy)
+        if (Busy || !Authorized)
         {
             return;
         }
@@ -363,7 +467,7 @@ else
     /// <summary>撤销分享链接。</summary>
     private async Task RevokeShareAsync(Guid packageId)
     {
-        if (Busy)
+        if (Busy || !Authorized)
         {
             return;
         }
@@ -411,7 +515,7 @@ else
 
     private async Task PackAsync()
     {
-        if (Busy || _selected.Count == 0)
+        if (Busy || (_selected.Count == 0 && !ReleaseMode) || !Authorized)
         {
             return;
         }
@@ -424,9 +528,12 @@ else
             using var scope = ScopeFactory.CreateScope();
             var delivery = scope.ServiceProvider.GetRequiredService<IDeliveryPackageService>();
 
-            await delivery.CreateAsync(MilestoneId, _selected.ToList(), await PackerNameAsync());
+            await delivery.CreateAsync(MilestoneId, _selected.ToList(), await PackerNameAsync(),
+                release: GetReleaseOptions());
 
             _selected.Clear();
+            _sqlDrafts.Clear();
+            ReleaseNotes = null;
 
             await LoadAsync();
         }

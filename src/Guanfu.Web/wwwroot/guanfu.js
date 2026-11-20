@@ -69,3 +69,41 @@ window.wbPositionMenu = function (menuId, anchorId) {
     menu.style.top = top + 'px';
     menu.style.left = left + 'px';
 };
+
+document.addEventListener('submit', async function (event) {
+    const form = event.target;
+    if (form.id !== 'wb-login') {
+        return;
+    }
+
+    event.preventDefault();
+    const button = form.querySelector('button');
+    const error = form.querySelector('[role="alert"]');
+    const fields = new FormData(form);
+    button.disabled = true;
+    error.hidden = true;
+
+    try {
+        const result = await fetch('/api/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                userName: fields.get('userName'),
+                password: fields.get('password')
+            })
+        });
+
+        if (result.ok) {
+            const target = new URL(form.dataset.returnUrl || '/', window.location.origin);
+            window.location.assign(target.origin === window.location.origin ? target.href : '/');
+            return;
+        }
+
+        error.textContent = result.status === 401 ? '用户名或密码不对。' : '登录没成功，稍后再试。';
+    } catch {
+        error.textContent = '登录没成功，稍后再试。';
+    } finally {
+        error.hidden = !error.textContent;
+        button.disabled = false;
+    }
+});

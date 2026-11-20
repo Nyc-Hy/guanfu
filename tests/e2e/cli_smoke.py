@@ -17,6 +17,7 @@ stdio 桥接不可替代：只支持 stdio 的 MCP 客户端全靠它接进来�
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -26,9 +27,12 @@ import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
+from zipfile import ZipFile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from approval_e2e import create_fixture_connection, rest_status
 from mcp_e2e import Mcp, expect, section, FAILURES, rest_json  # noqa: E402
 
 
@@ -244,6 +248,103 @@ def main() -> int:
     code, out = guanfu("review", "export", task_id, "--format", "markdown")
     expect(code == 0, "guanfu review export 应能导出评审报告")
 
+    print("\n-- E1.5b 多角度评审与版本发版工具包 --")
+    release = rest_json(args.url, "POST", f"/api/projects/{project_id}/milestones", {"name": f"发版 {suffix}"})
+    release_id = release["id"]
+    rest_json(args.url, "POST", f"/api/tasks/{task_id}/milestone", {"milestoneId": release_id})
+    for number in range(2, 6):
+        rest_json(args.url, "POST", f"/api/projects/{project_id}/tasks", {
+            "title": f"发版功能 {number}", "milestoneId": release_id,
+        })
+    rest_json(args.url, "POST", f"/api/tasks/{task_id}/test-result", {"total": 9, "passed": 8, "coverage": 0.9})
+    evidence = {
+        "baseline": "base-revision", "revision": "reviewed-revision", "databaseChange": "required",
+        "checks": [{"category": "performance", "status": "passed", "summary": "批量路径有测量", "evidence": "P95 28ms"}],
+        "findings": [{"key": "F-001", "category": "security", "relatedCategories": ["scope_impact"],
+                      "severity": "blocker", "status": "open", "title": "跨项目检查",
+                      "evidence": "<script>externalInput()</script>", "location": "src/Api.cs:70"}],
+        "requirements": [{"key": "AC-1", "source": "PRD v2 §3", "requirement": "允许提交评审",
+                          "status": "complete", "implementation": "src/Api.cs:70", "evidence": "用例 T1"}],
+        "changes": [{"requirementKey": "AC-1", "path": "src/Api.cs", "change": "新增参数", "patch": "+payload"},
+                    {"path": "src/Shared.cs", "change": "共用数据类型", "shared": True}],
+        "testCases": [{"name": "T1", "requirementKey": "AC-1", "status": "passed",
+                       "evidence": "本机 CI 报告", "environment": ".NET 8"}],
+    }
+    review_agent = Mcp(args.url)
+    review_agent.initialize()
+    record = {"taskId": task_id, "round": 1, "expectedVersion": 0, "evidence": evidence}
+    recorded = review_agent.call("guanfu_record_review_evidence", record)
+    expect(recorded.get("ok") is True and recorded.get("reportEvidence", {}).get("version") == 1,
+           f"MCP 保存第一版评审证据（{recorded.get('error')}）")
+    expect(review_agent.call("guanfu_record_review_evidence", record).get("ok") is False,
+           "过期的证据版本不能覆盖刚提交的评审内容")
+    moved = {**record, "expectedVersion": 1, "evidence": {**evidence, "revision": "changed-revision"}}
+    expect(review_agent.call("guanfu_record_review_evidence", moved).get("ok") is False,
+           "评审提交发生变化时须开新轮")
+    rpc_html = review_agent.call("guanfu_export_review", {"taskId": task_id, "round": 1, "format": "html"})
+    expect(rpc_html.get("ok") is True and "PRD v2" in rpc_html.get("content", rpc_html.get("text", "")),
+           "MCP 导出带 PRD 证据的 HTML")
+    _, html = guanfu("review", "export", task_id, "--format", "html")
+    expect(all(text in html for text in ("<!doctype html>", "P95 28ms", "AC-1", "8/9", "+payload", "共享变更")),
+           "CLI HTML 包含性能、需求、差异与测试结果")
+    expect("<script>externalInput()" not in html and "&lt;script&gt;externalInput()" in html,
+           "HTML 把评审证据里的脚本当作文本")
+
+    scripts = [rest_json(args.url, "POST", f"/api/tasks/{task_id}/artifacts", {
+        "type": "SqlScript", "title": name, "content": content,
+    }) for name, content in [("增加列", "-- deploy"), ("回填", "-- backfill"), ("恢复.sql", "-- rollback")]]
+    steps = [
+        {"itemId": scripts[1]["id"], "phase": "deploy", "target": "测试库", "artifactVersion": 1},
+        {"itemId": scripts[0]["id"], "phase": "deploy", "target": "测试库", "artifactVersion": 1},
+        {"itemId": scripts[2]["id"], "phase": "rollback", "target": "测试库", "artifactVersion": 1},
+    ]
+    release_endpoint = f"/api/milestones/{release_id}/delivery/packages"
+    status, _ = rest_status(args.url, "POST", release_endpoint, {"itemIds": [], "release": {}}, with_token=False)
+    expect(status == 401, "发版工具包仍需人工凭证")
+    status, _ = rest_status(args.url, "POST", release_endpoint, {
+        "itemIds": [script["id"] for script in scripts], "release": {"sqlSteps": steps[:-1]},
+    })
+    expect(status == 400, "所选 SQL 未列全时拒绝打包")
+    status, _ = rest_status(args.url, "POST", release_endpoint, {
+        "itemIds": [script["id"] for script in scripts],
+        "release": {"sqlSteps": [{**steps[0], "artifactVersion": 99}, *steps[1:]]},
+    })
+    expect(status == 400, "SQL 已确认的产物版本不匹配时拒绝打包")
+    candidates = rest_json(args.url, "GET", f"/api/milestones/{release_id}/delivery/candidates")["candidates"]
+    prior_script = next(item for item in candidates if item["title"] == "本地脚本.sql")
+    steps.append({"itemId": prior_script["itemId"], "phase": "verify", "target": "测试库", "artifactVersion": 1})
+    with tempfile.TemporaryDirectory(prefix="guanfu-release-") as directory:
+        output = Path(directory, "release.zip")
+        plan = Path(directory, "plan.json")
+        plan.write_text(json.dumps({"sqlSteps": steps, "notes": "变更窗口先确认备份"}), encoding="utf-8")
+        code, result = guanfu("delivery", "pack", release_id, "--all",
+                              "--release-plan", str(plan), "--output", str(output))
+        expect(code == 0 and output.is_file(), f"CLI 用版本 GUID 和 --all 下载发版包（{result.strip()[:200]}）")
+        if output.is_file():
+            with ZipFile(output) as archive:
+                manifest = json.loads(archive.read("manifest.json"))
+                release_data = manifest["release"]
+                index = archive.read("index.html").decode()
+                records = release_data["tasks"]
+                sql = release_data["sql"]
+                expect(len(records) == 5 and "发版功能 5" in index and "F-001" in index,
+                       "版本 HTML 汇总 5 个功能和评审问题")
+                reviewed = next(entry for entry in records if entry["taskId"] == task_id)
+                expect(reviewed["reviewRound"] == 1 and reviewed["reviewEvidenceVersion"] == 1
+                       and reviewed["revision"] == "reviewed-revision",
+                       "版本清单记录对应的轮次、证据版本和评审提交")
+                expect("PRD v2" in archive.read(reviewed["report"]).decode()
+                       and "变更窗口先确认备份" in archive.read("发布说明.md").decode(),
+                       "包内包含同一轮任务报告和发布说明")
+                expect([step["phase"] for step in sql] == ["deploy", "deploy", "verify", "rollback"]
+                       and [archive.read(sql[i]["path"]).decode() for i in (0, 1, 3)] == ["-- backfill", "-- deploy", "-- rollback"]
+                       and sql[0]["path"].startswith("sql/deploy/001-")
+                       and all(step["path"].endswith(".sql") for step in sql),
+                       "SQL 分阶段归档并保留发布人确认的顺序")
+                expect(all(hashlib.sha256(archive.read(item["path"])).hexdigest() == item["sha256"]
+                           for item in manifest["items"]),
+                       "发版包清单的 SHA-256 可以逐文件复核")
+
     print("\n-- E1.6 审批、审计、数据库、指标 --")
     code, out = guanfu("approval", "list")
     expect(code == 0, "guanfu approval list 应成功")
@@ -259,7 +360,7 @@ def main() -> int:
 
     # ── E2 敏感命令的凭证门槛 ─────────────────────────────────────────
     print("\n-- E2 敏感命令没凭证就是 401 --")
-    code, out = guanfu("project", "config", project_id, "--allow", "touch", token="",
+    code, out = guanfu("project", "config", project_id, "--repo", tempfile.gettempdir(), token="",
                    expect_code=2)
     expect("401" in out, f"没凭证改项目配置应报 401（输出：{out.strip()[:160]}）")
 
@@ -268,20 +369,20 @@ def main() -> int:
     code, out = guanfu("project", "add", "无凭证建的项目", token="", expect_code=2)
     expect("401" in out, f"没凭证建项目应报 401（输出：{out.strip()[:160]}）")
 
-    # 带凭证要能改 —— 而且要顺手把仓库路径与白名单配好，
-    # 后面的 shell_run 要靠它造出待审审批。
+    # 带凭证可以更新项目设置。
     repo_dir = tempfile.mkdtemp(prefix="wb-e2e-cli-repo-")
     try:
-        code, out = guanfu("project", "config", project_id, "--repo", repo_dir, "--allow", "touch")
+        code, out = guanfu("project", "config", project_id, "--repo", repo_dir)
         expect("已更新项目配置" in out, "带凭证改项目配置应成功")
 
         print("\n-- E2.2 人工裁决审批（CLI 这条路也要能批） --")
         # 用 MCP 造一条待审审批，再用 CLI 批 —— 验证 CLI 的敏感路径真的通。
+        create_fixture_connection(args.url, project_id)
         mcp = Mcp(args.url)
         mcp.initialize()
         pending = mcp.call(
-            "shell_run",
-            {"projectId": project_id, "command": "touch cli-smoke-marker.txt", "waitSeconds": 1,
+            "db_execute",
+            {"projectId": project_id, "sql": "UPDATE dbo.CliProbe SET Id = 1", "waitSeconds": 1,
              "callerId": "e2e-agent"},
         )
         approval_id = pending.get("approvalId") or ""
@@ -425,6 +526,8 @@ def bridge_roundtrip(args) -> bool:
 
         tools = json.loads(tools_line).get("result", {}).get("tools", [])
         expect(len(tools) > 0, f"tools/list 应列出工具（实际 {len(tools)} 个）")
+        retired = {"fs_list", "fs_read", "git_commit", "git_push", "shell_run"}
+        expect(retired.isdisjoint(tool.get("name") for tool in tools), "服务端开发工具已从 MCP 清单退役")
         expect(
             all("_" in tool.get("name", "") for tool in tools),
             "工具名一律用下划线（规矩：MCP 客户端不接受点号）",

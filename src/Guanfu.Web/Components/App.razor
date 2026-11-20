@@ -1,5 +1,6 @@
 ﻿@using Microsoft.AspNetCore.Components.Authorization
 @inject StaticAssetsVersion Assets
+@inject NavigationManager Nav
 <!DOCTYPE html>
 <html lang="zh-CN">
 
@@ -36,10 +37,25 @@
     @* CascadingAuthenticationState：把「现在是谁在操作」传给页面与布局。
        没有它，导航栏就没法显示当前用户、也没法按角色收权限。 *@
     <CascadingAuthenticationState>
-        <Routes @rendermode="InteractiveServer" />
+        @if (IsLoginPage)
+        {
+            <Routes />
+        }
+        else
+        {
+            <Routes @rendermode="InteractiveServer" />
+        }
     </CascadingAuthenticationState>
     <script src="guanfu.js?v=@Assets.Value"></script>
-    <script src="_framework/blazor.web.js"></script>
+    @if (!IsLoginPage)
+    {
+        <script src="_framework/blazor.web.js"></script>
+    }
 </body>
 
 </html>
+
+@code {
+    private bool IsLoginPage =>
+        string.Equals(new Uri(Nav.Uri).AbsolutePath.TrimEnd('/'), "/login", StringComparison.OrdinalIgnoreCase);
+}

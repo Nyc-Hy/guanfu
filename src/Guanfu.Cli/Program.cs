@@ -14,17 +14,18 @@ using Guanfu.Cli;
 //   guanfu approval list|approve|reject
 //   guanfu mcp                                stdio ↔ HTTP 的 MCP 桥接
 
-// 新的环境变量优先；旧的名仍然认（改名不该让脚本失效）
-var url = Environment.GetEnvironmentVariable("GUANFU_URL")
-         ?? Environment.GetEnvironmentVariable("WORKBENCH_URL")
-         ?? "http://127.0.0.1:5177";
 var cliArgs = args.ToList();
-
-// 全局参数
+string? explicitUrl = null;
 var urlIndex = cliArgs.FindIndex(a => a == "--url");
-if (urlIndex >= 0 && urlIndex + 1 < cliArgs.Count)
+if (urlIndex >= 0)
 {
-    url = cliArgs[urlIndex + 1];
+    if (urlIndex + 1 == cliArgs.Count || cliArgs[urlIndex + 1].StartsWith("--", StringComparison.Ordinal))
+    {
+        Console.Error.WriteLine("--url 需要一个观复服务地址。");
+        return 1;
+    }
+
+    explicitUrl = cliArgs[urlIndex + 1];
     cliArgs.RemoveRange(urlIndex, 2);
 }
 
@@ -44,7 +45,7 @@ if (cliArgs[0] is "--help" or "-h" or "-?" or "help")
 }
 
 // --token 人工凭证。敏感命令（裁决审批 / 改配置 / 启动 agent / 搬迁工作区）
-// 没有它就是 401。优先级最高，胜过环境变量与 .human-token 文件。
+// 需要人工凭证的命令也可使用 GUANFU_HUMAN_TOKEN。
 var tokenIndex = cliArgs.FindIndex(a => a == "--token");
 if (tokenIndex >= 0 && tokenIndex + 1 < cliArgs.Count)
 {
@@ -62,6 +63,17 @@ try
     {
         case "serve":
             return await ServeAsync(cliArgs);
+        case "configure":
+            return CliServer.Configure(explicitUrl);
+        case "token":
+            return TokenCommand();
+        case "workspace" when cliArgs.FirstOrDefault()?.Equals("import", StringComparison.OrdinalIgnoreCase) == true:
+            return await WorkspaceCommandAsync(null, cliArgs);
+    }
+
+    var url = CliServer.Resolve(explicitUrl);
+    switch (command)
+    {
         case "mcp":
             return await McpBridge.RunAsync(url, cliArgs);
         case "project":
@@ -104,8 +116,6 @@ try
             return AgentConfigCommand.Run(url, cliArgs);
         case "db":
             return await DbCommandAsync(url, cliArgs);
-        case "token":
-            return TokenCommand();
         default:
             Console.Error.WriteLine($"未知命令: {command}");
             PrintUsage();
@@ -130,6 +140,7 @@ static void PrintUsage()
 
         用法:
           guanfu serve                              启动 Web（UI + REST + MCP 端点）
+          guanfu configure --url <地址>            保存默认观复服务地址
           guanfu mcp                                stdio ↔ HTTP 的 MCP 桥接
           guanfu call <工具名> [--arg 键=值 ...]     从 shell 调任意 MCP 工具
           guanfu tools                             观复现在暴露哪些工具
@@ -180,7 +191,7 @@ static void PrintUsage()
           guanfu task events <任务ID> [--format markdown|csv|json]   导出事件流水
           guanfu approval batch <审批ID> [<审批ID>...] [--reject] [--by 决策人]
           guanfu approval revoke <审批ID> [--reason 理由]
-          guanfu review export <任务ID> [--round 轮次]     导出评审报告
+          guanfu review export <任务> [--round 轮次] [--format markdown|json|html]   导出评审报告
           guanfu audit list [--tool 工具名] [--project 项目ID] [--task 任务ID] [--limit 条数]
           guanfu db connections <项目ID>                   列数据库连接
           guanfu db rules <连接ID>                         列表级规则（免审批写 / 不许读）
@@ -188,11 +199,8 @@ static void PrintUsage()
           guanfu token                                  打印人工凭证（远程访问网页时粘贴用）
 
         全局参数:
-          --url <地址>        服务地址，默认 http://127.0.0.1:5177
-                              也可用环境变量 GUANFU_URL 指定
-          --token <凭证>      人工凭证。敏感命令（裁决审批 / 改项目配置 / 启动 agent /
-                              工作区搬迁）没有它会 401。优先级：--token > 环境变量
-                              GUANFU_HUMAN_TOKEN > 数据目录/.human-token 文件
+          --url <地址>        服务地址。可用 GUANFU_URL 或 guanfu configure 保存默认地址
+          --token <凭证>      凭证。REST 也可用 GUANFU_HUMAN_TOKEN，MCP 也可用 GUANFU_TOKEN
         """);
 }
 
@@ -212,7 +220,7 @@ static int TokenCommand()
 
     if (string.IsNullOrWhiteSpace(token))
     {
-        var home = GuanfuClient.ResolveHomeDirectory() ?? "~/.workbench";
+        var home = GuanfuClient.ResolveHomeDirectory() ?? "~/.guanfu";
         Console.Error.WriteLine($"没找到人工凭证。先启动观复（guanfu serve），凭证会写在 {Path.Combine(home, ".human-token")}。");
         return 1;
     }
@@ -332,6 +340,7 @@ static async Task<int> RunServerAsync(string serverPath, List<string> cliArgs)
     var startInfo = new System.Diagnostics.ProcessStartInfo
     {
         FileName = serverPath,
+        WorkingDirectory = Path.GetDirectoryName(serverPath)!,
         UseShellExecute = false
     };
 
@@ -1139,9 +1148,8 @@ static void PrintMetrics(ProjectMetricsDto m)
     Console.WriteLine($"  流速: {string.Join(" ", m.Throughput.Select(t => $"{t.Week[5..]}={t.Completed}"))}");
 }
 
-static async Task<int> WorkspaceCommandAsync(string url, List<string> cliArgs)
+static async Task<int> WorkspaceCommandAsync(string? url, List<string> cliArgs)
 {
-    var client = new GuanfuClient(url, CliOptions.Token);
     var sub = cliArgs.Count > 0 ? Arg(cliArgs, 0).ToLowerInvariant() : "";
 
     switch (sub)
@@ -1154,7 +1162,7 @@ static async Task<int> WorkspaceCommandAsync(string url, List<string> cliArgs)
                 return 1;
             }
 
-            var result = await client.PostAsync<WorkspaceArchiveResult>(
+            var result = await new GuanfuClient(url!, CliOptions.Token).PostAsync<WorkspaceArchiveResult>(
                 "/api/workspace/export", new { targetDirectory = Path.GetFullPath(Arg(cliArgs, 1)) });
             Console.WriteLine(result.Message);
             return 0;
@@ -1287,10 +1295,13 @@ static async Task<int> ReviewCommandAsync(string url, List<string> cliArgs)
         {
             if (cliArgs.Count < 2)
             {
-                Console.Error.WriteLine("用法: guanfu review export <任务ID> [--round 轮次] [--format markdown|json]");
+                Console.Error.WriteLine("用法: guanfu review export <任务> [--round 轮次] [--format markdown|json|html]");
                 return 1;
             }
 
+            var reference = Arg(cliArgs, 1);
+            var taskId = await CliResolve.TaskIdAsync(client, reference, requireUnique: true)
+                ?? throw new GuanfuCliException($"找不到任务：{reference}");
             var round = GetOption(cliArgs, "--round");
             var format = GetOption(cliArgs, "--format") ?? "markdown";
 
@@ -1301,7 +1312,7 @@ static async Task<int> ReviewCommandAsync(string url, List<string> cliArgs)
             }
 
             var text = await client.GetRawAsync(
-                $"/api/tasks/{Arg(cliArgs, 1)}/export/review?{string.Join('&', query)}");
+                $"/api/tasks/{taskId}/export/review?{string.Join('&', query)}");
 
             Console.WriteLine(text);
             return 0;

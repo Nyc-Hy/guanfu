@@ -23,7 +23,7 @@
 ```bash
 tar -xzf guanfu-linux-x64-20261119.tar.gz
 cd guanfu-linux-x64-20261119
-./bin/guanfu-server                 # 服务端：界面 + REST + /mcp
+./bin/guanfu serve                   # 服务端：界面 + REST + /mcp
 ```
 
 启动横幅里会打印**人工 token**（owner 的万能钥匙，重启不变，丢了用 `guanfu token` 找回）。
@@ -121,7 +121,8 @@ dotnet run --project src/Guanfu.Web
   "mcpServers": {
     "guanfu": {
       "command": "guanfu",
-      "args": ["mcp", "--url", "http://127.0.0.1:5177"]
+      "args": ["mcp", "--url", "http://127.0.0.1:5177"],
+      "env": { "GUANFU_TOKEN": "<凭证>" }
     }
   }
 }
@@ -129,6 +130,9 @@ dotnet run --project src/Guanfu.Web
 
 > `guanfu mcp` 桥接是 CLI 唯一不可替代的能力 —— 只支持 stdio 的 MCP 客户端全靠它接进来。
 > 改这个桥接时要格外小心（stdout 只能输出 JSON-RPC，任何多余输出都会污染协议流）。
+
+团队开发者在自己的工作区用 Codex 读写代码、跑测试和操作 Git。观复记录工作进度，
+开发机可以用 CLI 上传需要交付的本地文件。
 
 agent 的典型流程：
 
@@ -150,13 +154,14 @@ guanfu_submit_review     逐维度回写评审结论
 
 ```bash
 guanfu serve                              # 启动 Web（UI + REST + MCP）
+guanfu configure --url http://127.0.0.1:5177  # 保存 CLI 服务地址
 guanfu mcp --url http://127.0.0.1:5177    # stdio ↔ HTTP 桥接
 guanfu project list                       # 列项目
 guanfu task list <项目ID>
 guanfu task claim <任务ID> --agent agent-a
 guanfu approval list                      # 待批与历史
 guanfu audit verify                       # 验哈希链
-guanfu workspace export /tmp/guanfu-backup   # 备份（库 + 文档 + 密钥 + 日志）
+guanfu workspace export /tmp/guanfu-backup --token "$(guanfu token)"  # 在服务器上备份
 guanfu token                              # 打印人工凭证
 ```
 
@@ -178,7 +183,7 @@ Guanfu.sln
 │  └─ Guanfu.Cli             guanfu 命令行 + stdio↔HTTP MCP 桥接
 ├─ tests/
 │  ├─ Guanfu.Tests           单元与契约测试
-│  └─ e2e/                   七条端到端链路
+│  └─ e2e/                   八条端到端链路
 ├─ scripts/publish.sh        打出可交付的发布包
 └─ deploy/                   systemd / nginx / 环境变量模板
 ```
@@ -204,7 +209,7 @@ Guanfu.sln
 换电脑：
 
 ```bash
-guanfu workspace export /tmp/guanfu-backup
+guanfu workspace export /tmp/guanfu-backup --token "$(guanfu token)"
 # 把整个目录拷到新机器
 guanfu workspace import /tmp/guanfu-backup --home ~/.guanfu
 ```
@@ -223,20 +228,22 @@ dotnet test Guanfu.sln
 ./scripts/publish.sh            # 打出可交付的发布包
 ```
 
-端到端有七条链路（`tests/e2e/`）：
+端到端有八条链路（`tests/e2e/`）：
 
 - **A/B/C**（`mcp_e2e.py`）—— 模拟 agent 走完「按编号找任务 → claim → 取上下文 →
   回写计划 → 推进到 Review → 开评审轮 → 取评审包 → 逐维度回写 → 结项」，
   外加两条拦截链路（只评 6 个维度就结项、有一个维度不通过就结项，**两种都必须被拒**）。
-- **D**（`approval_e2e.py`）—— **写操作的人工审批门禁**：白名单外的直接拒、
-  没批准不执行、批准后带 `approvalId` 续跑、一条审批只能执行一次、
-  换个命令或换个项目都用不了、撤销是后悔药、只读通道不许写、全程审计留痕。
+- **D**（`approval_e2e.py`）—— **数据库写入审批**：未批准时不连接数据库，
+  更换 SQL 或项目时拒绝，撤销后不可执行，禁止写表与只读通道均受校验，调用留审计。
+  审批成功和一次性消费由 `ApprovalGateTests`、`GateHardeningTests` 验证。
 - **E**（`cli_smoke.py`）—— CLI 常用命令、敏感命令没凭证是 401、
   `guanfu mcp` 的 stdio 桥接真能转发 JSON-RPC。
 - **F**（`session_e2e.py`）—— **会话绑定链路**：绑定项目 → 不传 `projectId` 也能干活 →
   跨项目被拒 → 按编号认领 → 审计自动带任务。
-- **G**（`restart_e2e.py`）—— **重启对账**：执行途中杀进程 → 同一个数据目录再起 →
+- **G**（`restart_e2e.py`）—— **重启对账**：数据库写入尝试连接时结束进程 → 同一个数据目录再起 →
   那次写操作标成「结果未知」交人工确认。
+- **H**（`team_e2e.py`）—— **团队协作**：MCP 跨项目权限、开发机 CLI 上报、项管验收和打包、
+  停用后会话及凭证失效、恢复备份后可继续下载交付包。
 
 改完 MCP 工具、状态机**或审批闸门**后跑一遍。
 

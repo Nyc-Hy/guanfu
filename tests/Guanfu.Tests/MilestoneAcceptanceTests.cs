@@ -128,6 +128,36 @@ public class MilestoneAcceptanceTests
     }
 
     [Fact]
+    public async Task 祖先验收后锁定任务和子里程碑范围()
+    {
+        using var host = new GuanfuTestHost();
+        var project = await host.Projects.CreateAsync("项目");
+        var release = await host.Milestones.CreateAsync(project.Id, "已验收版本");
+        var group = await host.Milestones.CreateAsync(project.Id, "需求组", parentId: release.Id);
+        var next = await host.Milestones.CreateAsync(project.Id, "下一版本");
+        var task = await host.Tasks.CreateAsync(project.Id, "待交付任务", milestoneId: group.Id);
+        await FinishAsync(host, task.Id);
+        await host.Milestones.AcceptAsync(release.Id);
+
+        await Assert.ThrowsAsync<GuanfuException>(() => host.Milestones.AssignTaskAsync(task.Id, null));
+        await Assert.ThrowsAsync<GuanfuException>(() => host.Milestones.AssignTaskAsync(task.Id, next.Id));
+        await Assert.ThrowsAsync<GuanfuException>(() => host.Tasks.SetArchivedAsync(task.Id, true));
+        await Assert.ThrowsAsync<GuanfuException>(() => host.Tasks.CreateAsync(project.Id, "后加任务", milestoneId: group.Id));
+        await Assert.ThrowsAsync<GuanfuException>(() => host.Milestones.CreateAsync(project.Id, "后加子组", parentId: group.Id));
+        await Assert.ThrowsAsync<GuanfuException>(() => host.Milestones.UpdateAsync(group.Id, clearParent: true));
+        await Assert.ThrowsAsync<GuanfuException>(() => host.Milestones.UpdateAsync(next.Id, parentId: group.Id));
+        await Assert.ThrowsAsync<GuanfuException>(() => host.Milestones.DeleteAsync(group.Id));
+        Assert.Equal(group.Id, (await host.Tasks.GetAsync(task.Id))!.MilestoneId);
+        Assert.False((await host.Tasks.GetAsync(task.Id))!.IsArchived);
+
+        await host.Milestones.UnacceptAsync(release.Id);
+        await host.Milestones.AssignTaskAsync(task.Id, next.Id);
+        var archived = await host.Tasks.SetArchivedAsync(task.Id, true);
+        Assert.Equal(next.Id, archived.MilestoneId);
+        Assert.True(archived.IsArchived);
+    }
+
+    [Fact]
     public async Task 完成定义没判过不许验收()
     {
         using var host = new GuanfuTestHost();

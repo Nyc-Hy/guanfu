@@ -286,6 +286,28 @@ public sealed class ArchiveDeliveryTests : IDisposable
     }
 
     [Fact]
+    public async Task 发版勾选的SQL原件缺失时不生成交付包()
+    {
+        using var host = new GuanfuTestHost();
+        var project = await host.Projects.CreateAsync("测试项目");
+        var milestone = await host.Milestones.CreateAsync(project.Id, "12 月版本");
+        var task = await host.Tasks.CreateAsync(project.Id, "迁移任务", milestoneId: milestone.Id);
+        var document = new Document { TaskId = task.Id, FileName = "迁移.sql", StoredPath = "缺失.sql" };
+        host.Db.Documents.Add(document);
+        await host.Db.SaveChangesAsync();
+        var delivery = new DeliveryPackageService(
+            host.Db, new TempDocumentStore(_root), new TempPackageStore(_root), host.Clock);
+
+        var error = await Assert.ThrowsAsync<GuanfuException>(() =>
+            delivery.CreateAsync(milestone.Id, [document.Id], release: new ReleasePackageOptions(
+                [new ReleaseSqlStep(document.Id, "deploy", "测试库")])));
+
+        Assert.Contains("迁移.sql", error.Message);
+        Assert.Empty(await host.Db.DeliveryPackages.ToListAsync());
+        Assert.False(Directory.Exists(_root));
+    }
+
+    [Fact]
     public async Task 别的迭代版本的东西进不来()
     {
         using var host = new GuanfuTestHost();

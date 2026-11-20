@@ -244,6 +244,7 @@ public sealed class TaskService(
             throw new NotFoundException("项目", projectId);
         }
 
+        await using var transaction = milestoneId is null ? null : await db.BeginWriteTransactionAsync(cancellationToken);
         // 里程碑要属于本项目，否则「12月版本」这种归属就是假的
         if (milestoneId is not null)
         {
@@ -254,6 +255,7 @@ public sealed class TaskService(
             {
                 throw new GuanfuException($"里程碑 {milestoneId} 不属于项目 {projectId}。");
             }
+            await MilestoneAcceptanceLock.EnsureEditableAsync(db, projectId, milestoneId, cancellationToken);
         }
 
         // 父任务同理。不校验的话，父任务在别的项目（或压根不存在），
@@ -332,6 +334,11 @@ public sealed class TaskService(
                 // 并发算出了同一个号 —— 清掉跟踪状态，重算一个号再来
                 db.ClearTracking();
             }
+        }
+
+        if (transaction is not null)
+        {
+            await transaction.CommitAsync(cancellationToken);
         }
 
         var project = await db.Projects.AsNoTracking().FirstAsync(p => p.Id == projectId, cancellationToken);
@@ -562,6 +569,8 @@ public sealed class TaskService(
         CancellationToken cancellationToken = default,
         Guid? sessionId = null)
     {
+        var terminal = TaskStatusMachine.IsTerminal(to);
+        await using var transaction = terminal ? null : await db.BeginWriteTransactionAsync(cancellationToken);
         var task = await db.Tasks.FirstOrDefaultAsync(t => t.Id == id, cancellationToken)
                    ?? throw new NotFoundException("任务", id);
 
@@ -579,7 +588,9 @@ public sealed class TaskService(
         // 要改得先撤销验收（签字不是永久的，但也不能悄悄作废）。
         if (to is not (TaskStatus.Done or TaskStatus.Cancelled))
         {
-            var accepted = await FindAcceptedMilestoneAsync(id, cancellationToken);
+            var milestoneId = await db.Tasks.AsNoTracking().Where(t => t.Id == id)
+                .Select(t => t.MilestoneId).SingleAsync(cancellationToken);
+            var accepted = await MilestoneAcceptanceLock.FindAsync(db, task.ProjectId, milestoneId, cancellationToken);
             if (accepted is not null)
             {
                 throw new GuanfuException(
@@ -604,7 +615,6 @@ public sealed class TaskService(
         }
 
         var now = clock.UtcNow;
-        var terminal = TaskStatusMachine.IsTerminal(to);
 
         // 条件更新：WHERE Status = from。
         // 「先读后写」挡不住并发 —— 两个请求都读到 Review，各自校验完门禁再写回，
@@ -668,6 +678,10 @@ public sealed class TaskService(
         });
 
         await db.SaveChangesAsync(cancellationToken);
+        if (transaction is not null)
+        {
+            await transaction.CommitAsync(cancellationToken);
+        }
 
         return await SummaryWithPendingAsync(task, cancellationToken);
     }
@@ -1330,11 +1344,13 @@ public sealed class TaskService(
         bool archived,
         CancellationToken cancellationToken = default)
     {
+        await using var transaction = await db.BeginWriteTransactionAsync(cancellationToken);
         var task = await db.Tasks.FirstOrDefaultAsync(t => t.Id == id, cancellationToken)
                    ?? throw new NotFoundException("任务", id);
 
         if (task.IsArchived != archived)
         {
+            await MilestoneAcceptanceLock.EnsureEditableAsync(db, task.ProjectId, task.MilestoneId, cancellationToken);
             task.IsArchived = archived;
             task.UpdatedAt = clock.UtcNow;
             task.LastActivityAt = clock.UtcNow;
@@ -1353,6 +1369,7 @@ public sealed class TaskService(
             });
 
             await db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
         }
 
         return await SummaryWithPendingAsync(task, cancellationToken);
@@ -1714,57 +1731,6 @@ public sealed class TaskService(
 
         return null;
     }
-
-    /// <summary>
-    /// 这个任务是不是在**已验收**的里程碑下面（含祖先）。
-    ///
-    /// 返回验收的里程碑名（没验收过就 null）。
-    /// </summary>
-    private async Task<string?> FindAcceptedMilestoneAsync(Guid taskId, CancellationToken cancellationToken)
-    {
-        var milestoneId = await db.Tasks.AsNoTracking()
-            .Where(t => t.Id == taskId)
-            .Select(t => t.MilestoneId)
-            .FirstOrDefaultAsync(cancellationToken);
-
-        if (milestoneId is not Guid current)
-        {
-            return null;
-        }
-
-        var milestones = await db.Milestones.AsNoTracking()
-            .Select(m => new { m.Id, m.ParentId, m.Name, m.AcceptedAt })
-            .ToListAsync(cancellationToken);
-
-        if (milestones.Count == 0)
-        {
-            return null;
-        }
-
-        var byId = milestones.ToDictionary(m => m.Id);
-
-        // 从任务所在的里程碑往上找：自己、父亲、祖父… 哪一层签过字都算数
-        while (true)
-        {
-            if (!byId.TryGetValue(current, out var milestone))
-            {
-                return null;
-            }
-
-            if (milestone.AcceptedAt is not null)
-            {
-                return milestone.Name;
-            }
-
-            if (milestone.ParentId is not Guid parent)
-            {
-                return null;
-            }
-
-            current = parent;
-        }
-    }
-
 
     /// <summary>
     /// 前置任务都做完了吗？没做完就拒。

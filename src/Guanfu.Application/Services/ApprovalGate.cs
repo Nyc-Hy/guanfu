@@ -3,11 +3,7 @@ using Guanfu.Domain;
 namespace Guanfu.Application.Services;
 
 /// <summary>
-/// 写操作闸门。
-///
-/// db_execute / git_commit / git_push / shell_run **共用这一套** ——
-/// 规矩 #4 说这几个工具别各写各的。以前它们各写一份闸门，行为已经开始漂移：
-/// 一份查了操作指纹，另一份没查。
+/// 数据库写入审批闸门。工具名与类别也是指纹校验的一部分，旧审批记录仍需按原类型识别。
 ///
 /// 两条路径：
 /// 1. 没带 approvalId → 申请一条审批，等人工决定；

@@ -20,7 +20,7 @@ public interface IExportService
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// 导出评审报告（某一轮）。格式：markdown / json。
+    /// 导出评审报告（某一轮）。格式：markdown / json / html。
     /// </summary>
     Task<string> ExportReviewReportAsync(
         Guid taskId,
@@ -199,6 +199,18 @@ public sealed class ExportService(
             ? rounds.OrderByDescending(r => r.Round).First()
             : rounds.FirstOrDefault(r => r.Round == round.Value)
               ?? throw new NotFoundException("评审轮次", round.Value);
+
+        if (format.Equals("html", StringComparison.OrdinalIgnoreCase))
+        {
+            var task = await db.Tasks.AsNoTracking().SingleAsync(t => t.Id == taskId, cancellationToken);
+            var test = await db.TestRuns.AsNoTracking().Where(t => t.TaskId == taskId)
+                .Where(t => target.FinishedAt == null || t.ReportedAt <= target.FinishedAt)
+                .OrderByDescending(t => t.ReportedAt).ThenByDescending(t => t.Id)
+                .FirstOrDefaultAsync(cancellationToken);
+            var specItems = await reviews.GetSpecItemsAsync(taskId, target.Round, cancellationToken);
+            var previous = rounds.Where(r => r.Round < target.Round).MaxBy(r => r.Round);
+            return ReviewReportHtml.Task($"{task.Key} {task.Title}".Trim(), target, test, specItems, previous);
+        }
 
         return format.ToLowerInvariant() switch
         {

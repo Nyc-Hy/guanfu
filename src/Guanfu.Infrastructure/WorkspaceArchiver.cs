@@ -35,14 +35,11 @@ public sealed class WorkspaceArchiver(
 
         var target = Path.GetFullPath(targetDirectory);
         EnsureNotInsideHome(target, "导出");
-        Directory.CreateDirectory(target);
         EnsureTargetIsExportSlot(target);
 
-        var dbTarget = Path.Combine(target, DatabaseFileName);
-        if (File.Exists(dbTarget))
-        {
-            File.Delete(dbTarget);
-        }
+        cancellationToken.ThrowIfCancellationRequested();
+        using var staging = new WorkspaceArchiveStaging(target);
+        var dbTarget = Path.Combine(staging.StagePath, DatabaseFileName);
 
         // VACUUM INTO 的目标不能已存在，且路径里的单引号要转义。
         // SQLite 的 VACUUM INTO 不接受绑定参数，只能内联；路径是我们自己拼的，
@@ -57,15 +54,10 @@ public sealed class WorkspaceArchiver(
 
         // 文档原件
         var documentsSource = _options.DocumentsDirectory;
-        var documentsTarget = Path.Combine(target, DocumentsFolderName);
+        var documentsTarget = Path.Combine(staging.StagePath, DocumentsFolderName);
         if (Directory.Exists(documentsSource))
         {
-            if (Directory.Exists(documentsTarget))
-            {
-                Directory.Delete(documentsTarget, recursive: true);
-            }
-
-            WorkspaceArchiveFiles.CopyDirectory(documentsSource, documentsTarget);
+            WorkspaceArchiveFiles.CopyDirectory(documentsSource, documentsTarget, cancellationToken);
             var (count, bytes) = WorkspaceArchiveFiles.Measure(documentsTarget);
             fileCount += count;
             totalBytes += bytes;
@@ -73,16 +65,23 @@ public sealed class WorkspaceArchiver(
 
         // 外部 agent 的运行日志：换机后还要能看到之前的运行记录
         var runsSource = _options.RunsDirectory;
-        var runsTarget = Path.Combine(target, WorkspaceArchiveFiles.RunsFolderName);
+        var runsTarget = Path.Combine(staging.StagePath, WorkspaceArchiveFiles.RunsFolderName);
         if (Directory.Exists(runsSource))
         {
-            if (Directory.Exists(runsTarget))
-            {
-                Directory.Delete(runsTarget, recursive: true);
-            }
-
-            WorkspaceArchiveFiles.CopyDirectory(runsSource, runsTarget);
+            WorkspaceArchiveFiles.CopyDirectory(runsSource, runsTarget, cancellationToken);
             var (count, bytes) = WorkspaceArchiveFiles.Measure(runsTarget);
+            fileCount += count;
+            totalBytes += bytes;
+        }
+
+        var packagesSource = Path.Combine(_options.HomeDirectory, WorkspaceArchiveFiles.PackagesFolderName);
+        var packagesTarget = Path.Combine(staging.StagePath, WorkspaceArchiveFiles.PackagesFolderName);
+        // 空目录也保留，恢复时可区分空的新版备份和没有收录交付包的旧备份。
+        Directory.CreateDirectory(packagesTarget);
+        if (Directory.Exists(packagesSource))
+        {
+            WorkspaceArchiveFiles.CopyDirectory(packagesSource, packagesTarget, cancellationToken);
+            var (count, bytes) = WorkspaceArchiveFiles.Measure(packagesTarget);
             fileCount += count;
             totalBytes += bytes;
         }
@@ -92,7 +91,7 @@ public sealed class WorkspaceArchiver(
         string? keyMode = null;
         if (File.Exists(keySource))
         {
-            var keyTarget = Path.Combine(target, KeyFileName);
+            var keyTarget = Path.Combine(staging.StagePath, KeyFileName);
             File.Copy(keySource, keyTarget, overwrite: true);
 
             // File.Copy 不保留 Unix 权限：secret.key 源是 0600，复制出来变 0644，
@@ -113,22 +112,24 @@ public sealed class WorkspaceArchiver(
         var manifest = new
         {
             format = WorkspaceFormat,
-            version = 1,
+            version = 2,
             exportedAt = DateTimeOffset.UtcNow,
             home = _options.HomeDirectory,
             database = DatabaseFileName,
             documents = DocumentsFolderName,
             runs = Directory.Exists(runsSource) ? WorkspaceArchiveFiles.RunsFolderName : null,
+            packages = WorkspaceArchiveFiles.PackagesFolderName,
             key = File.Exists(keySource) ? KeyFileName : null,
             keyMode
         };
 
-        var manifestPath = Path.Combine(target, ManifestFileName);
+        var manifestPath = Path.Combine(staging.StagePath, ManifestFileName);
         await File.WriteAllTextAsync(
             manifestPath,
             JsonSerializer.Serialize(manifest, new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }),
             cancellationToken);
 
+        staging.Publish(ExportEntries, cancellationToken, () => EnsureTargetIsExportSlot(target));
         return new WorkspaceArchiveResult(
             true, target, fileCount, totalBytes,
             $"已导出到 {target}（{fileCount} 个文件，{totalBytes} 字节）。整个目录拷到新机器即可。");
@@ -160,7 +161,7 @@ public sealed class WorkspaceArchiver(
                 "不能导入到正在运行的数据目录。请先停掉服务，或指定一个新的目录。");
         }
 
-        var (fileCount, totalBytes) = WorkspaceArchiveFiles.Import(sourceDirectory, target);
+        var (fileCount, totalBytes) = WorkspaceArchiveFiles.Import(sourceDirectory, target, cancellationToken);
 
         await Task.CompletedTask;
 
@@ -169,27 +170,22 @@ public sealed class WorkspaceArchiver(
             $"已恢复到 {target}。把 数据目录 指到这个目录再启动服务即可。");
     }
 
-    /// <summary>
-    /// 导出目标目录里只允许出现导出产物。
-    ///
-    /// 导出流程会先删掉目标目录下的 workbench.db / documents / runs 再重写 ——
-    /// 如果用户把导出目录指到了 /tmp 这种地方，"documents" 可能是别人的东西，
-    /// 直接删就是数据事故。所以这里先看一眼目录内容，不是本工具的产物就拒。
-    /// </summary>
+    private static readonly string[] ExportEntries =
+    [
+        DatabaseFileName, ManifestFileName, DocumentsFolderName,
+        WorkspaceArchiveFiles.RunsFolderName, WorkspaceArchiveFiles.PackagesFolderName, KeyFileName
+    ];
+
+    /// <summary>导出只替换本工具的归档文件。</summary>
     private static void EnsureTargetIsExportSlot(string target)
     {
-        var allowed = new[]
+        if (!Directory.Exists(target))
         {
-            DatabaseFileName,
-            WorkspaceArchiveFiles.ManifestFileName,
-            DocumentsFolderName,
-            WorkspaceArchiveFiles.RunsFolderName,
-            WorkspaceArchiveFiles.KeyFileName
-        };
-
+            return;
+        }
         var unexpected = Directory.EnumerateFileSystemEntries(target)
             .Select(Path.GetFileName)
-            .Where(name => !string.IsNullOrEmpty(name) && !allowed.Contains(name, StringComparer.Ordinal))
+            .Where(name => !string.IsNullOrEmpty(name) && !ExportEntries.Contains(name, StringComparer.Ordinal))
             .Take(5)
             .ToList();
 

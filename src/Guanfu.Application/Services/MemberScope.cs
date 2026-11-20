@@ -32,11 +32,10 @@ public sealed record MemberScope(
 /// 当前身份。
 ///
 /// **谁来填**：
-/// - REST / MCP：宿主（HTTP 层）把认证结果翻译成 <see cref="MemberScope"/>；
-/// - Blazor 界面：电路里拿不到 HttpContext，由布局把身份回填进来。
+/// - HTTP：宿主把成员会话翻译成 <see cref="MemberScope"/>；
+/// - Blazor 界面：由电路处理器在交互操作之前核验身份。
 ///
-/// 没有身份 = 单人本机模式（什么都看得见）——
-/// 一个人用的时候不该被自己的隔离规则挡住。
+/// 没有成员范围时按单人本机、owner 或 MCP 入口各自核验的权限处理。
 /// </summary>
 public interface ICurrentMemberScope
 {

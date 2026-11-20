@@ -1,5 +1,7 @@
 using System.IO.Compression;
+using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Guanfu.Application.Contracts;
 using Guanfu.Domain;
@@ -40,7 +42,8 @@ public interface IDeliveryPackageService
         Guid milestoneId,
         IReadOnlyList<Guid> itemIds,
         string? createdBy = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        ReleasePackageOptions? release = null);
 
     /// <summary>这个迭代版本打过的包（新到旧）。</summary>
     Task<IReadOnlyList<DeliveryPackageDto>> ListAsync(
@@ -68,7 +71,7 @@ public interface IDeliveryPackageService
     ///
     /// 令牌认不出、过期、被撤销 —— 都返回 null（不解释是哪一种）。
     /// </summary>
-    Task<DeliveryPackageDto?> ResolveShareAsync(string? token, CancellationToken cancellationToken = default);
+    Task<(string FileName, string Path)?> ResolveShareAsync(string? token, CancellationToken cancellationToken = default);
 
     /// <summary>包在磁盘上的绝对路径。</summary>
     Task<string> ResolvePathAsync(DeliveryPackageDto package, CancellationToken cancellationToken = default);
@@ -79,7 +82,8 @@ public sealed class DeliveryPackageService(
     IDocumentStore documents,
     IDeliveryPackageStore store,
     IClock clock,
-    ICurrentMemberScope? currentMember = null) : IDeliveryPackageService
+    ICurrentMemberScope? currentMember = null,
+    IReviewService? reviews = null) : IDeliveryPackageService
 {
     /// <summary>当前身份（没人登录 = 单人本机模式 = 不过滤）。</summary>
     private MemberScope? Scope => currentMember?.Current;
@@ -123,7 +127,8 @@ public sealed class DeliveryPackageService(
                     doc.SizeBytes,
                     task.Key ?? task.Title,
                     task.Title,
-                    true));
+                    true,
+                    IsSqlFile(doc.FileName)));
             }
 
             var artifacts = await db.Artifacts.AsNoTracking()
@@ -149,7 +154,9 @@ public sealed class DeliveryPackageService(
                     Encoding.UTF8.GetByteCount(artifact.Content ?? string.Empty),
                     task.Key ?? task.Title,
                     task.Title,
-                    true));
+                    true,
+                    IsSqlArtifact(artifact),
+                    artifact.Revision));
             }
         }
 
@@ -164,9 +171,12 @@ public sealed class DeliveryPackageService(
         Guid milestoneId,
         IReadOnlyList<Guid> itemIds,
         string? createdBy = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        ReleasePackageOptions? release = null)
     {
-        if (itemIds is null || itemIds.Count == 0)
+        EnsureCanManage();
+
+        if (itemIds is null || (itemIds.Count == 0 && release is null))
         {
             throw new GuanfuException("没有勾选任何东西，打出来的包是空的。");
         }
@@ -179,6 +189,10 @@ public sealed class DeliveryPackageService(
             .FirstOrDefaultAsync(p => p.Id == milestone.ProjectId, cancellationToken);
 
         var tasks = await LoadScopeTasksAsync(milestoneId, cancellationToken);
+        if (release is not null && tasks.Count == 0)
+        {
+            throw new GuanfuException("这个迭代版本还没有可汇总的任务。");
+        }
         var taskIds = tasks.Select(t => t.Id).ToList();
 
         var selected = itemIds.Distinct().ToList();
@@ -191,16 +205,22 @@ public sealed class DeliveryPackageService(
             .Where(a => selected.Contains(a.Id) && taskIds.Contains(a.TaskId))
             .ToListAsync(cancellationToken);
 
-        if (docs.Count + artifacts.Count == 0)
+        if (selected.Count > 0 && docs.Count + artifacts.Count == 0)
         {
             throw new GuanfuException(
                 "勾选的条目一个也没找到 —— 可能它们不属于这个迭代版本，或者已经被删了。");
         }
 
+        if (release is not null && docs.Count + artifacts.Count(a => !string.IsNullOrWhiteSpace(a.Content)) != selected.Count)
+        {
+            throw new GuanfuException("有条目已失效、没有内容或不属于此版本，请刷新候选池后重新确认。");
+        }
+
+        var sqlPlan = BuildSqlPlan(release, docs, artifacts);
+        var sqlScripts = new List<PackagedSqlStep>();
         var now = clock.UtcNow;
         var who = string.IsNullOrWhiteSpace(createdBy) ? "human" : createdBy.Trim();
-        var scope = await LoadScopeTasksAsync(milestoneId, cancellationToken);
-        var taskById = scope.ToDictionary(t => t.Id);
+        var taskById = tasks.ToDictionary(t => t.Id);
 
         var items = new List<DeliveryPackageItemDto>();
         var entries = new List<(string EntryName, byte[] Bytes)>();
@@ -209,16 +229,9 @@ public sealed class DeliveryPackageService(
         foreach (var doc in docs)
         {
             var task = taskById[doc.TaskId];
-            var entryName = UniqueName(used, $"文档/{Prefix(task)}-{Sanitize(doc.FileName)}");
             var bytes = await ReadDocumentBytesAsync(doc, cancellationToken);
-            entries.Add((entryName, bytes));
-            items.Add(new DeliveryPackageItemDto(
-                "文档",
-                doc.FileName,
-                entryName,
-                task.Key ?? task.Title,
-                task.Title,
-                bytes.LongLength));
+            var entryName = EntryPath(doc.Id, task, doc.FileName, "文档");
+            AddEntry("文档", doc.FileName, entryName, bytes, task);
         }
 
         foreach (var artifact in artifacts)
@@ -229,16 +242,33 @@ public sealed class DeliveryPackageService(
             }
 
             var task = taskById[artifact.TaskId];
-            var entryName = UniqueName(used, $"产物/{Prefix(task)}-{Sanitize(GuessFileName(artifact))}");
+            var entryName = EntryPath(artifact.Id, task, GuessFileName(artifact), "产物");
             var bytes = Encoding.UTF8.GetBytes(artifact.Content!);
-            entries.Add((entryName, bytes));
-            items.Add(new DeliveryPackageItemDto(
-                UiText.ArtifactTypeLabel(artifact.Type),
-                artifact.Title,
-                entryName,
-                task.Key ?? task.Title,
-                task.Title,
-                bytes.LongLength));
+            AddEntry(UiText.ArtifactTypeLabel(artifact.Type), artifact.Title, entryName, bytes, task, artifact.Revision);
+        }
+
+        List<ReleaseReportTask>? releaseTasks = null;
+        if (release is not null)
+        {
+            releaseTasks = await LoadReleaseTasksAsync(tasks, cancellationToken);
+            foreach (var taskReport in releaseTasks)
+            {
+                IReadOnlyList<SpecItemDto> specItems = taskReport.Round is not null && reviews is not null
+                    ? await reviews.GetSpecItemsAsync(taskReport.Id, taskReport.Round.Round, cancellationToken)
+                    : [];
+                var html = ReviewReportHtml.Task(taskReport.Name, taskReport.Round, taskReport.TestRun, specItems,
+                    taskReport.PreviousRound);
+                AddEntry("任务评审报告", taskReport.Name, taskReport.ReportPath, Encoding.UTF8.GetBytes(html), taskById[taskReport.Id]);
+            }
+
+            sqlScripts = sqlScripts.OrderBy(s => s.Phase switch { "deploy" => 0, "verify" => 1, _ => 2 })
+                .ThenBy(s => s.Order).ToList();
+            var title = $"{project?.Name ?? "未命名项目"} · {milestone.Name} · 发版总览";
+            var overview = ReviewReportHtml.Release(title, now.ToUniversalTime(), milestone.AcceptedAt,
+                milestone.AcceptedBy, releaseTasks, sqlScripts);
+            AddEntry("版本总览", title, "index.html", Encoding.UTF8.GetBytes(overview));
+            AddEntry("发布说明", "发布说明", "发布说明.md",
+                Encoding.UTF8.GetBytes(BuildReleaseNotes(milestone.Name, sqlScripts, release.Notes)));
         }
 
         if (entries.Count == 0)
@@ -253,6 +283,20 @@ public sealed class DeliveryPackageService(
             milestone = milestone.Name,
             createdBy = who,
             createdAt = now,
+            release = releaseTasks is null ? null : new
+            {
+                acceptedAt = milestone.AcceptedAt,
+                acceptedBy = milestone.AcceptedBy,
+                tasks = releaseTasks.Select(t => new
+                {
+                    taskId = t.Id, task = t.Name, report = t.ReportPath, status = t.Status,
+                    reviewRound = t.Round?.Round, reviewEvidenceVersion = t.Round?.ReportEvidence?.Version,
+                    revision = t.Round?.ReportEvidence?.Evidence.Revision ?? t.Round?.CommitHash,
+                    baseline = t.Round?.ReportEvidence?.Evidence.Baseline,
+                    testRunId = t.TestRun?.Id
+                }),
+                sql = sqlScripts
+            },
             items = items.Select(i => new
             {
                 kind = i.Kind,
@@ -260,11 +304,13 @@ public sealed class DeliveryPackageService(
                 path = i.FileName,
                 taskKey = i.TaskKey,
                 taskTitle = i.TaskTitle,
-                sizeBytes = i.SizeBytes
+                sizeBytes = i.SizeBytes,
+                artifactVersion = i.ArtifactVersion,
+                sha256 = i.Sha256
             })
         });
 
-        var fileName = BuildFileName(milestone.Name, now);
+        var fileName = BuildFileName(release is null ? milestone.Name : $"{milestone.Name}-发版工具包", now);
 
         byte[] zipBytes;
         using (var buffer = new MemoryStream())
@@ -300,6 +346,11 @@ public sealed class DeliveryPackageService(
             new MemoryStream(zipBytes, writable: false),
             cancellationToken);
 
+        var involvedTaskIds = releaseTasks?.Select(t => t.Id).ToList() ?? docs.Select(d => d.TaskId)
+            .Concat(artifacts.Where(a => !string.IsNullOrWhiteSpace(a.Content)).Select(a => a.TaskId))
+            .Distinct()
+            .ToList();
+
         var package = new DeliveryPackage
         {
             ProjectId = milestone.ProjectId,
@@ -309,6 +360,7 @@ public sealed class DeliveryPackageService(
             SizeBytes = saved.SizeBytes,
             ItemCount = items.Count,
             Items = GuanfuJson.Serialize(items),
+            TaskIds = GuanfuJson.Serialize(involvedTaskIds),
             Manifest = manifest,
             CreatedBy = who,
             CreatedAt = now
@@ -318,11 +370,6 @@ public sealed class DeliveryPackageService(
 
         // 留痕：打进去的东西来自哪些任务，就给哪些任务记一笔。
         // 「这个任务的产物被发进哪个包了」事后要能查得到。
-        var involvedTaskIds = docs.Select(d => d.TaskId)
-            .Concat(artifacts.Where(a => !string.IsNullOrWhiteSpace(a.Content)).Select(a => a.TaskId))
-            .Distinct()
-            .ToList();
-
         foreach (var taskId in involvedTaskIds)
         {
             db.StatusEvents.Add(new StatusEvent
@@ -349,6 +396,30 @@ public sealed class DeliveryPackageService(
 
         await db.SaveChangesAsync(cancellationToken);
 
+        string EntryPath(Guid sourceId, TaskItem task, string fileName, string directory)
+        {
+            var name = $"{Prefix(task)}-{Sanitize(fileName)}";
+            if (!sqlPlan.TryGetValue(sourceId, out var script))
+            {
+                return UniqueName(used, $"{directory}/{name}");
+            }
+            if (!IsSqlFile(name))
+            {
+                name += ".sql";
+            }
+            var path = UniqueName(used, $"sql/{script.Step.Phase}/{script.Order:D3}-{name}");
+            sqlScripts.Add(new PackagedSqlStep(sourceId, task.Id, task.Key ?? task.Title,
+                script.Step.Phase, script.Order, script.Step.Target.Trim(), path));
+            return path;
+        }
+
+        void AddEntry(string kind, string title, string path, byte[] bytes, TaskItem? task = null, int? revision = null)
+        {
+            entries.Add((path, bytes));
+            items.Add(new DeliveryPackageItemDto(kind, title, path, task?.Key ?? task?.Title ?? "—", task?.Title ?? "—",
+                bytes.LongLength, revision, Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant()));
+        }
+
         return ToDto(package, items);
     }
 
@@ -362,7 +433,20 @@ public sealed class DeliveryPackageService(
             .ThenByDescending(p => p.Id)
             .ToListAsync(cancellationToken);
 
-        return rows.Select(p => ToDto(p, ParseItems(p.Items))).ToList();
+        var scope = Scope;
+        if (scope is null || scope.IsAdmin)
+        {
+            return rows.Select(p => ToDto(p, ParseItems(p.Items))).ToList();
+        }
+
+        var sources = rows.Select(p => (Package: p, TaskIds: ReadTaskIds(p))).ToList();
+        var taskIds = sources.SelectMany(p => p.TaskIds).Distinct().ToArray();
+        var visibleTaskIds = await LoadVisibleTaskIdsAsync(scope, taskIds, cancellationToken);
+
+        return sources
+            .Where(p => p.TaskIds.Length > 0 && p.TaskIds.All(visibleTaskIds.Contains))
+            .Select(p => ToDto(p.Package, ParseItems(p.Package.Items)))
+            .ToList();
     }
 
     public async Task<DeliveryPackageDto> GetAsync(Guid id, CancellationToken cancellationToken = default)
@@ -371,6 +455,7 @@ public sealed class DeliveryPackageService(
             .FirstOrDefaultAsync(p => p.Id == id, cancellationToken)
             ?? throw new NotFoundException("交付包", id);
 
+        await EnsureCanReadAsync(row, cancellationToken);
         return ToDto(row, ParseItems(row.Items));
     }
 
@@ -379,6 +464,7 @@ public sealed class DeliveryPackageService(
         int validDays = 7,
         CancellationToken cancellationToken = default)
     {
+        EnsureCanManage();
         var package = await db.DeliveryPackages
             .FirstOrDefaultAsync(p => p.Id == id, cancellationToken)
             ?? throw new NotFoundException("交付包", id);
@@ -401,6 +487,7 @@ public sealed class DeliveryPackageService(
 
     public async Task<bool> RevokeShareAsync(Guid id, CancellationToken cancellationToken = default)
     {
+        EnsureCanManage();
         var package = await db.DeliveryPackages
             .FirstOrDefaultAsync(p => p.Id == id, cancellationToken);
 
@@ -415,7 +502,7 @@ public sealed class DeliveryPackageService(
         return true;
     }
 
-    public async Task<DeliveryPackageDto?> ResolveShareAsync(
+    public async Task<(string FileName, string Path)?> ResolveShareAsync(
         string? token,
         CancellationToken cancellationToken = default)
     {
@@ -439,7 +526,7 @@ public sealed class DeliveryPackageService(
             return null;
         }
 
-        return ToDto(package, ParseItems(package.Items));
+        return (package.FileName, store.ResolveAbsolutePath(package.StoredPath));
     }
 
     public async Task<string> ResolvePathAsync(
@@ -450,7 +537,68 @@ public sealed class DeliveryPackageService(
             .FirstOrDefaultAsync(p => p.Id == package.Id, cancellationToken)
             ?? throw new NotFoundException("交付包", package.Id);
 
+        await EnsureCanReadAsync(row, cancellationToken);
         return store.ResolveAbsolutePath(row.StoredPath);
+    }
+
+    private void EnsureCanManage()
+    {
+        if (Scope is { IsAdmin: false })
+        {
+            throw new GuanfuException("需要管理员权限才能打包或管理分享链接。");
+        }
+    }
+
+    private async Task EnsureCanReadAsync(DeliveryPackage package, CancellationToken cancellationToken)
+    {
+        var scope = Scope;
+        if (scope is null || scope.IsAdmin)
+        {
+            return;
+        }
+
+        var taskIds = ReadTaskIds(package);
+        var visibleTaskIds = await LoadVisibleTaskIdsAsync(scope, taskIds, cancellationToken);
+
+        if (taskIds.Length == 0 || !taskIds.All(visibleTaskIds.Contains))
+        {
+            throw new NotFoundException("交付包", package.Id);
+        }
+    }
+
+    private async Task<HashSet<Guid>> LoadVisibleTaskIdsAsync(
+        MemberScope scope, Guid[] taskIds, CancellationToken cancellationToken)
+    {
+        if (taskIds.Length == 0)
+        {
+            return [];
+        }
+
+        var ids = await db.Tasks.AsNoTracking()
+            .VisibleTo(scope)
+            .Where(t => taskIds.Contains(t.Id))
+            .Select(t => t.Id)
+            .ToListAsync(cancellationToken);
+
+        return ids.ToHashSet();
+    }
+
+    // 存量包缺少完整的来源记录，只对管理员与 owner 开放。
+    private static Guid[] ReadTaskIds(DeliveryPackage package)
+    {
+        if (package.TaskIds is null)
+        {
+            return [];
+        }
+
+        try
+        {
+            return GuanfuJson.Deserialize<Guid[]>(package.TaskIds) ?? [];
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
     }
 
     private async Task<byte[]> ReadDocumentBytesAsync(Document doc, CancellationToken cancellationToken)
@@ -458,16 +606,17 @@ public sealed class DeliveryPackageService(
         if (!string.IsNullOrWhiteSpace(doc.StoredPath))
         {
             var absolute = documents.ResolveAbsolutePath(doc.StoredPath);
-            if (File.Exists(absolute))
+            try
             {
                 return await File.ReadAllBytesAsync(absolute, cancellationToken);
             }
+            catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+            {
+                // 原件可能在查看候选项和生成包之间被移走。
+            }
         }
 
-        // 原件没了（有人删了数据目录里的文件）——
-        // 打出来的包里放一份占位，别让整个包打不出来。
-        return Encoding.UTF8.GetBytes(
-            $"# 原件缺失\n\n文档《{doc.FileName}》的原件在数据目录里找不到了（存放路径：{doc.StoredPath}）。\n");
+        throw new GuanfuException($"无法打包：所选文档《{doc.FileName}》的原件缺失。请恢复原件或取消勾选后重试。");
     }
 
     /// <summary>这个里程碑下面（含子里程碑）的任务。</summary>
@@ -502,6 +651,116 @@ public sealed class DeliveryPackageService(
             .Where(t => !t.IsArchived)
             .OrderBy(t => t.Key)
             .ToListAsync(cancellationToken);
+    }
+
+    private static bool IsSqlFile(string name) => name.EndsWith(".sql", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsSqlArtifact(Artifact artifact) =>
+        artifact.Type == ArtifactType.SqlScript || IsSqlFile(GuessFileName(artifact));
+
+    private static Dictionary<Guid, (ReleaseSqlStep Step, int Order)> BuildSqlPlan(
+        ReleasePackageOptions? release, IReadOnlyList<Document> documents, IReadOnlyList<Artifact> artifacts)
+    {
+        var plan = new Dictionary<Guid, (ReleaseSqlStep Step, int Order)>();
+        if (release is null)
+        {
+            return plan;
+        }
+
+        var sqlIds = documents.Where(d => IsSqlFile(d.FileName)).Select(d => d.Id)
+            .Concat(artifacts.Where(IsSqlArtifact).Select(a => a.Id)).ToHashSet();
+        var revisions = artifacts.ToDictionary(a => a.Id, a => a.Revision);
+        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var step in release.SqlSteps ?? [])
+        {
+            if (step is null || !sqlIds.Contains(step.ItemId) ||
+                step.Phase is not ("deploy" or "verify" or "rollback") ||
+                string.IsNullOrWhiteSpace(step.Target) || step.Target.Length > 200)
+            {
+                throw new GuanfuException("SQL 清单只能引用已勾选的脚本，每项须填写阶段和目标数据库。");
+            }
+            if (step.ArtifactVersion is int version && revisions.GetValueOrDefault(step.ItemId) != version)
+            {
+                throw new GuanfuException("SQL 产物版本已更新，请刷新候选池并重新确认脚本内容。");
+            }
+
+            var order = counts.GetValueOrDefault(step.Phase) + 1;
+            counts[step.Phase] = order;
+            if (!plan.TryAdd(step.ItemId, (step, order)))
+            {
+                throw new GuanfuException("SQL 清单里有重复的脚本。");
+            }
+        }
+
+        if (plan.Count != sqlIds.Count)
+        {
+            throw new GuanfuException("请为所有勾选的 SQL 确认阶段、顺序和目标数据库。");
+        }
+
+        if (release.Notes?.Length > 32_000)
+        {
+            throw new GuanfuException("发布说明最多 32000 字符。");
+        }
+
+        return plan;
+    }
+
+    private async Task<List<ReleaseReportTask>> LoadReleaseTasksAsync(
+        IReadOnlyList<TaskItem> tasks, CancellationToken cancellationToken)
+    {
+        var taskIds = tasks.Select(t => t.Id).ToList();
+        var rounds = await db.ReviewRounds.AsNoTracking().Include(r => r.Items)
+            .Where(r => taskIds.Contains(r.TaskId))
+            .Where(r => db.ReviewRounds.Count(next => next.TaskId == r.TaskId && next.Round > r.Round) < 2)
+            .OrderByDescending(r => r.Round).ToListAsync(cancellationToken);
+        var roundsByTask = rounds.ToLookup(r => r.TaskId);
+        var tests = await db.TestRuns.AsNoTracking().Where(t => taskIds.Contains(t.TaskId))
+            .GroupBy(t => t.TaskId)
+            .Select(group => group.OrderByDescending(t => t.ReportedAt).ThenByDescending(t => t.Id).First())
+            .ToListAsync(cancellationToken);
+        var testsByTask = tests.ToDictionary(t => t.TaskId);
+        var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        return tasks.Select(t =>
+        {
+            var taskRounds = roundsByTask[t.Id].Select(r => ReviewService.ToDto(r)).ToList();
+            return new ReleaseReportTask(t.Id, $"{t.Key} {t.Title}".Trim(), t.Status.ToString(),
+                UniqueName(paths, $"reports/{Prefix(t)}.html"),
+                taskRounds.FirstOrDefault(), testsByTask.GetValueOrDefault(t.Id), taskRounds.ElementAtOrDefault(1));
+        }).ToList();
+    }
+
+    private static string BuildReleaseNotes(
+        string milestone, IReadOnlyList<PackagedSqlStep> scripts, string? notes)
+    {
+        var text = new StringBuilder().AppendLine($"# {milestone} · 发布说明").AppendLine();
+        if (!string.IsNullOrWhiteSpace(notes))
+        {
+            text.AppendLine(notes.Trim()).AppendLine();
+        }
+
+        text.AppendLine("## 发布步骤").AppendLine()
+            .AppendLine("1. 打开 index.html，核对版本验收状态、任务评审、测试和数据库变更。")
+            .AppendLine("2. 按团队发布流程核对目标环境、备份和回滚条件，再按清单执行上线步骤。")
+            .AppendLine("3. 核对上线结果，执行核验步骤，记录结果。")
+            .AppendLine("4. 触发回滚条件时，按确认的回滚清单和团队恢复流程处理。")
+            .AppendLine()
+            .AppendLine("## SQL 执行清单").AppendLine()
+            .AppendLine("| 阶段 | 顺序 | 目标数据库 | 来源任务 | 路径 |")
+            .AppendLine("| --- | --- | --- | --- | --- |");
+        foreach (var step in scripts)
+        {
+            text.AppendLine($"| {ReviewReportHtml.Phase(step.Phase)} | {step.Order} | {Escape(step.Target)} | {Escape(step.TaskKey)} | {Escape(step.Path)} |");
+        }
+        if (scripts.Count == 0)
+        {
+            text.AppendLine().AppendLine("此包没有纳入 SQL。");
+        }
+        else if (!scripts.Any(s => s.Phase == "rollback"))
+        {
+            text.AppendLine().AppendLine("此包未附回滚脚本。发布前请确认恢复方式。");
+        }
+
+        return text.ToString();
     }
 
     private static string BuildManifest(
@@ -575,10 +834,10 @@ public sealed class DeliveryPackageService(
 
         foreach (var ch in name)
         {
-            builder.Append(invalid.Contains(ch) ? '_' : ch);
+            builder.Append(invalid.Contains(ch) || char.IsControl(ch) || "<>:\"/\\|?*".Contains(ch) ? '_' : ch);
         }
 
-        var cleaned = builder.ToString().Trim();
+        var cleaned = builder.ToString().Trim().TrimEnd('.');
         return cleaned.Length == 0 ? "未命名" : cleaned;
     }
 
@@ -597,7 +856,7 @@ public sealed class DeliveryPackageService(
         {
             var candidate = string.IsNullOrEmpty(directory)
                 ? $"{stem}-{i}{extension}"
-                : Path.Combine(directory, $"{stem}-{i}{extension}");
+                : $"{directory.Replace('\\', '/')}/{stem}-{i}{extension}";
 
             if (used.Add(candidate))
             {

@@ -2,13 +2,15 @@ using System.Text.Json;
 using Guanfu.Application;
 using Guanfu.Application.Contracts;
 using Guanfu.Application.Services;
+using Guanfu.Domain;
+using Microsoft.EntityFrameworkCore;
 
 namespace Guanfu.Mcp;
 
 /// <summary>
 /// 工具调用的统一留痕。
 ///
-/// 以前只有写工具留痕（db_execute / git_commit / git_push / shell_run / db_query），
+/// 数据库工具单独记录 SQL、审批和执行结果，
 /// 只读调用不留 —— 于是「谁访问了什么资源」查不出来，
 /// 而这恰恰是企业合规最关心的那一问（谁看了生产库的数据）。
 ///
@@ -18,7 +20,8 @@ namespace Guanfu.Mcp;
 /// </summary>
 public sealed class ToolCallRecorder(
     IToolAuditService audit,
-    IAgentSessionAccessor? sessions = null)
+    IAgentSessionAccessor? sessions = null,
+    IAppDbContext? db = null)
 {
     /// <summary>
     /// 自己留痕的工具：它们已经写了更详细的记录，中央不再重复写。
@@ -26,13 +29,11 @@ public sealed class ToolCallRecorder(
     /// 写工具的记录里有审批号、影响行数、结果摘要、SQL 原文 ——
     /// 中央那份只有工具名与参数，补不回来。
     ///
-    /// fs_* 与 db_schema 也在名单里：它们各自留痕（fs 记了结果条数、db_schema 记了表数），
-    /// 不跳过的话一次调用会写两行 —— 规矩 28 说的「别写成一行两条」。
+    /// db_schema 自己记录返回的表数；中央记录器同样跳过。
     /// </summary>
     internal static readonly HashSet<string> SelfAuditedTools = new(StringComparer.Ordinal)
     {
-        "db_execute", "db_query", "git_commit", "git_push", "shell_run",
-        "fs_list", "fs_read", "db_schema"
+        "db_execute", "db_query", "db_schema"
     };
 
     /// <summary>参数里这些名字的值要抹掉 —— 免得明文落进审计表。</summary>
@@ -55,16 +56,26 @@ public sealed class ToolCallRecorder(
 
             var projectId = GuidFrom(arguments, "projectId") ?? session?.ProjectId;
             var taskId = GuidFrom(arguments, "taskId") ?? session?.TaskId;
-            // 调用方：工具显式传的 callerId → 会话里的 agent → 请求头里的 X-Guanfu-Agent。
-            // 最后那一条不能少：Claude Code 这类客户端不会给工具显式传 callerId，
-            // 少了它审计里就只剩一列空白。
-            var callerId = StringFrom(arguments, "callerId")
-                ?? session?.AgentId
-                ?? sessions?.CurrentAgentId;
+            if (projectId is null && taskId is Guid task && db is not null)
+            {
+                projectId = await db.Tasks.Where(t => t.Id == task)
+                    .Select(t => (Guid?)t.ProjectId).SingleOrDefaultAsync(cancellationToken);
+            }
+
+            var credential = sessions?.CurrentCredential;
+            if (projectId is null && credential is { ProjectScope.Count: 1 })
+            {
+                projectId = credential.ProjectScope[0];
+            }
+
+            // agent 的名字以凭证为准。owner 与兼容入口仍可显式填写调用方。
+            var callerId = credential is { Kind: CredentialKind.Agent }
+                ? credential.Subject
+                : StringFrom(arguments, "callerId") ?? session?.AgentId ?? sessions?.CurrentAgentId;
 
             // 这把钥匙背后的人（成员显示名）。
             // agent 自报的名字不算数 —— 「是谁」得由签发凭证时绑定的成员说了算。
-            var memberName = sessions?.CurrentCredential?.MemberName;
+            var memberName = credential?.MemberName;
 
             await audit.RecordAsync(new ToolAuditEntry(
                 toolName,

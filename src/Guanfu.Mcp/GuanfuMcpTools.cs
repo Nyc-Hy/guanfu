@@ -102,7 +102,8 @@ public sealed class GuanfuMcpTools(
     private async Task<Guid> ResolveTaskIdAsync(
         Guid? taskId,
         string? taskKey,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Guid? projectId = null)
     {
         if (taskId is Guid id)
         {
@@ -116,13 +117,13 @@ public sealed class GuanfuMcpTools(
 
         var scope = scopeResolver is null
             ? null
-            : await scopeResolver.ResolveOrNullAsync(null, cancellationToken);
+            : await scopeResolver.ResolveOrNullAsync(projectId, cancellationToken);
 
         if (scope is null)
         {
             throw new GuanfuException(
                 "只给了 taskKey，但当前调用没有绑定项目，无法确定在哪个项目里找这个编号。" +
-                "先调 guanfu_bind_session 绑定你所在的仓库，或者直接给 taskId。");
+                "请传 projectId 或直接给 taskId。");
         }
 
         var found = await tasks.ListAsync(
@@ -140,7 +141,11 @@ public sealed class GuanfuMcpTools(
     [McpServerTool(Name = "guanfu_list_projects")]
     [Description("列出观复里所有项目，含进度、任务统计、停滞标记与 git 分支")]
     public async Task<IReadOnlyList<ProjectSummaryDto>> ListProjectsAsync(CancellationToken cancellationToken)
-        => await projects.ListAsync(cancellationToken);
+    {
+        var credential = sessionAccessor?.CurrentCredential;
+        var allowed = credential is { ProjectScope.Count: > 0 } ? credential.ProjectScope : null;
+        return await projects.ListAsync(cancellationToken, allowed);
+    }
 
     [McpServerTool(Name = "guanfu_get_project")]
     [Description("获取单个项目的详情与配置")]
@@ -388,7 +393,8 @@ public sealed class GuanfuMcpTools(
     public async Task<HandoffToolResult> GetHandoffPackAsync(
         Guid? taskId = null,
         string? taskKey = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Guid? projectId = null)
     {
         try
         {
@@ -397,7 +403,7 @@ public sealed class GuanfuMcpTools(
                 return HandoffToolResult.Fail("交接包服务没注册。");
             }
 
-            var id = await ResolveTaskIdAsync(taskId, taskKey, cancellationToken);
+            var id = await ResolveTaskIdAsync(taskId, taskKey, cancellationToken, projectId);
             var pack = await handoff.GetAsync(id, cancellationToken);
 
             return new HandoffToolResult(true, pack);
@@ -411,7 +417,7 @@ public sealed class GuanfuMcpTools(
     
     [McpServerTool(Name = "guanfu_claim_task")]
     [Description(
-        "领取一个待认领任务，带租约。taskId 不给就用 taskKey（如 REQ-001）——在会话绑定的项目里找；" +
+        "领取一个待认领任务，带租约。taskId 不给就用 taskKey（如 REQ-001），可用 projectId 指定项目；" +
         "agentId 不给就用当前会话的 agent。已被他人持有且租约未过期时返回 ok=false 而不是报错。" +
         "认领成功后任务自动挂到本次会话上，之后的调用都归属到这个任务。" +
         "观复不替你管工位 —— 你在哪个目录干活是你自己的事。")]
@@ -421,17 +427,25 @@ public sealed class GuanfuMcpTools(
         int leaseMinutes = 30,
         string? taskKey = null,
         string? note = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Guid? projectId = null)
     {
         try
         {
             var scope = scopeResolver is null
                 ? null
-                : await scopeResolver.ResolveOrNullAsync(null, cancellationToken);
+                : await scopeResolver.ResolveOrNullAsync(projectId, cancellationToken);
 
-            var resolvedId = await ResolveTaskIdAsync(taskId, taskKey, cancellationToken);
+            var resolvedId = await ResolveTaskIdAsync(taskId, taskKey, cancellationToken, projectId);
+            if (scope?.SessionId is not null && db is not null &&
+                await ResolveTaskProjectIdAsync(resolvedId, cancellationToken) != scope.ProjectId)
+            {
+                return new ClaimResult(false, null, "会话只能认领同一项目的任务。");
+            }
 
-            var resolvedAgentId = agentId ?? scope?.AgentId;
+            var resolvedAgentId = sessionAccessor?.CurrentCredential is { Kind: CredentialKind.Agent } credential
+                ? credential.Subject
+                : agentId ?? scope?.AgentId;
             if (string.IsNullOrWhiteSpace(resolvedAgentId))
             {
                 throw new GuanfuException(
@@ -509,20 +523,21 @@ public sealed class GuanfuMcpTools(
     [Description(
         "一次性取回干活所需的全部上下文：任务信息、关联文档、已有计划、产物、最近事件、当前允许的状态迁移、git 分支与 HEAD。" +
         "先调这个，再决定做什么，避免反复零散调用。" +
-        "taskId 不给就用 taskKey（如 REQ-001）——在会话绑定的项目里找。")]
+        "taskId 不给就用 taskKey（如 REQ-001），可用 projectId 指定项目。")]
     public async Task<TaskContextDto> GetContextAsync(
         Guid? taskId = null,
         int eventLimit = 20,
         string? taskKey = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Guid? projectId = null)
     {
-        var id = await ResolveTaskIdAsync(taskId, taskKey, cancellationToken);
+        var id = await ResolveTaskIdAsync(taskId, taskKey, cancellationToken, projectId);
 
         // 工位建议要按「谁在问」算：自己占着主工作区跟自己说「可用」，
         // 跟看到「被别人占着，要另开工位」是两回事。
         var scope = scopeResolver is null
             ? null
-            : await scopeResolver.ResolveOrNullAsync(null, cancellationToken);
+            : await scopeResolver.ResolveOrNullAsync(projectId, cancellationToken);
 
         return await tasks.GetContextAsync(id, eventLimit, cancellationToken, scope?.AgentId);
     }
@@ -965,7 +980,7 @@ public sealed class GuanfuMcpTools(
 
     [McpServerTool(Name = "guanfu_export_review")]
     [Description(
-        "导出评审报告。round 不给就是最新一轮。format 传 markdown（默认）/ json。")]
+        "导出评审报告。round 不给就是最新一轮。format 传 markdown（默认）/ json / html（离线报告）。")]
     public async Task<ExportToolResult> ExportReviewAsync(
         Guid taskId,
         int? round = null,

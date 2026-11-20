@@ -43,9 +43,9 @@ public sealed class ToolCallAuditTests
     [Fact]
     public void 自己留痕的工具不再重复留()
     {
-        // db_execute / git_commit / git_push / shell_run / db_query
+        // 数据库工具
         // 自己记得更细（审批号、影响行数、SQL 原文），中央那份补不回来。
-        foreach (var name in new[] { "db_execute", "db_query", "git_commit", "git_push", "shell_run" })
+        foreach (var name in new[] { "db_execute", "db_query", "db_schema" })
         {
             Assert.Contains(name, ToolCallRecorder.SelfAuditedTools);
         }

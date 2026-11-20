@@ -673,6 +673,9 @@ public class DeliveryPackage
     /// <summary>清单条目（JSON 数组）。</summary>
     public string Items { get; set; } = "[]";
 
+    /// <summary>包内条目的来源任务 ID（JSON 数组）。旧包可能没有来源记录。</summary>
+    public string? TaskIds { get; set; }
+
     /// <summary>清单正文（markdown），与包放在一起。</summary>
     public string? Manifest { get; set; }
 
@@ -1055,6 +1058,8 @@ public class ReviewRound
     /// 为空表示老轮次（或项目没配仓库），结项门禁跳过这项校验以保持兼容。
     /// </summary>
     public string? CommitHash { get; set; }
+
+    public string? ReportEvidenceJson { get; set; }
 
     public List<ReviewItem> Items { get; set; } = [];
 

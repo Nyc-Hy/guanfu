@@ -12,21 +12,27 @@ namespace Guanfu.Cli;
 internal static class CliResolve
 {
     /// <summary>任务 id 或编号（req001 / REQ-001 都认）。</summary>
-    public static async Task<Guid?> TaskIdAsync(GuanfuClient client, string reference)
+    public static async Task<Guid?> TaskIdAsync(GuanfuClient client, string reference, bool requireUnique = false)
     {
         if (Guid.TryParse(reference, out var id))
         {
             return id;
         }
 
+        var limit = requireUnique ? 2 : 1;
         var found = await client.GetAsync<List<TaskSummaryDto>>(
-            $"/api/tasks?key={Uri.EscapeDataString(reference)}&limit=1");
+            $"/api/tasks?key={Uri.EscapeDataString(reference)}&limit={limit}");
+
+        if (requireUnique && found.Count > 1)
+        {
+            throw new GuanfuCliException($"「{reference}」匹配多个任务，请用任务 ID 指定报告范围。");
+        }
 
         return found.Count > 0 ? found[0].Id : null;
     }
 
     /// <summary>里程碑 id 或名字。</summary>
-    public static async Task<Guid?> MilestoneIdAsync(GuanfuClient client, string reference)
+    public static async Task<Guid?> MilestoneIdAsync(GuanfuClient client, string reference, bool requireUnique = false)
     {
         if (Guid.TryParse(reference, out var id))
         {
@@ -36,20 +42,26 @@ internal static class CliResolve
         // 里程碑是项目下的 —— 先按名字在所有项目里找一份（同名取最近建的）。
         var projects = await client.GetAsync<List<ProjectSummaryDto>>("/api/projects");
 
+        Guid? match = null;
         foreach (var project in projects)
         {
             var milestones = await client.GetAsync<List<MilestoneDto>>(
                 $"/api/projects/{project.Id}/milestones");
 
-            var hit = milestones.FirstOrDefault(m =>
-                string.Equals(m.Name, reference, StringComparison.OrdinalIgnoreCase));
-
-            if (hit is not null)
+            foreach (var hit in milestones.Where(m => string.Equals(m.Name, reference, StringComparison.OrdinalIgnoreCase)))
             {
-                return hit.Id;
+                if (!requireUnique)
+                {
+                    return hit.Id;
+                }
+                if (match is not null)
+                {
+                    throw new GuanfuCliException($"「{reference}」匹配多个迭代版本，请用版本 ID 指定发版范围。");
+                }
+                match = hit.Id;
             }
         }
 
-        return null;
+        return match;
     }
 }

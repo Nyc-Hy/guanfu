@@ -205,6 +205,11 @@ public sealed class AgentSessionService(IAppDbContext db, IClock clock) : IAgent
         }
         else
         {
+            if (session.ProjectId != project.Id || session.AgentId != agentId.Trim())
+            {
+                session.TaskId = null;
+            }
+
             session.ProjectId = project.Id;
             session.RepoPath = canonical;
             session.AgentId = agentId.Trim();
@@ -299,6 +304,11 @@ public sealed class AgentSessionService(IAppDbContext db, IClock clock) : IAgent
             return null;
         }
 
+        if (!await db.Tasks.AnyAsync(t => t.Id == taskId && t.ProjectId == session.ProjectId, cancellationToken))
+        {
+            throw new GuanfuException("会话只能关联同一项目的任务。");
+        }
+
         session.TaskId = taskId;
         session.LastSeenAt = clock.UtcNow;
         await db.SaveChangesAsync(cancellationToken);
@@ -375,21 +385,24 @@ public sealed class AgentSessionService(IAppDbContext db, IClock clock) : IAgent
             .AsNoTracking()
             .FirstOrDefaultAsync(p => p.Id == session.ProjectId, cancellationToken);
 
+        Guid? taskId = null;
         string? taskKey = null;
         if (session.TaskId is not null)
         {
-            taskKey = await db.Tasks
+            var task = await db.Tasks
                 .AsNoTracking()
-                .Where(t => t.Id == session.TaskId)
-                .Select(t => t.Key)
+                .Where(t => t.Id == session.TaskId && t.ProjectId == session.ProjectId)
+                .Select(t => new { t.Id, t.Key })
                 .FirstOrDefaultAsync(cancellationToken);
+            taskId = task?.Id;
+            taskKey = task?.Key;
         }
 
         return new AgentSessionDto(
             session.Id,
             session.ProjectId,
             project?.Name ?? string.Empty,
-            session.TaskId,
+            taskId,
             taskKey,
             session.AgentId,
             session.RepoPath,

@@ -1,6 +1,7 @@
 using System.Net;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Components.Server.Circuits;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Http.Features;
@@ -66,6 +67,7 @@ builder.Services.AddCascadingAuthenticationState();
 builder.Services.AddSingleton<CurrentMemberScope>();
 builder.Services.AddSingleton<ICurrentMemberScope>(sp => sp.GetRequiredService<CurrentMemberScope>());
 builder.Services.AddScoped<MemberIdentityResolver>();
+builder.Services.AddScoped<CircuitHandler, MemberCircuitHandler>();
 
 // 枚举一律输出成字符串（"DocsReady" 而不是 1），
 // agent 与 CLI 读到的字段才有意义
@@ -178,14 +180,6 @@ app.UseMiddleware<OriginHostGuardMiddleware>(OriginHostAllowedHosts.Read(builder
 
 app.UseRateLimiter();
 
-// 成员会话：Cookie 里的身份。排在静态文件之后即可 ——
-// 静态资源不需要知道是谁在看，只有页面与 API 需要。
-app.UseAuthentication();
-app.UseAuthorization();
-
-// 身份解析：Cookie 里的成员要**到库里核对**（停用/删号后老 Cookie 不该继续管用）。
-app.UseMiddleware<MemberScopeMiddleware>();
-
 // 开发时静态文件别缓存：改完 CSS / JS 刷新就该看到新的。
 // 默认中间件会带 Last-Modified，浏览器拿到 304 就继续用本地副本 ——
 // 人会以为「改了没生效」，其实拿的是旧文件。
@@ -202,6 +196,11 @@ app.UseStaticFiles(new StaticFileOptions
         }
     }
 });
+
+app.UseAuthentication();
+// 成员身份和角色以库中当前值为准。团队模式在进入业务入口前核验身份。
+app.UseMiddleware<MemberScopeMiddleware>();
+app.UseAuthorization();
 app.UseAntiforgery();
 
 // 未知路径要重新执行到 /not-found-handler，让 Blazor 渲染中文 404。
@@ -209,16 +208,18 @@ app.UseAntiforgery();
 // /api 与 /mcp 下的 404 不重执行 —— API 缺失路径应该回 404，不是 HTML 页面。
 app.UseWhen(
     context => !context.Request.Path.StartsWithSegments("/api")
-                && !context.Request.Path.StartsWithSegments("/mcp"),
+                && !context.Request.Path.StartsWithSegments("/mcp")
+                && !context.Request.Path.StartsWithSegments("/delivery")
+                && !context.Request.Path.StartsWithSegments("/login")
+                && !context.Request.Path.StartsWithSegments("/health")
+                && !context.Request.Path.StartsWithSegments("/_framework"),
     branch => branch.UseStatusCodePagesWithReExecute("/not-found-handler"));
 
 // 人工凭证门禁：敏感端点（裁决审批 / 改项目配置 / 启动 agent /
-// 工作区搬迁 / 数据库连接）没凭证直接 401，其余端点保持开放。
+// 工作区搬迁 / 数据库连接）在团队登录门禁之上另行核验人工权限。
 app.UseMiddleware<HumanTokenMiddleware>();
 
-// MCP 端点的门禁：团队的服务器上，/mcp 的工具是在**服务器上**执行的
-// （读文件、提交代码、跑命令），「谁能连上」等于「谁能操作服务器上的仓库」。
-// 单人本机用时走共享人工凭证（owner），团队用时给每���成员 / agent 签发凭证。
+// MCP 端点校验访问凭证，团队为 agent 签发带项目范围的凭证。
 app.UseMiddleware<CredentialMiddleware>();
 
 app.MapRazorComponents<App>()

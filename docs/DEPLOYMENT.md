@@ -109,8 +109,7 @@ sudo nginx -t && sudo systemctl reload nginx
 | `Guanfu__AllowedHosts` | 同一个域名（可带端口） | **Host 头被拒**（跨站与 DNS rebinding 的防线） |
 | 反代 `proxy_set_header Host $host` | 保留原 Host | 同上 |
 
-MCP 走的是 **WebSocket / 长连接**，反代**必须放行 Upgrade**（模板里已经带上了）。
-`proxy_read_timeout` 默认 60 秒会把长连接掐断 —— 模板里调到了 3600 秒。
+MCP 使用 Streamable HTTP，反代应关闭响应缓冲并允许长连接。浏览器的 Blazor 交互使用 WebSocket，反代需要转发 Upgrade。模板已配置这两种流量。
 
 ### 审计链头归档（强烈建议配）
 
@@ -119,7 +118,7 @@ Guanfu__AuditArchivePath=/var/lib/guanfu-audit/chain-head.txt
 ```
 
 **必须在数据目录之外** —— 归档到数据目录里等于没归档（拿到库文件的人连归档一起改）。
-这个路径是「库被回滚 / 记录被删」的对照物，单独备份。
+启用时创建归档目录并授予服务用户写权限，目录也需要在 systemd 单元的 `ReadWritePaths` 里。归档文件单独备份。
 
 ---
 
@@ -133,12 +132,23 @@ Guanfu__AuditArchivePath=/var/lib/guanfu-audit/chain-head.txt
 | **成员**（人） | 账号 + 密码 → 成员会话 | 「成员」页签（owner 用人工凭证进） |
 | **agent** | 凭证（`X-Guanfu-Token`） | 「访问凭证」页签或 `POST /api/credentials` |
 
+首次内网安装时，用 owner 人工凭证调用 `POST /api/members`，填写 `userName`、`password`、`role: "Admin"`，建好账户再从浏览器登录。为每位开发者的 agent 分别签发凭证并选择它负责的项目。
+
 要点：
 
 - **凭证要绑成员** —— 签发时选「归属成员」。这样审计里才有「谁的人」，
   而且**停用成员 → 名下钥匙立刻作废**。
 - 第一个成员建成**管理员**：管理员能分配任务给别人、能代批（代批要写理由）、看得到全部。
 - 普通成员**只看得到自己的东西**（分派给自己的 + 自己认领的 + 还没分派的）。
+- 创建首位成员后，浏览器访问业务页面须登录，REST 请求须带成员会话或 owner 人工凭证。
+  MCP 使用 agent 凭证。CLI 用 `guanfu configure --url https://你的观复域名` 指定服务器，再用 `guanfu login` 保存独立的成员会话。部署人员也可显式用 owner 凭证操作 REST。
+- 交付包只有在包内所有来源任务都可见时才会出现在普通成员的清单中。旧包缺少来源记录，
+  由管理员或 owner 管理。管理员签发的有效分享链接可以直接下载。
+
+部署验收用两个项目和独立的开发、项管账号。开发机先在 HTTP 和 stdio 两种接入方式下读取任务，
+确认另一项目的任务和文档受限，再用 CLI 上报本地报告。项管在自己的浏览器验收版本、打包和下载。
+停用开发账号后检验旧会话和 agent 凭证，最后把备份导入新数据目录，重启并重新下载交付包。
+本地自动化覆盖同一流程（`tests/e2e/team_e2e.py`）。
 
 ---
 
@@ -146,7 +156,7 @@ Guanfu__AuditArchivePath=/var/lib/guanfu-audit/chain-head.txt
 
 | 什么 | 在哪 | 怎么备 |
 |---|---|---|
-| 库 + 文档 + 密钥 + 运行日志 | 数据目录 | `guanfu workspace export <目录>` |
+| 库 + 文档 + 交付包 + 密钥 + 运行日志 | 数据目录 | `guanfu workspace export <目录>` |
 | 审计链头 | `Guanfu__AuditArchivePath` | 单独备 |
 | 配置 | `/etc/guanfu/env` | 手动 |
 
@@ -161,7 +171,7 @@ Guanfu__AuditArchivePath=/var/lib/guanfu-audit/chain-head.txt
 
 ```bash
 # 1. 备份
-guanfu workspace export /tmp/guanfu-backup-$(date +%Y%m%d)
+guanfu workspace export /tmp/guanfu-backup-$(date +%Y%m%d) --token "$(guanfu token)"
 
 # 2. 停
 sudo systemctl stop guanfu
@@ -188,7 +198,7 @@ journalctl -u guanfu -f
 |---|---|---|
 | 打开页面提示要人工凭证 | 远程访问 | 走反代；本机直接开就自动认 |
 | 反代后 400 / 打不开 | Host 头不在 `AllowedHosts` | 加上域名（可带端口） |
-| agent 连不上 `/mcp` | 反代没放行 WebSocket；或没带 `X-Guanfu-Token` | 查 nginx 配置与凭证 |
+| agent 连不上 `/mcp` | 服务地址、反代或凭证配置有误 | 查 nginx 配置与 `X-Guanfu-Token` |
 | 看不到别人的活 | 你是普通成员 | 这是隔离规则；管理员看得到全部 |
 | 审批批不了别人的单子 | 同上 | 管理员可代批（要写理由） |
 | 审计里没有「谁的人」 | 凭证没绑成员 | 重签一把并绑定 |
@@ -202,8 +212,7 @@ journalctl -u guanfu -f
 
 ## 八、这套形态的边界（诚实清单）
 
-- **agent 走 MCP 时看到的是全局看板** —— 它要看得见整个项目才能干活。
-  个人数据隔离只对**人**生效。要连 agent 一起隔离，得给凭证再加一道过滤。
+- **MCP 凭证在签发时选择可访问项目**。单项目凭证可以直接用任务编号，多项目凭证可传 `projectId` 选择项目。Agent 可以看到授权项目的任务范围，成员登录时按个人范围过滤。
 - **产出是 agent 自报的** —— 观复不数「改了哪些文件」，所以「这个任务改了哪些代码」
   在观复里查不到（那是 agent 自己客户端工具的事）。
 - **审计链头归档的可靠性归部署方** —— 观复挡不住「拿到归档文件的人一起改」。

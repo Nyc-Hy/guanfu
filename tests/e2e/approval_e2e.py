@@ -1,45 +1,28 @@
 #!/usr/bin/env python3
-"""写操作的人工审批门禁 —— 企业落地最关键的一条链路。
-
-观复的卖点不是「记录状态」，是「写操作不会在没人点头的情况下发生」。
-这条链路端到端验：
-
-  D1 白名单外的命令直接拒 —— 连审批单都不建
-  D2 没批准不执行（命令根本没跑）
-  D3 人工批准后带 approvalId 续跑才执行
-  D4 一条审批只能执行一次（复用被拒）
-  D5 审批绑的是「那一条命令」—— 换个命令用同一条审批被拒
-  D6 审批绑的是「那个项目」—— 换个项目用同一条审批被拒
-  D7 撤销是后悔药（批错了但还没执行）
-  D8 只读通道不许写（db_query 走 AST 判定，不碰真库）
-  D9 db_execute 也要审批，不批就不执行
-  D10 全程有审计留痕
-  D11 只读调用也留痕
-
-不需要 SQL Server：只读判定发生在真正连库之前，写操作在审批前根本不会下发。
-
-用法:
-    python3 tests/e2e/approval_e2e.py --url http://127.0.0.1:5191
-"""
+"""链路 D：数据库写入审批、审计、团队身份与交付门禁。"""
 from __future__ import annotations
 
 import argparse
 import json
 import os
-import shutil
+import select
+import socket
 import sys
-import tempfile
 import time
 import urllib.error
 import urllib.request
 
 from mcp_e2e import Mcp, expect, section, rest_json, FAILURES
 
-MARKER = "approved-marker.txt"
-OTHER_MARKER = "other-marker.txt"
-THIRD_MARKER = "third-marker.txt"
-CROSS_MARKER = "cross-marker.txt"
-REVOKE_MARKER = "revoke-marker.txt"
+def create_fixture_connection(rest: str, project_id: str, server: str = "127.0.0.1,1") -> dict:
+    """只在临时服务登记测试用的回环连接。"""
+    return rest_json(rest, "POST", f"/api/projects/{project_id}/db-connections", {
+        "name": "数据库审批测试",
+        "server": server,
+        "database": "guanfu_test",
+        "userId": "test-user",
+        "password": "test-password",
+    })
 
 
 def rest_status(
@@ -67,9 +50,11 @@ def rest_status(
         return error.code, error.read().decode()
 
 
-def rest_bytes(rest: str, path: str) -> tuple[int, bytes]:
+def rest_bytes(rest: str, path: str, cookie: str | None = None) -> tuple[int, bytes]:
     """取二进制内容（下载 zip 用 —— 按文本解会炸）。"""
     request = urllib.request.Request(rest.rstrip("/") + path, method="GET")
+    if cookie:
+        request.add_header("Cookie", cookie.split(";")[0])
 
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
@@ -136,231 +121,48 @@ def main() -> int:
     project_id = rest_json(rest, "POST", "/api/projects", {"name": f"审批门禁 e2e {suffix}"})["id"]
     other_project_id = rest_json(rest, "POST", "/api/projects", {"name": f"别的项目 {suffix}"})["id"]
 
-    # shell_run 要有仓库路径（命令在仓库目录里跑）和命令白名单。
-    work_dir = tempfile.mkdtemp(prefix="wb-e2e-shell-")
+    with socket.socket() as database:
+        database.bind(("127.0.0.1", 0))
+        database.listen()
+        server = f"127.0.0.1,{database.getsockname()[1]}"
+        connection = create_fixture_connection(rest, project_id, server)
+        create_fixture_connection(rest, other_project_id, server)
+        sql = "UPDATE dbo.E2EProbe SET Id = 1"
 
-    def marker(name: str) -> str:
-        return os.path.join(work_dir, name)
+        def request_write(statement: str, **arguments) -> dict:
+            return mcp.call("db_execute", {
+                "projectId": project_id, "sql": statement, "waitSeconds": 1,
+                "callerId": "e2e-agent", **arguments,
+            })
 
-    def request_approval(command: str, task_id: str | None = None) -> tuple[str, dict]:
-        """申请一条审批（不批），返回 (approvalId, 工具返回)。"""
-        result = mcp.call(
-            "shell_run",
-            {
-                "projectId": project_id,
-                "command": command,
-                "waitSeconds": 1,
-                "taskId": task_id,
-                "callerId": "e2e-agent",
-            },
-        )
-        return result.get("approvalId") or "", result
+        print("\n-- 数据库写入须取得相应审批 --")
+        rest_json(rest, "POST", f"/api/db-connections/{connection['id']}/rules", {
+            "tableName": "E2EProtected", "writeForbidden": True,
+        })
+        denied = request_write("UPDATE dbo.E2EProtected SET Id = 1")
+        expect(not denied.get("ok") and "禁止写" in (denied.get("error") or ""), "禁写表直接拒绝")
+        expect(not rest_json(rest, "GET", f"/api/approvals?projectId={project_id}"), "禁写不创建审批")
 
-    def approve(approval_id: str) -> tuple[int, str]:
-        return rest_status(
-            rest,
-            "POST",
-            f"/api/approvals/{approval_id}/decide",
-            {"approve": True, "decidedBy": "e2e-human"},
-        )
+        pending = request_write(sql)
+        approval_id = pending.get("approvalId")
+        expect(bool(approval_id) and pending.get("approvalStatus") == "Pending", "未批准时 SQL 只创建待审审批")
+        status, _ = rest_status(rest, "POST", f"/api/approvals/{approval_id}/decide",
+                                {"approve": True, "decidedBy": "e2e-human"})
+        expect(status == 200, "人工可以批准数据库写入")
+        modified = request_write("UPDATE dbo.E2EProbe SET Id = 2", approvalId=approval_id)
+        expect(not modified.get("ok") and "不一致" in (modified.get("error") or ""), "审批不能换 SQL 使用")
+        crossed = request_write(sql, projectId=other_project_id, approvalId=approval_id)
+        expect(not crossed.get("ok"), "审批不能换项目使用")
+        retained = mcp.call("guanfu_get_approval", {"approvalId": approval_id})
+        expect(retained.get("status") == "Approved", "拒绝的请求没有消费审批")
 
-    try:
-        rest_json(
-            rest,
-            "PUT",
-            f"/api/projects/{project_id}/config",
-            {"repoPath": work_dir, "allowedCommands": ["touch"]},
-        )
-        # 另一个项目配一样的仓库与白名单 —— 白名单检查在闸门之前，
-        # 不配的话 D6 会被白名单拦下，测不到「审批绑项目」这一层。
-        rest_json(
-            rest,
-            "PUT",
-            f"/api/projects/{other_project_id}/config",
-            {"repoPath": work_dir, "allowedCommands": ["touch"]},
-        )
-
-        task_id = mcp.call(
-            "guanfu_create_task",
-            {"projectId": project_id, "title": "审批门禁 e2e 任务", "type": "requirement"},
-        )["id"]
-
-        # ── D1 白名单 ─────────────────────────────────────────────────
-        section("链路 D：写操作的人工审批门禁")
-
-        print("\n-- D1 白名单外的命令直接拒 --")
-        before = len(rest_json(rest, "GET", "/api/approvals?status=Pending"))
-        denied = mcp.call(
-            "shell_run",
-            {"projectId": project_id, "command": "ls -la", "waitSeconds": 1, "callerId": "e2e-agent"},
-        )
-        expect(not denied.get("ok"), "白名单外的命令应被拒")
-        expect("白名单" in (denied.get("error") or ""), "错误信息应说明是白名单问题")
-        after = len(rest_json(rest, "GET", "/api/approvals?status=Pending"))
-        expect(before == after, "白名单外的命令不该产生审批单")
-
-        # ── D2 没批准不执行 ────────────────────────────────────────────
-        print("\n-- D2 没批准不执行 --")
-        approval_id, pending = request_approval(f"touch {MARKER}", task_id)
-        expect(not pending.get("ok"), "未批准时不应成功")
-        expect(pending.get("approvalStatus") == "Pending", "审批状态应为 Pending")
-        expect(bool(approval_id), "应返回 approvalId 供人工批准后续跑")
-        expect(
-            not os.path.exists(marker(MARKER)),
-            "没批准时命令根本不该执行（标记文件不应存在）",
-        )
-
-        detail = rest_json(rest, "GET", f"/api/approvals?status=Pending&projectId={project_id}")
-        expect(any(a["id"] == approval_id for a in detail), "待审列表里应有这条审批")
-        expect(
-            any(a["toolName"] == "shell_run" and a["id"] == approval_id for a in detail),
-            "审批单应记明是哪个工具要写",
-        )
-        expect(
-            any(a["id"] == approval_id and MARKER in (a.get("payload") or "") for a in detail),
-            "审批单里应带命令原文（人批的时候要知道批的是什么）",
-        )
-
-        # ── D3 人工批准后续跑 ──────────────────────────────────────────
-        print("\n-- D3 人工批准后带 approvalId 续跑 --")
-        status, body = approve(approval_id)
-        expect(status == 200, f"人工批准应成功（HTTP {status} {body[:120]}）")
-
-        executed = mcp.call(
-            "shell_run",
-            {
-                "projectId": project_id,
-                "command": f"touch {MARKER}",
-                "approvalId": approval_id,
-                "taskId": task_id,
-                "callerId": "e2e-agent",
-            },
-        )
-        expect(executed.get("ok"), "批准后带 approvalId 续跑应执行成功")
-        expect(
-            os.path.exists(marker(MARKER)),
-            "批准后命令应真的执行了（标记文件应存在）",
-        )
-
-        # ── D4 一条审批只能执行一次 ────────────────────────────────────
-        print("\n-- D4 一条审批只能执行一次 --")
-        replay = mcp.call(
-            "shell_run",
-            {
-                "projectId": project_id,
-                "command": f"touch {MARKER}",
-                "approvalId": approval_id,
-                "taskId": task_id,
-                "callerId": "e2e-agent",
-            },
-        )
-        expect(not replay.get("ok"), "同一条审批不该能执行第二次")
-        expect(
-            "Executed" in (replay.get("error") or "") or "用掉" in (replay.get("error") or ""),
-            "错误信息应说清这条审批已经用过了",
-        )
-
-        # ── D5 审批绑的是「那一条命令」 ────────────────────────────────
-        # 这里必须用**一条还没被消费过的**审批：校验顺序是
-        # 「状态 → 工具 → 类别 → 项目 → 参数指纹」。
-        # 拿一条已 Executed 的审批来测，只会撞在「状态」这一关，
-        # 测不到「参数指纹」这一关。
-        print("\n-- D5 换个命令用同一条审批 --")
-        bound_id, _ = request_approval(f"touch {OTHER_MARKER}", task_id)
-        expect(bool(bound_id), "应生成一条待审审批")
-        status, body = approve(bound_id)
-        expect(status == 200, f"批准应成功（HTTP {status} {body[:120]}）")
-
-        other = mcp.call(
-            "shell_run",
-            {
-                "projectId": project_id,
-                "command": f"touch {THIRD_MARKER}",
-                "approvalId": bound_id,
-                "taskId": task_id,
-                "callerId": "e2e-agent",
-            },
-        )
-        expect(not other.get("ok"), "换个命令不该能用原审批")
-        expect(
-            "不一致" in (other.get("error") or ""),
-            "错误信息应指出操作内容与当初审批的不一致",
-        )
-        expect(
-            not os.path.exists(marker(THIRD_MARKER)),
-            "没被批准的命令不该执行",
-        )
-        expect(
-            not os.path.exists(marker(OTHER_MARKER)),
-            "批过的那条命令也不该顺带执行（指纹不符就不该有任何副作用）",
-        )
-
-        # ── D6 审批绑的是「那个项目」 ──────────────────────────────────
-        print("\n-- D6 换个项目用同一条审批 --")
-        cross_id, _ = request_approval(f"touch {CROSS_MARKER}", task_id)
-        expect(bool(cross_id), "应生成一条待审审批")
-        status, body = approve(cross_id)
-        expect(status == 200, f"批准应成功（HTTP {status} {body[:120]}）")
-
-        cross = mcp.call(
-            "shell_run",
-            {
-                "projectId": other_project_id,
-                "command": f"touch {CROSS_MARKER}",
-                "approvalId": cross_id,
-                "callerId": "e2e-agent",
-            },
-        )
-        expect(not cross.get("ok"), "别的项目不该能用这条审批")
-        expect("别的项目" in (cross.get("error") or ""), "错误信息应说明审批属于别的项目")
-        expect(
-            not os.path.exists(marker(CROSS_MARKER)),
-            "跨项目用审批不该执行命令",
-        )
-
-        # ── D7 撤销是后悔药 ────────────────────────────────────────────
-        print("\n-- D7 撤销 = 批错了但还没执行 --")
-        revoke_id, _ = request_approval(f"touch {REVOKE_MARKER}", task_id)
-        expect(bool(revoke_id), "应生成一条待审审批")
-
-        status, body = rest_status(
-            rest, "POST", f"/api/approvals/{revoke_id}/revoke", {"reason": "e2e：批错了"}
-        )
-        expect(status == 200, f"撤销应成功（HTTP {status} {body[:120]}）")
-
-        after_revoke = mcp.call(
-            "shell_run",
-            {
-                "projectId": project_id,
-                "command": f"touch {REVOKE_MARKER}",
-                "approvalId": revoke_id,
-                "taskId": task_id,
-                "callerId": "e2e-agent",
-            },
-        )
-        expect(not after_revoke.get("ok"), "撤销后的审批不该再能执行")
-        expect(
-            not os.path.exists(marker(REVOKE_MARKER)),
-            "撤销后命令不该执行",
-        )
+        status, _ = rest_status(rest, "POST", f"/api/approvals/{approval_id}/revoke", {"reason": "撤销测试"})
+        expect(status == 200, "人工可以撤销未执行的数据库写入审批")
+        revoked = request_write(sql, approvalId=approval_id)
+        expect(not revoked.get("ok") and revoked.get("approvalStatus") == "Rejected", "已撤销的审批不能执行")
 
         # ── D8 只读通道不许写 ──────────────────────────────────────────
         print("\n-- D8 只读通道不许写 --")
-        # 只登记连接配置，不真连库：只读判定发生在连库之前。
-        rest_json(
-            rest,
-            "POST",
-            f"/api/projects/{project_id}/db-connections",
-            {
-                "name": "e2e 假连接",
-                "server": "127.0.0.1,14330",
-                "database": "e2e",
-                "userId": "sa",
-                "password": "e2e-only-never-connected",
-                "isDefault": True,
-            },
-        )
-
         write_via_query = mcp.call(
             "db_query",
             {"projectId": project_id, "sql": "UPDATE dbo.Users SET Name = 'x'"},
@@ -397,17 +199,17 @@ def main() -> int:
         audit = mcp.call(
             "guanfu_list_audit", {"projectId": project_id, "limit": 200}
         )
-        shell_audit = [a for a in (audit or []) if a.get("toolName") == "shell_run"]
-        expect(len(shell_audit) > 0, "shell_run 的调用应有审计记录")
-        outcomes = {a.get("outcome") for a in shell_audit}
+        write_audit = [a for a in (audit or []) if a.get("toolName") == "db_execute"]
+        expect(len(write_audit) > 0, "db_execute 的调用应有审计记录")
+        outcomes = {a.get("outcome") for a in write_audit}
         expect("pending" in outcomes, "待审的那次调用应记为 pending")
-        expect("success" in outcomes, "执行成功的那次调用应记为 success")
+        expect("denied" in outcomes, "被拦下的写入应记为 denied")
         expect(
-            any(a.get("approvalId") for a in shell_audit),
+            any(a.get("approvalId") for a in write_audit),
             "审计应记下用的是哪条审批",
         )
         expect(
-            any(a.get("callerId") == "e2e-agent" for a in shell_audit),
+            any(a.get("callerId") == "e2e-agent" for a in write_audit),
             "审计应记下是谁调的",
         )
         query_audit = [
@@ -559,7 +361,7 @@ def main() -> int:
         member_user = f"e2e-admin-{suffix}"
         member_password = "e2e-password-1"
 
-        create_status, _ = rest_status(
+        create_status, admin_body = rest_status(
             rest,
             "POST",
             "/api/members",
@@ -597,9 +399,22 @@ def main() -> int:
 
         no_session_status, _ = rest_with_cookie(rest, "GET", "/api/members", None)
         expect(
-            no_session_status == 403,
+            no_session_status == 401,
             f"没登录不该能看成员名单（实际 {no_session_status}）",
         )
+
+        for method, path, payload in [
+            ("GET", "/api/projects", None),
+            ("POST", f"/api/projects/{project_id}/tasks", {"title": "未登录不能建任务"}),
+            ("POST", "/_blazor/negotiate?negotiateVersion=1", {}),
+            ("GET", "/api/human-token", None),
+        ]:
+            status, _ = rest_with_cookie(rest, method, path, None, payload)
+            expect(status == 401, f"团队模式下未登录的 {method} {path} 应返回 401（实际 {status}）")
+
+        status, login_page = rest_with_cookie(rest, "GET", "/", None)
+        expect(status == 200 and 'id="wb-login"' in login_page and "blazor.web.js" not in login_page,
+               "未登录访问主页应进入独立登录表单")
 
         # ── D14 成员的钥匙：审计里要出现「这把钥匙是谁的」 ──────────
         print("\n-- D14 成员凭证的调用要在审计里留下成员 --")
@@ -732,18 +547,80 @@ def main() -> int:
                 f"成员不该能按 id 读到别人的任务文档（实际 HTTP {status}）",
             )
 
-        section("结果")
-        if FAILURES:
-            print(f"❌ 失败 {len(FAILURES)} 项:")
-            for failure in FAILURES:
-                print(f"  - {failure}")
-            return 1
+            document = mcp.call("doc_upload", {
+                "taskId": other_task["id"],
+                "fileName": "private.md",
+                "content": "# 另一位成员的文档",
+            })["documents"][0]
+            status, _ = rest_with_cookie(
+                rest, "GET", f"/api/documents/{document['id']}/outline", iso_cookie
+            )
+            expect(status == 404, "成员直接按文档编号读别人的文档应返回 404")
 
-        print("✅ 全部通过")
-        return 0
-    finally:
-        shutil.rmtree(work_dir, ignore_errors=True)
+            print("\n-- D16 交付包遵守成员的任务可见性 --")
+            iso_member_id = json.loads(iso_body)["id"]
+            delivery_id = rest_json(
+                rest, "POST", f"/api/projects/{project_id}/milestones", {"name": "成员交付测试"}
+            )["id"]
+            own_task = rest_json(
+                rest, "POST", f"/api/projects/{project_id}/tasks",
+                {"title": "自己的交付任务", "milestoneId": delivery_id},
+            )
+            rest_json(rest, "POST", f"/api/tasks/{own_task['id']}/assign",
+                      {"assigneeMemberId": iso_member_id})
+            rest_json(rest, "POST", f"/api/tasks/{other_task['id']}/milestone",
+                      {"milestoneId": delivery_id})
+            own_item = rest_json(
+                rest, "POST", f"/api/tasks/{own_task['id']}/artifacts",
+                {"title": "自己的报告", "type": "TestReport", "content": "自己的交付内容"},
+            )["id"]
+            package_list_path = f"/api/milestones/{delivery_id}/delivery/packages"
+            own_package = rest_json(rest, "POST", package_list_path, {"itemIds": [own_item]})["id"]
+            mixed_package = rest_json(
+                rest, "POST", package_list_path, {"itemIds": [own_item, document["id"]]}
+            )["id"]
+            mixed_path = f"/api/delivery-packages/{mixed_package}"
 
+            status, visible = rest_with_cookie(rest, "GET", package_list_path, iso_cookie)
+            expect(status == 200 and [p["id"] for p in json.loads(visible)] == [own_package],
+                   "包列表只显示全部来源任务均可见的包")
+            status, zipped = rest_bytes(rest, f"/api/delivery-packages/{own_package}/download", iso_cookie)
+            expect(status == 200 and zipped.startswith(b"PK"), "成员可下载自己任务的交付包")
+            status, _ = rest_with_cookie(rest, "GET", mixed_path, iso_cookie)
+            expect(status == 404, "成员不能读取含他人任务的交付包清单")
+            status, _ = rest_bytes(rest, mixed_path + "/download", iso_cookie)
+            expect(status == 404, "成员不能下载含他人任务的交付包")
+            status, _ = rest_with_cookie(rest, "POST", mixed_path + "/share", iso_cookie, {})
+            expect(status == 401, "普通成员不能签发分享链接")
+
+            share_status, shared = rest_with_cookie(rest, "POST", mixed_path + "/share", cookie, {})
+            expect(share_status == 200, "管理员可为交付包签发链接")
+            if share_status == 200:
+                status, zipped = rest_bytes(rest, f"/delivery/{json.loads(shared)['token']}")
+                expect(status == 200 and zipped.startswith(b"PK"), "团队模式下公开分享仍可凭链接下载")
+
+            rest_json(rest, "PUT", f"/api/members/{iso_member_id}/status", {"disabled": True})
+            status, _ = rest_with_cookie(rest, "GET", "/api/projects", iso_cookie)
+            expect(status == 401, "成员停用后旧会话不能访问业务接口")
+
+        if cookie:
+            admin_member_id = json.loads(admin_body)["id"]
+            rest_json(rest, "PUT", f"/api/members/{admin_member_id}/role", {"role": "Member"})
+            status, _ = rest_with_cookie(rest, "GET", "/api/members", cookie)
+            expect(status == 403, "降级后的旧会话不能继续以管理员身份管理成员")
+
+        ready, _, _ = select.select([database], [], [], 0)
+        expect(not ready, "未通过审批或只读校验的 SQL 没有连接数据库")
+
+    section("结果")
+    if FAILURES:
+        print(f"❌ 失败 {len(FAILURES)} 项:")
+        for failure in FAILURES:
+            print(f"  - {failure}")
+        return 1
+
+    print("✅ 全部通过")
+    return 0
 
 if __name__ == "__main__":
     try:

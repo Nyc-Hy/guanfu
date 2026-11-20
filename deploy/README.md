@@ -37,7 +37,7 @@ sudo chown -R guanfu:guanfu /var/lib/guanfu
 
 ```bash
 cd /opt/guanfu
-./bin/guanfu-server
+./bin/guanfu serve
 ```
 
 启动后终端会打印：
@@ -71,7 +71,7 @@ journalctl -u guanfu -f
 
 ### 给内网用
 
-观复默认只听本机。对外暴露要走反向代理（TLS 与 WebSocket 都得转）：
+观复默认监听本机。内网反代终结 TLS，转发 Blazor 的 WebSocket 和 MCP 的 Streamable HTTP：
 
 ```bash
 sudo cp deploy/nginx.conf /etc/nginx/conf.d/guanfu.conf
@@ -112,7 +112,7 @@ sudo nginx -t && sudo systemctl reload nginx
 
 | 什么 | 在哪 | 怎么备 |
 |---|---|---|
-| 数据库与文档 | 数据目录 | `guanfu workspace export <目录>`（库 + 文档 + 密钥 + 运行日志打成一份） |
+| 工作区数据 | 数据目录 | `guanfu workspace export <目录>`（库 + 文档 + 交付包 + 密钥 + 运行日志） |
 | 审计链头 | `Guanfu__AuditArchivePath` 指向的文件 | 这个**必须在数据目录之外**，单独备份 |
 | 配置 | `/etc/guanfu/env` | 手动留一份 |
 
@@ -122,7 +122,7 @@ sudo nginx -t && sudo systemctl reload nginx
 
 ```bash
 # 1. 备份
-./bin/guanfu workspace export /tmp/guanfu-backup-$(date +%Y%m%d)
+./bin/guanfu workspace export /tmp/guanfu-backup-$(date +%Y%m%d) --url http://127.0.0.1:5177 --token "$(./bin/guanfu token)"
 
 # 2. 停
 sudo systemctl stop guanfu
@@ -143,7 +143,7 @@ journalctl -u guanfu -f
 |---|---|
 | 打开页面 401 / 提示要人工凭证 | 远程访问要走反代；本机直接开就自动认 |
 | 反代后打不开 / Host 被拒 | `Guanfu__AllowedHosts` 少了这个域名 |
-| agent 连不上 `/mcp` | 反代没放行 WebSocket；或凭证没带 `X-Guanfu-Token` |
+| agent 连不上 `/mcp` | 检查反代的 HTTP 转发和 `X-Guanfu-Token` 凭证 |
 | 「有人走过」但看不出是谁 | 审计页的「谁的人」一列 —— 凭证要**绑到成员**才有 |
 | 验哈希链报断裂 | 审计链头归档没配，或数据目录被人动过 |
 | 交付包下载不了 | 分享链接过期了（默认 7 天）或被撤销了 |

@@ -254,6 +254,7 @@ public static class UiText
         "guanfu_start_review" => "开评审轮",
         "guanfu_get_review_pack" => "取评审包",
         "guanfu_submit_review" => "回写评审结论",
+        "guanfu_record_review_evidence" => "登记评审报告证据",
         "guanfu_list_reviews" => "查看评审历史",
         "guanfu_get_review" => "查看评审汇总",
         "guanfu_export_events" => "导出事件流水",

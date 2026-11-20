@@ -29,8 +29,12 @@ public interface IReviewService : IReviewGate
         int? round = null,
         CancellationToken cancellationToken = default);
 
-    /// <summary>取评审包：维度清单 + 任务上下文 + 变更文件。agent 照着这个逐维度评审。</summary>
+    /// <summary>取评审包：维度清单、任务上下文和已登记的报告证据。</summary>
     Task<ReviewPackDto> GetPackAsync(Guid taskId, int? round = null, CancellationToken cancellationToken = default);
+
+    Task<ReviewEvidenceSnapshot> RecordReportEvidenceAsync(
+        Guid taskId, int round, int expectedVersion, ReviewReportEvidence evidence,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// 回写某个维度的结论。
@@ -157,7 +161,8 @@ public sealed class ReviewService(
     IAppDbContext db,
     IClock clock,
     IGitInspector git,
-    IProjectSpecService? specs = null) : IReviewService, IReviewGate
+    IProjectSpecService? specs = null,
+    ICurrentMemberScope? currentMember = null) : IReviewService, IReviewGate
 {
     /// <summary>
     /// 每轮最多允许跳过几个维度。
@@ -172,7 +177,7 @@ public sealed class ReviewService(
         string? reviewer = null,
         CancellationToken cancellationToken = default)
     {
-        var task = await db.Tasks.FirstOrDefaultAsync(t => t.Id == taskId, cancellationToken)
+        var task = await db.Tasks.VisibleTo(currentMember?.Current).FirstOrDefaultAsync(t => t.Id == taskId, cancellationToken)
                    ?? throw new NotFoundException("任务", taskId);
 
         var project = await db.Projects.AsNoTracking()
@@ -911,11 +916,65 @@ public sealed class ReviewService(
         return ToSpecVerdictDto(verdict);
     }
 
+    public async Task<ReviewEvidenceSnapshot> RecordReportEvidenceAsync(
+        Guid taskId, int round, int expectedVersion, ReviewReportEvidence evidence,
+        CancellationToken cancellationToken = default)
+    {
+        ReviewEvidenceRules.Validate(evidence);
+
+        var rounds = VisibleRounds(taskId);
+        var current = await rounds.AsNoTracking().OrderByDescending(r => r.Round)
+            .FirstOrDefaultAsync(cancellationToken) ?? throw new NotFoundException("评审轮次", taskId);
+        if (current.Round != round)
+        {
+            throw new GuanfuException("请在当前评审轮次提交报告证据。");
+        }
+
+        var existing = ReadEvidence(current);
+        if ((existing?.Version ?? 0) != expectedVersion)
+        {
+            throw new GuanfuException("报告证据已更新，请重新读取本轮评审后再提交。");
+        }
+
+        if (ReferenceChanged(existing?.Evidence.Revision, evidence.Revision) ||
+            ReferenceChanged(existing?.Evidence.Baseline, evidence.Baseline))
+        {
+            throw new GuanfuException("评审基线或评审版本已变化，请开新一轮评审。");
+        }
+
+        var snapshot = new ReviewEvidenceSnapshot(expectedVersion + 1, evidence, clock.UtcNow,
+            currentMember?.Current?.DisplayName);
+        var json = GuanfuJson.Serialize(snapshot);
+        if (json.Length > 256_000)
+        {
+            throw new GuanfuException("报告证据过大，请用产物上传长日志或完整补丁，在报告中填写引用。");
+        }
+
+        var updated = await rounds
+            .Where(r => r.Id == current.Id && r.ReportEvidenceJson == current.ReportEvidenceJson)
+            .Where(r => !db.ReviewRounds.Any(next => next.TaskId == taskId && next.Round > round))
+            .ExecuteUpdateAsync(set => set.SetProperty(r => r.ReportEvidenceJson, json), cancellationToken);
+        if (updated == 0)
+        {
+            throw new GuanfuException("评审轮次或报告证据已更新，请重新读取后再提交。");
+        }
+
+        return snapshot;
+    }
+
+    private static bool ReferenceChanged(string? previous, string? current) =>
+        !string.IsNullOrWhiteSpace(previous) && !string.Equals(previous.Trim(), current?.Trim(), StringComparison.Ordinal);
+
+    private IQueryable<ReviewRound> VisibleRounds(Guid taskId)
+    {
+        var visibleTasks = db.Tasks.VisibleTo(currentMember?.Current);
+        return db.ReviewRounds.Where(r => r.TaskId == taskId && visibleTasks.Any(t => t.Id == r.TaskId));
+    }
+
     public async Task<IReadOnlyList<ReviewRoundDto>> ListAsync(Guid taskId, CancellationToken cancellationToken = default)
     {
-        var rounds = await db.ReviewRounds
+        var rounds = await VisibleRounds(taskId)
             .AsNoTracking()
-            .Where(r => r.TaskId == taskId)
             .OrderBy(r => r.Round)
             .ToListAsync(cancellationToken);
 
@@ -936,7 +995,7 @@ public sealed class ReviewService(
 
     public async Task<ReviewRoundDto?> GetCurrentAsync(Guid taskId, CancellationToken cancellationToken = default)
     {
-        var current = await LoadRoundAsync(taskId, null, cancellationToken);
+        var current = await LoadRoundAsync(taskId, null, cancellationToken, asNoTracking: true);
         return current is null ? null : ToDto(current);
     }
 
@@ -945,7 +1004,7 @@ public sealed class ReviewService(
         // 门禁是**只读判定**，必须看库里的真实结论：跟踪查询会优先返回内存里的旧实例，
         // 绕过 SaveChanges 的写入（批量 ExecuteUpdate / 升级脚本 / 另一个进程）它看不见，
         // 老数据里已经写好的 Skipped 会被当成「待评审」，任务就永远结不了项。
-        var current = await LoadRoundAsync(taskId, null, cancellationToken, asNoTracking: true);
+        var current = await LoadRoundAsync(taskId, null, cancellationToken, asNoTracking: true, checkVisibility: false);
 
         if (current is null)
         {
@@ -1134,9 +1193,10 @@ public sealed class ReviewService(
         Guid taskId,
         int? round,
         CancellationToken cancellationToken,
-        bool asNoTracking = false)
+        bool asNoTracking = false,
+        bool checkVisibility = true)
     {
-        var query = db.ReviewRounds.Where(r => r.TaskId == taskId);
+        var query = checkVisibility ? VisibleRounds(taskId) : db.ReviewRounds.Where(r => r.TaskId == taskId);
 
         if (round is not null)
         {
@@ -1173,7 +1233,7 @@ public sealed class ReviewService(
         return entity;
     }
 
-    private static ReviewRoundDto ToDto(ReviewRound round, List<ReviewItem>? items = null)
+    internal static ReviewRoundDto ToDto(ReviewRound round, List<ReviewItem>? items = null)
     {
         var all = (items ?? round.Items).OrderBy(i => i.Order).ToList();
 
@@ -1195,8 +1255,12 @@ public sealed class ReviewService(
                 i.Status.ToString(),
                 i.Reviewer)).ToList(),
             all.Count(i => i.Status == ReviewStatus.Pending),
-            all.Count(i => i.Status == ReviewStatus.Failed));
+            all.Count(i => i.Status == ReviewStatus.Failed),
+            ReadEvidence(round));
     }
+
+    private static ReviewEvidenceSnapshot? ReadEvidence(ReviewRound round) =>
+        round.ReportEvidenceJson is { } json ? GuanfuJson.Deserialize<ReviewEvidenceSnapshot>(json) : null;
 
     private static SpecVerdictDto ToSpecVerdictDto(SpecVerdict verdict) => new(
         verdict.Id,

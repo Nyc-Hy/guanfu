@@ -1,9 +1,7 @@
-﻿@using Microsoft.AspNetCore.Components.Authorization
-@inherits LayoutComponentBase
+﻿@inherits LayoutComponentBase
 @implements IAsyncDisposable
 @inject IServiceScopeFactory ScopeFactory
 @inject CurrentMemberScope CurrentScope
-@inject MemberIdentityResolver Resolver
 @inject IJSRuntime JS
 @inject NavigationManager Nav
 
@@ -158,7 +156,7 @@
             }
             else
             {
-                <a class="wb-btn wb-btn-ghost wb-btn-sm" href="/login">登录</a>
+                <a class="wb-btn wb-btn-ghost wb-btn-sm" href="/login" data-enhance-nav="false">登录</a>
             }
             <button class="wb-btn wb-btn-ghost wb-btn-sm" @onclick="ToggleThemeAsync"
                     title="@(Theme == "light" ? "切换到深色" : "切换到浅色")">
@@ -195,48 +193,14 @@
 
     private bool IsAdmin { get; set; }
 
-    /// <summary>登录身份（由 CascadingAuthenticationState 提供）。</summary>
-    [CascadingParameter] private Task<AuthenticationState>? AuthStateTask { get; set; }
-
     protected override async Task OnInitializedAsync()
     {
         // 路由变了要重画侧边栏的高亮项
         Nav.LocationChanged += OnLocationChanged;
 
-        await LoadIdentityAsync();
+        CurrentUser = CurrentScope.Current?.DisplayName;
+        IsAdmin = CurrentScope.Current?.IsAdmin == true;
         await RefreshAsync();
-    }
-
-    /// <summary>读一次登录身份（显示「现在是谁在操作」）。</summary>
-    private async Task LoadIdentityAsync()
-    {
-        if (AuthStateTask is null)
-        {
-            return;
-        }
-
-        try
-        {
-            var state = await AuthStateTask;
-            var user = state.User;
-
-            // 身份要**到库里核对**（停用/删号后老 Cookie 不该继续管用），
-            // 核对过的身份再回填给服务层 —— 电路里拿不到 HttpContext，
-            // 「普通成员只看自己的东西」这条规则要靠它才生效。
-            var scope = await Resolver.ResolveAsync(user);
-
-            if (scope is not null)
-            {
-                CurrentUser = scope.DisplayName;
-                IsAdmin = scope.IsAdmin;
-            }
-
-            CurrentScope.SetFallback(scope);
-        }
-        catch (Exception)
-        {
-            // 拿不到身份就当没登录 —— 不因为显示不出名字把页面搞挂
-        }
     }
 
     /// <summary>退出登录：清掉会话 Cookie，再整页重载（新的电路才认）。</summary>

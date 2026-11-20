@@ -17,7 +17,8 @@ public interface IProjectService
         /// （老代码第 3 个位置传的是 ct，直接编译不过）。
         /// </summary>
         string? repoPath = null);
-    Task<IReadOnlyList<ProjectSummaryDto>> ListAsync(CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<ProjectSummaryDto>> ListAsync(
+        CancellationToken cancellationToken = default, IReadOnlyList<Guid>? projectIds = null);
     Task<ProjectSummaryDto?> GetAsync(Guid id, CancellationToken cancellationToken = default);
     Task<ProjectSummaryDto> UpdateAsync(
         Guid id,
@@ -216,9 +217,16 @@ public sealed class ProjectService(
         return workspace;
     }
 
-    public async Task<IReadOnlyList<ProjectSummaryDto>> ListAsync(CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<ProjectSummaryDto>> ListAsync(
+        CancellationToken cancellationToken = default, IReadOnlyList<Guid>? projectIds = null)
     {
-        var projects = await db.Projects
+        var query = db.Projects.AsQueryable();
+        if (projectIds is not null)
+        {
+            query = query.Where(p => projectIds.Contains(p.Id));
+        }
+
+        var projects = await query
             .OrderBy(p => p.CreatedAt)
             .ToListAsync(cancellationToken);
 

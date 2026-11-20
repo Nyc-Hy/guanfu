@@ -1,4 +1,6 @@
 using System.Security.Claims;
+using Microsoft.AspNetCore.Components.Authorization;
+using Microsoft.AspNetCore.Components.Server.Circuits;
 using Microsoft.EntityFrameworkCore;
 using Guanfu.Application;
 using Guanfu.Application.Services;
@@ -10,8 +12,8 @@ namespace Guanfu.Web;
 /// 当前身份（谁在操作）。
 ///
 /// 两条来源：
-/// - **HTTP 请求**（REST / MCP）：从认证结果读 —— 成员会话（Cookie）；
-/// - **Blazor 电路**：电路里拿不到 HttpContext，由布局把身份回填进来。
+/// - **HTTP 请求**：由成员门禁解析会话 Cookie；
+/// - **Blazor 电路**：由电路处理器在交互操作之前核验身份。
 ///
 /// **每次都要核对库**：Cookie 里写着「我是谁」，但那是签发时写下的 ——
 /// 成员被**停用**、被删掉、改了角色之后，老 Cookie 还在浏览器里，
@@ -40,18 +42,7 @@ public sealed class CurrentMemberScope : ICurrentMemberScope
     /// <summary>当前身份。没人登录 = 单人本机模式（不过滤）。</summary>
     public MemberScope? Current => Ambient.Value;
 
-    /// <summary>把身份写进当前执行上下文（Blazor 电路里由 MainLayout 调用）。</summary>
-    public void SetFallback(MemberScope? scope) => Ambient.Value = scope;
-
-    /// <summary>把身份写进当前执行上下文（REST 请求里由中间件调用）。</summary>
     public void Set(MemberScope? scope) => Ambient.Value = scope;
-
-    /// <summary>
-    /// 解析当前身份并**到库里核对一遍**。
-    ///
-    /// REST 请求：由中间件在请求进来时调一次（之后 <see cref="Current"/> 是同步读）。
-    /// Blazor 电路：由布局在初始化时调（传 <c>AuthenticationState</c> 里的身份）。
-    /// </summary>
 }
 
 /// <summary>
@@ -67,6 +58,9 @@ public sealed class MemberIdentityResolver(
     IHttpContextAccessor http,
     IAppDbContext db)
 {
+    public Task<bool> HasMembersAsync(CancellationToken cancellationToken = default) =>
+        db.Members.AnyAsync(cancellationToken);
+
     public async Task<MemberScope?> ResolveAsync(ClaimsPrincipal? principal = null)
     {
         principal ??= http.HttpContext?.User;
@@ -112,15 +106,96 @@ public sealed class MemberScopeMiddleware(RequestDelegate next)
     public async Task InvokeAsync(
         HttpContext context,
         CurrentMemberScope scope,
-        MemberIdentityResolver resolver)
+        MemberIdentityResolver resolver,
+        HumanTokenAccessor tokens)
     {
+        var path = context.Request.Path;
+
+        // 分享链接与 MCP 各自核验凭证。框架资源与健康检查无需成员会话。
+        if (path.StartsWithSegments("/mcp") || path.StartsWithSegments("/delivery") ||
+            path.StartsWithSegments("/_framework") || path == "/health")
+        {
+            await next(context);
+            return;
+        }
+
         var resolved = await resolver.ResolveAsync(context.User);
+        var hadSession = context.User.Identity?.IsAuthenticated == true;
 
         if (resolved is not null)
         {
-            scope.Set(resolved);
+            context.User = MemberAuth.BuildPrincipal(new Member
+            {
+                Id = resolved.MemberId,
+                UserName = resolved.UserName,
+                DisplayName = resolved.DisplayName,
+                Role = resolved.Role
+            });
+        }
+        else if (hadSession)
+        {
+            context.User = new ClaimsPrincipal(new ClaimsIdentity());
         }
 
+        var route = (path.Value ?? "").TrimEnd('/').ToLowerInvariant();
+        var api = path.StartsWithSegments("/api");
+        var owner = api && tokens.IsAuthorized(context.Request);
+        var publicRoute = route is "/login" or "/api/auth/login" or "/api/auth/logout" or "/api/auth/me";
+        var allow = publicRoute || owner || (route != "/api/human-token" && resolved is not null);
+
+        if (!allow && !hadSession && tokens.IsDirectLoopbackRequest(context))
+        {
+            allow = !await resolver.HasMembersAsync(context.RequestAborted);
+        }
+
+        if (!allow)
+        {
+            if (api || path.StartsWithSegments("/_blazor") || !HttpMethods.IsGet(context.Request.Method))
+            {
+                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                await context.Response.WriteAsJsonAsync(
+                    new { ok = false, error = "请登录观复，或为 REST 请求提供人工凭证。" },
+                    context.RequestAborted);
+            }
+            else
+            {
+                var returnUrl = context.Request.PathBase.Add(path).ToUriComponent() +
+                    context.Request.QueryString.ToUriComponent();
+                context.Response.Redirect("/login" + QueryString.Create("returnUrl", returnUrl));
+            }
+
+            return;
+        }
+
+        scope.Set(resolved);
         await next(context);
     }
+}
+
+/// <summary>交互操作用当前成员范围。停用、改角色或进入团队模式后，旧电路须重新连接。</summary>
+public sealed class MemberCircuitHandler(
+    AuthenticationStateProvider authentication,
+    IServiceScopeFactory scopeFactory,
+    CurrentMemberScope currentMember) : CircuitHandler
+{
+    public override Func<CircuitInboundActivityContext, Task> CreateInboundActivityHandler(
+        Func<CircuitInboundActivityContext, Task> next) => async activity =>
+    {
+        var user = (await authentication.GetAuthenticationStateAsync()).User;
+        using var scope = scopeFactory.CreateScope();
+        var resolver = scope.ServiceProvider.GetRequiredService<MemberIdentityResolver>();
+        var member = await resolver.ResolveAsync(user);
+
+        var valid = user.Identity?.IsAuthenticated == true
+            ? member is not null && MemberAuth.IsAdmin(user) == member.IsAdmin
+            : !await resolver.HasMembersAsync();
+
+        if (!valid)
+        {
+            throw new UnauthorizedAccessException("会话身份已变更，请重新加载页面。");
+        }
+
+        currentMember.Set(member);
+        await next(activity);
+    };
 }

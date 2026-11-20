@@ -34,5 +34,6 @@ public class McpConnectInfoTests
 
         var args = server.GetProperty("args").EnumerateArray().Select(a => a.GetString()).ToList();
         Assert.Equal(new[] { "mcp", "--url", "http://127.0.0.1:5177" }, args);
+        Assert.Equal("<凭证>", server.GetProperty("env").GetProperty("GUANFU_TOKEN").GetString());
     }
 }

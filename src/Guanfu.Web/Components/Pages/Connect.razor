@@ -98,13 +98,13 @@
                 <li>领一个任务（带租约，别人抢不走）</li>
                 <li>一次取回全部上下文：文档、计划、产物、流水、允许的状态迁移</li>
                 <li>回写需求理解与开发计划</li>
-                <li>干活（改代码、跑测试）</li>
+                <li>在开发机用 Codex 读写代码、跑测试、操作 Git</li>
                 <li>回写单元测试结果</li>
                 <li>推进状态；非法迁移会带出当前允许的列表</li>
+                <li>分工评审，登记需求对照、变更、测试和复验证据，导出 HTML</li>
             </ol>
             <p class="wb-hint">
-                改数据库、提交代码、推送、执行命令这几类写操作都要人工审批，
-                批准后带审批号再次调用即执行。
+                数据库写入按项目表规则审批。报告和脚本可通过本机 CLI 上传。
             </p>
             <details>
                 <summary class="wb-muted">对应的工具名（agent 按这些名字调用）</summary>
@@ -114,7 +114,10 @@
                     <li><code>guanfu_set_plan</code></li>
                     <li><code>guanfu_report_test_result</code></li>
                     <li><code>guanfu_update_status</code></li>
-                    <li><code>db_execute</code> · <code>git_commit</code> · <code>git_push</code> · <code>shell_run</code></li>
+                    <li><code>guanfu_add_artifact</code></li>
+                    <li><code>guanfu_record_review_evidence</code></li>
+                    <li><code>guanfu_export_review</code></li>
+                    <li><code>db_execute</code></li>
                 </ul>
             </details>
         </section>

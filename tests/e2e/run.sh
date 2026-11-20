@@ -104,6 +104,10 @@ if [[ -n "${CLI_DLL:-}" ]]; then
     --url "http://127.0.0.1:$PORT" \
     --dotnet "$DOTNET" \
     --cli "$CLI_DLL" || status=1
+
+  echo
+  echo "### 链路 H：团队协作、项目隔离与备份恢复"
+  python3 "$ROOT/tests/e2e/team_e2e.py" --root "$ROOT" --dotnet "$DOTNET" --cli "$CLI_DLL" || status=1
 fi
 
 exit "$status"

@@ -18,19 +18,24 @@ namespace Guanfu.Infrastructure;
 /// </summary>
 internal static class SqlitePragmas
 {
-    internal const string CommandText = "PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;";
+    private const string BusyTimeout = "PRAGMA busy_timeout=5000;";
+
+    private static string CommandText(SqliteConnection connection) =>
+        new SqliteConnectionStringBuilder(connection.ConnectionString).Mode == SqliteOpenMode.ReadOnly
+            ? BusyTimeout
+            : BusyTimeout + " PRAGMA journal_mode=WAL;";
 
     internal static async Task ApplyAsync(SqliteConnection connection, CancellationToken cancellationToken = default)
     {
         await using var command = connection.CreateCommand();
-        command.CommandText = CommandText;
+        command.CommandText = CommandText(connection);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     internal static void Apply(SqliteConnection connection)
     {
         using var command = connection.CreateCommand();
-        command.CommandText = CommandText;
+        command.CommandText = CommandText(connection);
         command.ExecuteNonQuery();
     }
 }

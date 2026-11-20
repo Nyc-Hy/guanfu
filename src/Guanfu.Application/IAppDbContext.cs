@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Guanfu.Domain;
 
 namespace Guanfu.Application;
@@ -38,6 +39,9 @@ public interface IAppDbContext
     DbSet<ArtifactRevision> ArtifactRevisions { get; }
     DbSet<DeliveryPackage> DeliveryPackages { get; }
     DbSet<Member> Members { get; }
+
+    /// <summary>把版本验收检查与会改变验收结果的写入放在同一 SQLite 写事务中。</summary>
+    Task<IDbContextTransaction> BeginWriteTransactionAsync(CancellationToken cancellationToken = default);
 
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
 

@@ -10,7 +10,7 @@
 ./tests/verify.sh
 ```
 
-它会依次做三件事并给总账：编译（0 警告）→ 单元测试 → 端到端（七条链路）。
+它会依次做三件事并给总账：编译（0 警告）→ 单元测试 → 端到端（八条链路）。
 条数每次都在变 —— **以这次运行的输出为准**，别照抄文档里的旧数字。
 端到端自己起临时观复、跑完即收，不留状态。
 
@@ -25,16 +25,13 @@
 这条定位落到具体，是三件事：
 
 1. **追踪任务进度** —— 状态机 + append-only 事件账本 + 评审门禁；
-2. **记录开发产出的文件** —— 观复自己从 git 里数，不是 agent 自报的；
+2. **归档开发产物** —— agent 登记报告、脚本等内容，项管可按迭代版本打包；
 3. **留下数据库调用的记录** —— SQL 原文、目标库、目标表、影响行数、审批人。
 
 观复**不提供 AI 服务** —— 不调模型、不跑 agent、不生成需求理解与开发计划。
 智能动作发生在外部 agent 进程里，它们通过 MCP 工具与 CLI 驱动观复的状态流转。
 
-在这三件事之上还有一层**约束**：**写操作（改数据库、提交、推送、跑命令）不会在没人点头的情况下发生**。
-
-这条定位决定了「能不能企业用」的判断标准：不是「AI 聪不聪明」，
-而是**「外部 agent 拿着写权限时，能不能保证它写的东西都有人批过、批的是不是那件事、事后能不能查」**。
+数据库写入按项目表规则审批。开发机上的 Codex 使用本机工作区完成代码、测试和 Git 操作。
 
 还有一层**归属**：agent 的对话跟哪个项目、哪个任务绑在一起，是**绑定键说了算**的 ——
 项目创建时绑定本地仓库，agent 在这个目录里干活就自动落到这个项目。
@@ -44,36 +41,15 @@
 
 ## 二、逐条能力与证据
 
-### A. 变更管控：写操作必须有人点头
+### A. 数据库写入审批
 
-| 项 | 内容 |
-|---|---|
-| 能力 | agent 的所有写操作走同一条闸门；不批就不执行 |
-| 落地 | `src/Guanfu.Application/Services/ApprovalGate.cs`（闸门本体）<br>`src/Guanfu.Mcp/GeneralMcpTools.cs`、`DatabaseMcpTools.cs`（`git_commit` / `git_push` / `shell_run` / `db_execute` 共用） |
-| 自动化证据 | 端到端 **链路 D**（D1–D10，10 组断言）<br>单测 `ApprovalGateTests`（10）、`ApprovalLifecycleTests`（21）、`ApprovalServiceTests`（7） |
+`db_execute` 通过 `ApprovalGate` 请求并消费审批。链路 D 验证未经批准、被撤销或改换目标的请求无法到达数据库；
+`GateHardeningTests` 使用测试执行器验证批准后的实际调用次数、结果摘要和取消时的审批收尾。
 
-关键事实：`db_execute` / `git_commit` / `git_push` / `shell_run` **共用同一套闸门**，
-不是各写一份 —— 以前各写一份时行为已经开始漂移（一份查了参数指纹，另一份没查）。
+### B. 审批绑定执行对象
 
-### B. 最小权限：一条批准不是万能令牌
-
-| 项 | 内容 |
-|---|---|
-| 能力 | 批准绑「工具名 + 参数指纹 + 项目」三件事；换个命令、换个工具、换个项目都用不了；一条批准只执行一次 |
-| 落地 | `ApprovalService.TryConsumeAsync`（`src/Guanfu.Application/Services/ApprovalService.cs`）<br>指纹 = 参数 SHA-256；消费用条件更新原子抢占（`Approved → Executing → Executed`） |
-| 自动化证据 | 端到端 **D4**（复用被拒）、**D5**（换命令被拒）、**D6**（换项目被拒）<br>单测 `ApprovalGateTests` |
-
-特别说明：`db_execute` 的指纹绑的是 `connectionId + server + database + sql` —— 换个库执行对不上；
-`git_commit` 绑的是**待提交内容的指纹**，而且**批准之后、执行之前要再算一次**：
-等审批期间工作区变了就拒。人批的是「那些内容」，不是「提交这个动作」。
-
-### C. 命令执行：不走 shell 解析 + 项目白名单
-
-| 项 | 内容 |
-|---|---|
-| 能力 | 命令拆成可执行文件 + 参数直接 exec，杜绝 `;` `&` `|` 拼接注入；且必须命中项目白名单 |
-| 落地 | `src/Guanfu.Application/Services/ShellRunner.cs`（exec 语义、输出上限 1 MB、10 分钟超时、杀进程树）<br>`ShellCommandPolicy`（按词的前缀匹配：`"git status"` 不误伤 `git status-tree`） |
-| 自动化证据 | 端到端 **D1**（白名单外的命令连审批单都不建）<br>单测 `ShellRunnerTests`（13） |
+审批绑定工具、指纹和项目。数据库写入指纹包括连接 ID、目标服务器、数据库和 SQL。
+`ApprovalGateTests` 验证换 SQL、换项目、旧工具审批、重复消费和并发消费。
 
 ### D. 数据保护：只读通道不许写
 
@@ -126,9 +102,7 @@ Secret）、跨库（`OtherDb.dbo.T`）、`INSERT … EXEC` 一律判「认不�
 `EndpointClassificationTests` 会枚举所有 `/api` 写端点，断言该要人工凭证的要、读端点别误伤 ——
 **新增敏感端点漏一条规则 = 开一扇门**，所以这条由测试钉住。
 
-**新建项目也要凭证**：项目一创建就把一个文件系统根目录授给了它，之后 `fs_list` / `fs_read`
-以它为根。不设门的话，拿到 MCP/REST 的 agent 自己建个项目指向 `/etc` 就能把文件读出去 ——
-改 `repoPath` 要凭证、建项目不要，等于开了扇后门。
+新建项目可以同时配置仓库路径，沿用项目配置的人工凭证校验。
 
 ### F. Web 安全：跨站与 DNS rebinding
 
@@ -160,7 +134,7 @@ Secret）、跨库（`OtherDb.dbo.T`）、`INSERT … EXEC` 一律判「认不�
 
 | 项 | 内容 |
 |---|---|
-| 能力 | **凭证**在签发时就把身份绑上（成员名 / agent id）+ 可见范围；运行时带的只是那把钥匙。明文只显示一次，库里只存哈希。**`/mcp` 端点必须认凭证** —— MCP 的工具是在**服务器上**执行的（读文件、提交代码、跑命令），「谁能连上 /mcp」等于「谁能操作服务器上的仓库」 |
+| 能力 | **凭证**在签发时就把身份绑上（成员名 / agent id）+ 可见范围；运行时带的只是那把钥匙。明文只显示一次，库里只存哈希。**`/mcp` 端点校验凭证**，任务、文档、产物及数据库工具按项目范围授权 |
 | 落地 | `src/Guanfu.Domain/Entities.cs`（`AccessCredential`）<br>`src/Guanfu.Application/Services/CredentialService.cs`（签发 / 校验 / 吊销）<br>`src/Guanfu.Web/CredentialMiddleware.cs`（`/mcp` 门禁）<br>`src/Guanfu.Web/Components/Pages/Credentials.razor`（「访问凭证」页签）<br>可见范围在 `ProjectScopeResolver.ResolveOrNullAsync` 统一卡 —— 所有带项目的工具都从那儿过 |
 | 自动化证据 | 单测 `CredentialServiceTests`（8：明文只给一次、错的换不到身份、吊销即失效、过期即失效、可见范围）<br>端到端 A：带错的凭证连不上 `/mcp` |
 
@@ -259,23 +233,10 @@ Secret）、跨库（`OtherDb.dbo.T`）、`INSERT … EXEC` 一律判「认不�
 `src/Guanfu.Application/Services/OverviewService.cs`（首页总览）
 **自动化证据**：端到端 A（正常走到结项）；单测 `TaskStatusMachineTests`（4）、`EventLedgerContractTests`（2）
 
-### 2. 产出文件怎么查
+### 2. 开发产物怎么查
 
-| 问题 | 查法 |
-|---|---|
-| 这个任务改了哪些文件 | 任务详情 →「产出文件」 |
-| 最近产出了什么 | 首页总览 →「最近产出的文件」 |
-| 这次改动对应哪个 commit | 产出文件行上的 commit sha |
-| 接口 | `GET /api/tasks/{id}/file-changes` |
-
-**关键**：这些数据**不是 agent 自报的**，是观复自己在两个采集点从 git 里数的 ——
-① `git_commit` 审批通过、真正提交之后（`git show --numstat`）；
-② 推进到 `Review` 时快照工作区（`git diff --numstat` + 未跟踪文件）。
-两个点都在 agent 绕不过去的地方。
-
-**落地**：`src/Guanfu.Application/Services/FileChangeService.cs`、
-`src/Guanfu.Infrastructure/GitInspector.cs`（numstat / name-status 解析）
-**自动化证据**：端到端 **F6**（提交后产出文件自动落库，含路径与 commit sha）；单测 `FileChangeTests`（22）
+任务详情的「产出」页签记录已上传的报告、文档或脚本。开发端可用 `guanfu_add_artifact`
+上报内容，或用本机 CLI 读取文件后上传。项管可在迭代版本中勾选并生成交付包。端到端链路 H 验证上传、验收、打包和恢复后下载。
 
 ### 3. 数据库调用怎么查
 
@@ -296,21 +257,18 @@ Secret）、跨库（`OtherDb.dbo.T`）、`INSERT … EXEC` 一律判「认不�
 
 ---
 
-## 四、端到端七条链路是什么
+## 四、端到端八条链路是什么
 
 `./tests/e2e/run.sh` 自起临时观复（临时数据目录），跑完即收：
 
-| 链路 | 内容 | 断言数 |
-|---|---|---|
-| A | 从编号到结项：`req001` → claim → 上下文 → 回写计划 → 推进 Review → 开评审轮 → 取评审包 → 逐维度回写 7 条 → 结项 | 72 |
-| B | 评审没过不许结项：只评 6 个维度 / 有一个维度不通过，两种都拦下 | 5 |
-| C | 类型编号：前缀各类型独立计数、改类型不改编号 | 4 |
-| D | 写操作的人工审批门禁（D1–D11，含「只读调用也留痕」） | 66 |
-| E | CLI 冒烟：常用命令 + 敏感命令 401 + `guanfu mcp` stdio 桥接 | 108 |
-| F | **agent 会话 ↔ 项目 / 任务绑定**：绑仓库 → 不传 projectId 也能干活 → 跨项目被拒 → 按编号认领 → 审计自动带任务 → 产出文件自动落库 | 32 |
-| G | **重启对账**：起服务 → 执行途中杀进程 → 同一个数据目录再起 → 那次写操作标成「结果未知」 | 8 |
-
-合计 **295 条断言**，全过。
+| 链路 | 内容 |
+|---|---|
+| A/B/C | MCP 从任务认领到评审结项、结项门禁、任务编号 |
+| D | 数据库写入审批、审计、团队身份及交付门禁 |
+| E | CLI 常用命令和 stdio 桥接 |
+| F | 项目会话、任务认领、用量、交接及审计归属 |
+| G | 数据库连接中断后重启，审批标记为结果未知 |
+| H | 团队协作、跨项目权限、交付与备份恢复 |
 
 ---
 
@@ -349,7 +307,7 @@ Secret）、跨库（`OtherDb.dbo.T`）、`INSERT … EXEC` 一律判「认不�
    推上去之前它只是文件；GitLab CI / Jenkins 要另写一份等价配置。
 7. **审批等待是进程内轮询，重启时正在跑的那次写操作结果未知。**
    待审单在库里不会丢；但服务重启时正在执行的那次写操作**可能已经生效**
-   （commit 已写进仓库，只是执行方没来得及回写状态），系统判不出来。
+   （数据库可能提交了事务，执行方还没回写状态），系统判不出来。
    现在的做法：启动时把「上个进程崩在执行中间」的审批挑出来，
    标成**结果未知**（`OutcomeUnknown`），过期并写明「请人工确认后再重新申请」，
    审批页上带一个醒目的标记（端到端链路 G 验的就是这一段）。

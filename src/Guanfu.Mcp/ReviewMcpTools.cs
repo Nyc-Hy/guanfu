@@ -66,7 +66,7 @@ public sealed class ReviewMcpTools(IReviewService reviews, IAgentSessionAccessor
 
     [McpServerTool(Name = "guanfu_get_review_pack")]
     [Description(
-        "取评审包：每个维度的检查清单 + 任务上下文（需求理解、验收标准、文档、产物）+ 变更文件列表" +
+        "取评审包：每个维度的检查清单 + 任务上下文（需求理解、验收标准、文档、产物）+ 已登记的报告证据" +
         "+ 本轮分工（round.judgements：谁评了哪一条、结论是什么）。" +
         "拿到包之后逐维度评审（可以开子 agent 并行认领），再逐维度调 guanfu_submit_review 回写结论。")]
     public async Task<ReviewToolResult> GetReviewPackAsync(
@@ -177,6 +177,26 @@ public sealed class ReviewMcpTools(IReviewService reviews, IAgentSessionAccessor
         }
     }
 
+    [McpServerTool(Name = "guanfu_record_review_evidence")]
+    [Description("向当前评审轮提交结构化报告证据。expectedVersion 首次填 0，修改前读取 round.reportEvidence.version。"
+        + "findings 分类用 code_quality/performance/security/scope_impact/requirements/testing/compatibility/deployment/accessibility，"
+        + "严重度 blocker/high/medium/low，状态 open/fixed/verified。requirements 状态 complete/partial/missing/unverified，"
+        + "用例状态 passed/failed/not_run/missing。changes 按 requirementKey 归属，公共或未归属改动留空。")]
+    public async Task<ReviewEvidenceToolResult> RecordReviewEvidenceAsync(
+        Guid taskId, int round, int expectedVersion, ReviewReportEvidence evidence,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var snapshot = await reviews.RecordReportEvidenceAsync(taskId, round, expectedVersion, evidence, cancellationToken);
+            return new ReviewEvidenceToolResult(true, snapshot);
+        }
+        catch (GuanfuException ex)
+        {
+            return new ReviewEvidenceToolResult(false, Error: ex.Message);
+        }
+    }
+
     [McpServerTool(Name = "guanfu_list_reviews")]
     [Description("列出任务的所有评审轮次与历史（每轮每个维度的结论都留痕）")]
     public async Task<ReviewToolResult> ListReviewsAsync(
@@ -276,3 +296,5 @@ public sealed record SpecVerdictToolResult
 
     public static SpecVerdictToolResult Fail(string error) => new() { Ok = false, Error = error };
 }
+
+public sealed record ReviewEvidenceToolResult(bool Ok, ReviewEvidenceSnapshot? ReportEvidence = null, string? Error = null);

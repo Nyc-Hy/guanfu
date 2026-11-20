@@ -14,7 +14,7 @@ internal static class AgentConfigCommand
 {
     public static int Run(string url, List<string> cliArgs)
     {
-        var baseUrl = GetOption(cliArgs, "--url") ?? url.TrimEnd('/');
+        var baseUrl = url;
         var kind = (GetOption(cliArgs, "--client") ?? "http").ToLowerInvariant();
 
         switch (kind)

@@ -20,7 +20,7 @@ public sealed class FileDeliveryPackageStore(IOptions<GuanfuOptions> options) : 
         Stream content,
         CancellationToken cancellationToken = default)
     {
-        var relativeDir = Path.Combine("packages", milestoneId.ToString("N"));
+        var relativeDir = Path.Combine(WorkspaceArchiveFiles.PackagesFolderName, milestoneId.ToString("N"));
         var absoluteDir = Path.Combine(_options.HomeDirectory, relativeDir);
         Directory.CreateDirectory(absoluteDir);
 

@@ -31,8 +31,7 @@ public static class McpToolCatalog
     [
         "观复组",
         "文档组",
-        "数据库组",
-        "通用组"
+        "数据库组"
     ];
 
     /// <summary>工具名前缀 → 分类。</summary>

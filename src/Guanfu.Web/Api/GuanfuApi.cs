@@ -286,6 +286,11 @@ public static class GuanfuApi
             Guid taskId, IExportService exports, int? round, string? format, CancellationToken ct) =>
         {
             var text = await exports.ExportReviewReportAsync(taskId, round, format ?? "markdown", ct);
+            if (string.Equals(format, "html", StringComparison.OrdinalIgnoreCase))
+            {
+                return Results.File(System.Text.Encoding.UTF8.GetBytes(text), "text/html; charset=utf-8",
+                    round is int number ? $"review-round-{number}.html" : "review.html");
+            }
             return Results.Content(text, "text/markdown; charset=utf-8");
         });
 
@@ -749,7 +754,7 @@ public static class GuanfuApi
             CancellationToken ct) =>
         {
             var package = await delivery.CreateAsync(
-                milestoneId, request.ItemIds, request.CreatedBy, ct);
+                milestoneId, request.ItemIds, request.CreatedBy, ct, request.Release);
 
             return Results.Created($"/api/delivery-packages/{package.Id}", package);
         });
@@ -799,21 +804,19 @@ public static class GuanfuApi
         app.MapGet("/delivery/{token}", async (
             string token, IDeliveryPackageService delivery, CancellationToken ct) =>
         {
-            var package = await delivery.ResolveShareAsync(token, ct);
+            var download = await delivery.ResolveShareAsync(token, ct);
 
-            if (package is null)
+            if (download is not { } file)
             {
                 return Results.NotFound(new { error = "链接无效、已过期或已被撤销。" });
             }
 
-            var path = await delivery.ResolvePathAsync(package, ct);
-
-            if (!File.Exists(path))
+            if (!File.Exists(file.Path))
             {
                 return Results.NotFound(new { error = "交付包文件不在了（数据目录被清理过？）。" });
             }
 
-            return Results.File(path, "application/zip", package.FileName);
+            return Results.File(file.Path, "application/zip", file.FileName);
         });
 
         // ---- 今天的局面 ----
@@ -1259,7 +1262,8 @@ public sealed record UpdateArtifactRequest(
 /// <summary>打一个交付包。ItemIds 是候选池里的条目 id（文档 id 或产物 id）。</summary>
 public sealed record CreateDeliveryPackageRequest(
     IReadOnlyList<Guid> ItemIds,
-    string? CreatedBy = null);
+    string? CreatedBy = null,
+    ReleasePackageOptions? Release = null);
 
 /// <summary>回写测试结果。OccurredAt 同上（实际跑测试的时间）。</summary>
 public sealed record TestResultRequest(

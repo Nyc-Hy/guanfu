@@ -1,28 +1,17 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 
 namespace Guanfu.Cli;
 
-/// <summary>
-/// 命令行的本地会话（谁在用这台机器上的观复）。
-///
-/// **为什么要有**：观复现在是**一个团队**用的 —— 成员各有各的账号，
-/// 每个人看到的可见范围不一样。命令行以前只有一把 owner 的万能凭证，
-/// 于是「用命令行的人」永远是 owner —— 团队成员在笔记本上用命令行时，
-/// 看到的也是全部（owner 视角），跟他们在网页上看到的不一样。
-///
-/// 所以命令行也要能**以某个成员的身份**说话：
-/// `guanfu login` 换一个身份，`guanfu logout` 收工，`guanfu whoami` 看现在是谁。
-///
-/// 会话值存在**本地**（数据目录下的 cli.json，0600）——
-/// 它是这台机器上这个人的凭据，不该进版本库、不该传给别人。
-/// </summary>
+/// <summary>按服务地址保存 CLI 登录会话。</summary>
 internal static class CliSession
 {
-    private const string FileName = "cli.json";
-
-    /// <summary>本地会话文件的位置（数据目录里）。</summary>
-    internal static string PathFor(string? homeDirectory) =>
-        Path.Combine(Home(homeDirectory), FileName);
+    internal static string PathFor(string? homeDirectory, string url)
+    {
+        var key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(CliServer.Normalize(url))));
+        return Path.Combine(Home(homeDirectory), $"cli-session-{key}.json");
+    }
 
     /// <summary>数据目录（没配就用用户主目录下的 .guanfu）。</summary>
     internal static string Home(string? homeDirectory)
@@ -49,11 +38,11 @@ internal static class CliSession
     }
 
     /// <summary>读本地会话；没有或读不了就返回 null（当没登录）。</summary>
-    internal static Session? Load(string? homeDirectory)
+    internal static Session? Load(string? homeDirectory, string url)
     {
         try
         {
-            var path = PathFor(homeDirectory);
+            var path = PathFor(homeDirectory, url);
 
             if (!File.Exists(path))
             {
@@ -72,26 +61,39 @@ internal static class CliSession
     }
 
     /// <summary>写本地会话（0600：只有本人能读）。</summary>
-    internal static void Save(string? homeDirectory, Session session)
+    internal static void Save(string? homeDirectory, string url, Session session)
     {
         Directory.CreateDirectory(Home(homeDirectory));
 
-        var path = PathFor(homeDirectory);
+        var path = PathFor(homeDirectory, url);
 
-        File.WriteAllText(path, JsonSerializer.Serialize(session, Application.GuanfuJson.Options));
-
+        var temp = $"{path}.{Guid.NewGuid():N}.tmp";
+        var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write };
         if (!OperatingSystem.IsWindows())
         {
-            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        }
+
+        try
+        {
+            using (var stream = new FileStream(temp, options))
+            {
+                JsonSerializer.Serialize(stream, session, Application.GuanfuJson.Options);
+            }
+            File.Move(temp, path, overwrite: true);
+        }
+        finally
+        {
+            File.Delete(temp);
         }
     }
 
     /// <summary>清掉本地会话。</summary>
-    internal static void Clear(string? homeDirectory)
+    internal static void Clear(string? homeDirectory, string url)
     {
         try
         {
-            var path = PathFor(homeDirectory);
+            var path = PathFor(homeDirectory, url);
 
             if (File.Exists(path))
             {

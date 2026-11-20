@@ -27,6 +27,7 @@ public static class McpServiceCollectionExtensions
         // 绑上之后工具调用不用再自己背项目 GUID。
         services.AddScoped<IAgentSessionAccessor, AgentSessionAccessor>();
         services.AddScoped<ToolCallRecorder>();
+        services.AddScoped<McpProjectAuthorization>();
 
         services.AddMcpServer(options =>
             {
@@ -39,17 +40,19 @@ public static class McpServiceCollectionExtensions
 
                 options.ServerInstructions =
                     "观复是给 agent 用的项目管理工具：任务、里程碑、依赖、状态机在这里，" +
-                    "观复不提供 AI 服务（不调模型、不跑 agent），它只管状态与产出。" +
+                    "观复记录状态与产出。用开发机上的工具读取仓库、修改代码、运行测试和 Git。" +
+                    "远程接入时用 projectId 选择项目，或使用单项目凭证；拿到任务 ID 后可直接用 taskId。" +
                     "典型流程：guanfu_get_task_by_key 按编号找任务 → guanfu_claim_task 领任务（带租约）→ " +
                     "guanfu_get_context 取全量上下文（文档、计划、产出、事件、当前允许的状态迁移）→ " +
                     "guanfu_set_plan 回写需求理解与开发计划 → 开发 → " +
                     "guanfu_report_test_result 回写测试 → guanfu_update_status 推进状态 → " +
-                    "guanfu_submit_review 逐维度回写评审结论。" +
+                    "guanfu_get_review_pack 取评审上下文，在本机按变更范围检查与跑测试，" +
+                    "guanfu_submit_review 逐维度回写结论，再用 guanfu_record_review_evidence 登记比较基线、" +
+                    "按需求拆分的 diff、PRD 对照、测试和问题证据，guanfu_export_review 以 html 导出。" +
                     "要点：① 状态迁移过状态机，非法迁移会带回「当前允许的迁移列表」，照着它改；" +
                     "② 任务编号（REQ-001）就是给人看的 id，不要用 GUID；" +
-                    "③ 写数据库走 db_execute、改文件/提交走 shell_run / git_commit —— 这些都要人工审批，" +
-                    "带 approvalId 续跑；" +
-                    "④ 产出文件由观复从 git 里采集，不要自己报；" +
+                    "③ 数据库写入按配置的审批规则执行；" +
+                    "④ 用 guanfu_add_artifact 登记报告、脚本等产物；CLI 的 guanfu report 可读取开发机上的文件再上传；" +
                     "⑤ 需求理解的判断是你做的，观复只存不生成。";
 
                 // 关掉的工具不出现在 tools/list —— agent 就看不到它，不会去调
@@ -230,6 +233,35 @@ public static class McpServiceCollectionExtensions
                             }
                         ]
                     };
+                });
+
+                // 先校验凭证的项目范围，再执行工具与审批。
+                options.Filters.Request.CallToolFilters.Add(next => async (context, cancellationToken) =>
+                {
+                    var authorization = context.Services?.GetService<McpProjectAuthorization>();
+                    if (authorization is not null)
+                    {
+                        var started = DateTimeOffset.UtcNow;
+                        try
+                        {
+                            await authorization.EnsureAllowedAsync(
+                                context.Params.Name, context.Params.Arguments, cancellationToken);
+                        }
+                        catch (GuanfuException) when (ToolCallRecorder.SelfAuditedTools.Contains(context.Params.Name))
+                        {
+                            // 工具没执行，自带的审计不会发生，由门禁记一条拒绝。
+                            var recorder = context.Services?.GetService<ToolCallRecorder>();
+                            if (recorder is not null)
+                            {
+                                await recorder.RecordAsync(context.Params.Name, context.Params.Arguments, "denied",
+                                    (long)(DateTimeOffset.UtcNow - started).TotalMilliseconds, cancellationToken);
+                            }
+
+                            throw;
+                        }
+                    }
+
+                    return await next(context, cancellationToken);
                 });
 
                 // 双保险：就算客户端缓存了工具清单直接调，也会被拦

@@ -18,12 +18,10 @@ public static class ApplicationServiceCollectionExtensions
         services.AddScoped<IDbConnectionService, DbConnectionService>();
         services.AddScoped<IMilestoneService, MilestoneService>();
         services.AddScoped<IMetricsService, MetricsService>();
-        services.AddScoped<IFileSystemService, FileSystemService>();
 
         services.AddScoped<IReviewService, ReviewService>();
         // 评审服务同时是门禁的实现 —— 注册同一个实例，别造两份
         services.AddScoped<IReviewGate>(sp => sp.GetRequiredService<IReviewService>());
-        services.AddScoped<IShellRunner, ShellRunner>();
         services.AddScoped<ITaskDependencyService, TaskDependencyService>();
         services.AddScoped<IExportService, ExportService>();
 

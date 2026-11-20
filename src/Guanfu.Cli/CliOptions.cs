@@ -4,9 +4,7 @@ namespace Guanfu.Cli;
 internal static class CliOptions
 {
     /// <summary>
-    /// 人工凭证。优先级：--token 显式 &gt; GUANFU_HUMAN_TOKEN 环境变量 &gt;
-    /// 数据目录/.human-token 文件（由 <c>GuanfuClient</c> 解析）。
-    /// 没有 token 时，敏感命令（裁决审批、改配置、启动 agent、搬迁工作区）会 401。
+    /// 本次命令的显式凭证，优先于对应入口的环境变量。
     /// </summary>
     public static string? Token { get; set; }
 }

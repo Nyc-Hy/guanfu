@@ -1,4 +1,5 @@
 @page "/projects/{ProjectId:guid}"
+@inject CurrentMemberScope CurrentMember
 @rendermode InteractiveServer
 @using Guanfu.Application.Services
 @inject IServiceScopeFactory ScopeFactory
@@ -274,12 +275,12 @@ else
                                 </td>
                                 <td>
                                     <a href="/projects/@ProjectId/milestones/@m.Id/delivery">打包交付</a>
-                                    @if (m.AcceptedAt is not null)
+                                    @if (CurrentMember.Current?.IsAdmin != false && m.AcceptedAt is not null)
                                     {
                                         <button class="wb-btn" disabled="@Busy"
                                                 @onclick="() => UnacceptMilestoneAsync(m.Id)">撤销验收</button>
                                     }
-                                    else
+                                    else if (CurrentMember.Current?.IsAdmin != false)
                                     {
                                         <button class="wb-btn wb-btn-primary" disabled="@Busy"
                                                 @onclick="() => AcceptMilestoneAsync(m.Id)">验收</button>
