@@ -57,10 +57,10 @@ TEST_OUT="$("$DOTNET" test "$ROOT/Guanfu.sln" --nologo 2>&1)"
 TEST_CODE=$?
 printf '%s\n' "$TEST_OUT" | grep -E '已通过!|失败!|Failed!|Passed!' || true
 if [[ $TEST_CODE -eq 0 ]]; then
-  TOTAL="$(printf '%s' "$TEST_OUT" | grep -oE '总计:[[:space:]]*[0-9]+' | grep -oE '[0-9]+' || true)"
+  TOTAL="$(printf '%s' "$TEST_OUT" | grep -oE '(总计|Total):[[:space:]]*[0-9]+' | grep -oE '[0-9]+' | tail -1 || true)"
   record "单元测试" "yes" "${TOTAL:-?} 条全过"
 else
-  printf '%s\n' "$TEST_OUT" | grep -E '失败|Failed' | head -20
+  printf '%s\n' "$TEST_OUT" | tail -80
   record "单元测试" "no" "有用例没过"
 fi
 

@@ -3,12 +3,17 @@ using Guanfu.Infrastructure;
 
 namespace Guanfu.Tests;
 
+// 与其他测试隔离，避免系统进程的计时受大量并行用例调度影响。
+[CollectionDefinition("Git 进程检视", DisableParallelization = true)]
+public sealed class GitInspectorCollection { }
+
 /// <summary>
 /// Git 检视：porcelain 路径解析、porcelain=v2 的分支/HEAD、真实仓库、超时。
 ///
 /// 回归点：git 默认把非 ASCII 路径转义成 "\346\226\207\346\241\243.md"，
 /// 解析出来是转义串而不是真实文件名，评审按路径读文件必然找不到（中文名仓库全中招）。
 /// </summary>
+[Collection("Git 进程检视")]
 public class GitInspectorTests : IDisposable
 {
     private readonly string _root = Path.Combine(
@@ -209,16 +214,16 @@ public class GitInspectorTests : IDisposable
             return;  // CI 只跑 ubuntu/macos
         }
 
-        var started = DateTime.UtcNow;
+        var timer = Stopwatch.StartNew();
 
         var ex = await Assert.ThrowsAsync<TimeoutException>(() => GitProcessRunner.RunAsync(
             "/bin/sh",
-            ["-c", "sleep 30"],
+            ["-c", "exec sleep 30"],
             _root,
             TimeSpan.FromSeconds(1),
             CancellationToken.None));
 
-        var elapsed = DateTime.UtcNow - started;
+        var elapsed = timer.Elapsed;
 
         Assert.True(elapsed < TimeSpan.FromSeconds(15), $"超时没生效，拖了 {elapsed.TotalSeconds:0.0} 秒");
         Assert.Contains("超时", ex.Message);
